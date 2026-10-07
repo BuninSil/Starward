@@ -9,6 +9,7 @@ const LEVEL_COLORS := {
 
 var _text: RichTextLabel
 var _only_errors: CheckButton
+var _dirty := false
 
 
 func _ready() -> void:
@@ -70,6 +71,12 @@ func _rebuild() -> void:
 		_add(lines[i], levels[i])
 
 
+func _process(_delta: float) -> void:
+	if _dirty and visible:
+		_dirty = false
+		_rebuild()
+
+
 func _add(line: String, level: int) -> void:
 	if _only_errors.button_pressed and level == Log.Level.INFO:
 		return
@@ -78,9 +85,9 @@ func _add(line: String, level: int) -> void:
 	_text.pop()
 
 
-func _on_line_added(line: String, level: int) -> void:
-	if visible:
-		_add(line, level)
+func _on_line_added(_line: String, _level: int) -> void:
+	# Rebuild at most once per frame; avoids duplicates with deferred signals.
+	_dirty = true
 
 
 func _on_copy() -> void:

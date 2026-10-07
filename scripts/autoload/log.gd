@@ -107,7 +107,7 @@ class _CaptureLogger extends Logger:
 
 	func _log_error(function: String, file: String, line: int, code: String,
 			rationale: String, _editor_notify: bool, error_type: int,
-			_script_backtraces: Array[ScriptBacktrace]) -> void:
+			script_backtraces: Array[ScriptBacktrace]) -> void:
 		var o = _owner.get_ref()
 		if o == null:
 			return
@@ -121,4 +121,9 @@ class _CaptureLogger extends Logger:
 			kind = "SCRIPT ERROR"
 		elif error_type == ERROR_TYPE_SHADER:
 			kind = "SHADER ERROR"
-		o._append("%s: %s\n    at %s (%s:%d)" % [kind, msg, function, file, line], level)
+		var where := "%s (%s:%d)" % [function, file, line]
+		for bt in script_backtraces:
+			if bt.get_frame_count() > 0:
+				where = "%s (%s:%d)" % [bt.get_frame_function(0), bt.get_frame_file(0), bt.get_frame_line(0)]
+				break
+		o._append("%s: %s\n    at %s" % [kind, msg, where], level)

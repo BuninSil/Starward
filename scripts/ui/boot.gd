@@ -3,6 +3,7 @@ extends Node3D
 ## planet (proves the 3D renderer works on the device) and debug tools.
 
 const ConsoleScript := preload("res://scripts/ui/debug_console.gd")
+const UpdateDialogScript := preload("res://scripts/ui/update_dialog.gd")
 
 @onready var _planet: Node3D = $Planet
 @onready var _sun: DirectionalLight3D = $Sun
@@ -13,6 +14,8 @@ var _overlay: Label
 var _console: PanelContainer
 var _debug_menu: PanelContainer
 var _console_button: Button
+var _update_dialog: UpdateDialogScript
+var _update_status: Label
 var _overlay_timer := 0.0
 
 
@@ -28,6 +31,9 @@ func _ready() -> void:
 	mat.set_shader_parameter("sun_dir_world", _sun.global_transform.basis.z)
 	_build_ui()
 	Log.line_added.connect(func(_l: String, _lv: int) -> void: _update_console_button())
+	Updater.update_available.connect(_update_dialog.show_for)
+	Updater.check_finished.connect(func(_has: bool, msg: String) -> void: _update_status.text = msg)
+	Updater.check_on_startup()
 
 
 func _process(delta: float) -> void:
@@ -112,6 +118,9 @@ func _build_ui() -> void:
 	_debug_menu.hide()
 	_ui.add_child(_debug_menu)
 
+	_update_dialog = UpdateDialogScript.new()
+	_ui.add_child(_update_dialog)
+
 	_console = ConsoleScript.new()
 	_console.hide()
 	_ui.add_child(_console)
@@ -129,6 +138,19 @@ func _build_debug_menu() -> PanelContainer:
 	header.text = "Дебаг-меню"
 	header.add_theme_font_size_override("font_size", 30)
 	box.add_child(header)
+
+	var check := Button.new()
+	check.text = "Проверить обновление сейчас"
+	check.pressed.connect(func() -> void:
+		_update_status.text = "Проверяю…"
+		Updater.check_now())
+	box.add_child(check)
+
+	_update_status = Label.new()
+	_update_status.text = "Обновления: ещё не проверялись"
+	_update_status.add_theme_font_size_override("font_size", 20)
+	_update_status.add_theme_color_override("font_color", Color(0.6, 0.7, 0.85))
+	box.add_child(_update_status)
 
 	var copy := Button.new()
 	copy.text = "Скопировать лог"

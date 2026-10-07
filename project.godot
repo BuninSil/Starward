@@ -17,6 +17,7 @@ config/icon="res://icon.svg"
 [autoload]
 
 Log="*res://scripts/autoload/log.gd"
+Updater="*res://scripts/autoload/updater.gd"
 
 [display]
 
@@ -45,3 +46,7 @@ build/commit="local"
 [gui]
 
 theme/custom="res://ui/theme.tres"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/starward_updater/plugin.cfg")

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Needed to hand a downloaded APK to the system package installer. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <application>
+        <meta-data
+            android:name="org.godotengine.plugin.v2.StarwardUpdater"
+            android:value="com.buninsil.starward.updater.StarwardUpdaterPlugin" />
+
+        <!-- Own provider class: Godot already registers androidx FileProvider under its own authority. -->
+        <provider
+            android:name="com.buninsil.starward.updater.UpdateFileProvider"
+            android:authorities="${applicationId}.starward.updater"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/starward_updater_paths" />
+        </provider>
+    </application>
+</manifest>
