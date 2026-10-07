@@ -1,0 +1,87 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/boot.gd" id="1_boot"]
+[ext_resource type="Shader" path="res://shaders/starfield.gdshader" id="2_sky"]
+[ext_resource type="Shader" path="res://shaders/atmosphere_rim.gdshader" id="3_atmo"]
+
+[sub_resource type="ShaderMaterial" id="sky_mat"]
+shader = ExtResource("2_sky")
+
+[sub_resource type="Sky" id="sky"]
+sky_material = SubResource("sky_mat")
+radiance_size = 0
+
+[sub_resource type="Environment" id="env"]
+background_mode = 2
+sky = SubResource("sky")
+ambient_light_source = 2
+ambient_light_color = Color(0.05, 0.06, 0.09, 1)
+ambient_light_energy = 1.0
+reflected_light_source = 1
+tonemap_mode = 2
+glow_enabled = true
+glow_intensity = 0.6
+glow_bloom = 0.05
+
+[sub_resource type="FastNoiseLite" id="noise"]
+noise_type = 1
+seed = 7
+frequency = 0.004
+fractal_octaves = 6
+fractal_lacunarity = 2.1
+
+[sub_resource type="Gradient" id="terrain_ramp"]
+offsets = PackedFloat32Array(0, 0.47, 0.5, 0.52, 0.62, 0.74, 0.82)
+colors = PackedColorArray(0.02, 0.07, 0.22, 1, 0.05, 0.2, 0.45, 1, 0.76, 0.7, 0.5, 1, 0.22, 0.45, 0.17, 1, 0.13, 0.32, 0.12, 1, 0.42, 0.36, 0.3, 1, 0.95, 0.96, 0.98, 1)
+
+[sub_resource type="NoiseTexture2D" id="terrain_tex"]
+width = 1024
+height = 512
+seamless = true
+color_ramp = SubResource("terrain_ramp")
+noise = SubResource("noise")
+
+[sub_resource type="StandardMaterial3D" id="planet_mat"]
+albedo_texture = SubResource("terrain_tex")
+roughness = 0.85
+
+[sub_resource type="SphereMesh" id="planet_mesh"]
+material = SubResource("planet_mat")
+radius = 1.0
+height = 2.0
+radial_segments = 96
+rings = 48
+
+[sub_resource type="ShaderMaterial" id="atmo_mat"]
+render_priority = 1
+shader = ExtResource("3_atmo")
+
+[sub_resource type="SphereMesh" id="atmo_mesh"]
+material = SubResource("atmo_mat")
+radius = 1.06
+height = 2.12
+radial_segments = 64
+rings = 32
+
+[node name="Boot" type="Node3D"]
+script = ExtResource("1_boot")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("env")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+rotation = Vector3(-0.26, 1.75, 0)
+light_energy = 1.6
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.55, 0.05, 3.1)
+fov = 50.0
+
+[node name="Planet" type="Node3D" parent="."]
+transform = Transform3D(0.92, 0.39, 0, -0.39, 0.92, 0, 0, 0, 1, 0, 0, 0)
+
+[node name="Surface" type="MeshInstance3D" parent="Planet"]
+mesh = SubResource("planet_mesh")
+
+[node name="Atmosphere" type="MeshInstance3D" parent="."]
+mesh = SubResource("atmo_mesh")

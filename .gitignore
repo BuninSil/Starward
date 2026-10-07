@@ -1,0 +1,18 @@
+# Godot
+.godot/
+/android/
+*.import.tmp
+export_credentials.cfg
+
+# Build output
+/build/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# Android plugin build
+android_plugin/.gradle/
+android_plugin/build/
+android_plugin/local.properties
+addons/starward_updater/bin/*.aar
