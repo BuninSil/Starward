@@ -1,0 +1,198 @@
+name: Build APK
+
+# main            -> signed APK + GitHub Release v0.1.<run_number>
+# other branches  -> CI check only: APK uploaded as a short-lived artifact, no release
+on:
+  push:
+    branches: ["**"]
+    paths-ignore:
+      - "**.md"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  GODOT_VERSION: "4.7.2"
+  GODOT_STATUS: "stable"
+  VERSION_PREFIX: "0.1"
+  APP_NAME: "starward"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version and signing mode
+        id: meta
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          code="${{ github.run_number }}"
+          name="${VERSION_PREFIX}.${code}"
+          is_release=false
+          [ "${GITHUB_REF}" = "refs/heads/main" ] && is_release=true
+          if [ -n "$KS_B64" ] && [ -n "$KS_PASS" ] && [ -n "$KS_ALIAS" ]; then
+            signed=true
+          else
+            signed=false
+            if [ "$is_release" = true ]; then
+              echo "::error title=No signing key::Secrets ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS are not set. CI never generates a key: see docs/KEYSTORE.md"
+              exit 1
+            fi
+            echo "::warning::Signing secrets are not set: building an UNSIGNED APK for CI check only."
+          fi
+          {
+            echo "code=$code"
+            echo "name=$name"
+            echo "tag=v$name"
+            echo "release=$is_release"
+            echo "signed=$signed"
+            echo "apk=${APP_NAME}-v${name}.apk"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Install Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.1.0" "platform-tools" > /dev/null
+
+      - name: Build Android plugin (Kotlin)
+        if: hashFiles('android_plugin/build.gradle.kts') != ''
+        run: |
+          gradle -p android_plugin --no-daemon assembleRelease
+          mkdir -p addons/starward_updater/bin
+          cp android_plugin/build/outputs/aar/starward-updater-release.aar addons/starward_updater/bin/
+
+      - name: Cache Godot
+        id: godot-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/godot-dist
+          key: godot-${{ env.GODOT_VERSION }}-${{ env.GODOT_STATUS }}
+
+      - name: Download Godot and export templates
+        if: steps.godot-cache.outputs.cache-hit != 'true'
+        run: |
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_STATUS}"
+          mkdir -p ~/godot-dist && cd ~/godot-dist
+          curl -fsSL -o godot.zip "$base/Godot_v${GODOT_VERSION}-${GODOT_STATUS}_linux.x86_64.zip"
+          curl -fsSL -o templates.tpz "$base/Godot_v${GODOT_VERSION}-${GODOT_STATUS}_export_templates.tpz"
+          unzip -q godot.zip && rm godot.zip
+          mv "Godot_v${GODOT_VERSION}-${GODOT_STATUS}_linux.x86_64" godot
+
+      - name: Install Godot and export templates
+        run: |
+          sudo ln -sf ~/godot-dist/godot /usr/local/bin/godot
+          tdir=~/.local/share/godot/export_templates/${GODOT_VERSION}.${GODOT_STATUS}
+          mkdir -p "$tdir"
+          unzip -q -o ~/godot-dist/templates.tpz -d "$RUNNER_TEMP/tpl"
+          mv "$RUNNER_TEMP"/tpl/templates/* "$tdir"/
+          godot --version
+
+      - name: Stamp version into project
+        run: |
+          code="${{ steps.meta.outputs.code }}"
+          name="${{ steps.meta.outputs.name }}"
+          sed -i -E "s|^config/version=.*|config/version=\"${name}\"|" project.godot
+          sed -i -E "s|^build/version_code=.*|build/version_code=${code}|" project.godot
+          sed -i -E "s|^build/commit=.*|build/commit=\"${GITHUB_SHA::7}\"|" project.godot
+          sed -i -E "s|^version/code=.*|version/code=${code}|" export_presets.cfg
+          sed -i -E "s|^version/name=.*|version/name=\"${name}\"|" export_presets.cfg
+          if [ "${{ steps.meta.outputs.signed }}" != "true" ]; then
+            sed -i -E "s|^package/signed=.*|package/signed=false|" export_presets.cfg
+          fi
+          grep -E "^(config/version|build/version_code|build/commit)=" project.godot
+          grep -E "^(version/code|version/name|package/signed)=" export_presets.cfg
+
+      - name: Decode keystore
+        if: steps.meta.outputs.signed == 'true'
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          echo "GODOT_ANDROID_KEYSTORE_RELEASE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+
+      - name: Import project
+        run: godot --headless --path . --import
+
+      - name: Export APK
+        env:
+          GODOT_ANDROID_KEYSTORE_RELEASE_USER: ${{ secrets.ANDROID_KEY_ALIAS }}
+          GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          mkdir -p build
+          out="$GITHUB_WORKSPACE/build/${{ steps.meta.outputs.apk }}"
+          godot --headless --path . --install-android-build-template --export-release "Android" "$out" 2>&1 | tee build/export.log
+          if [ ! -s "$out" ]; then
+            echo "::error::APK was not produced, see export log above"
+            exit 1
+          fi
+          ls -la build/
+
+      - name: Verify signature
+        id: sig
+        if: steps.meta.outputs.signed == 'true'
+        run: |
+          bt=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+          "$ANDROID_HOME/build-tools/$bt/apksigner" verify --print-certs "build/${{ steps.meta.outputs.apk }}" | tee build/certs.txt
+          sha=$(grep -m1 "certificate SHA-256 digest" build/certs.txt | awk -F': ' '{print $2}')
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact (branch builds)
+        if: steps.meta.outputs.release != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.apk }}
+          path: build/*.apk
+          retention-days: 3
+
+      - name: Release notes
+        if: steps.meta.outputs.release == 'true'
+        run: |
+          prev=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
+          {
+            if [ -n "$prev" ]; then
+              echo "Изменения с $prev:"
+              echo
+              git log "$prev..HEAD" --no-merges --pretty='- %s (%h)'
+            else
+              echo "Первый релиз. Коммиты:"
+              echo
+              git log --no-merges --pretty='- %s (%h)'
+            fi
+            echo
+            echo "---"
+            echo "versionCode: ${{ steps.meta.outputs.code }} · commit: ${GITHUB_SHA::7} · Godot ${GODOT_VERSION}"
+            echo "Подпись SHA-256: \`${{ steps.sig.outputs.sha256 }}\`"
+          } > build/notes.md
+          cat build/notes.md
+
+      - name: Publish GitHub Release
+        if: steps.meta.outputs.release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          body_path: build/notes.md
+          files: build/${{ steps.meta.outputs.apk }}
+          make_latest: "true"
