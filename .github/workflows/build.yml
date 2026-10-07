@@ -134,6 +134,9 @@ jobs:
       - name: Import project
         run: godot --headless --path . --import
 
+      - name: Physics tests
+        run: timeout 300 godot --headless --path . --script tests/test_sim.gd
+
       - name: Export APK
         run: |
           mkdir -p build
