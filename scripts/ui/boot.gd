@@ -73,7 +73,7 @@ func _build_ui() -> void:
 	title.add_theme_constant_override("outline_size", 0)
 	title_box.add_child(title)
 	var subtitle := Label.new()
-	subtitle.text = "Этап 1 · тест автообновления"
+	subtitle.text = "Этап 1 · Земля, взлёт, орбита"
 	subtitle.add_theme_font_size_override("font_size", 26)
 	subtitle.add_theme_color_override("font_color", Color(0.55, 0.68, 0.9))
 	title_box.add_child(subtitle)
@@ -103,6 +103,12 @@ func _build_ui() -> void:
 	buttons.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	buttons.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	_ui.add_child(buttons)
+
+	var fly := Button.new()
+	fly.text = "ПОЛЁТ"
+	fly.custom_minimum_size = Vector2(220, 0)
+	fly.pressed.connect(func() -> void: get_tree().change_scene_to_file("res://scenes/flight.tscn"))
+	buttons.add_child(fly)
 
 	_console_button = Button.new()
 	_console_button.pressed.connect(func() -> void: _console.visible = not _console.visible)

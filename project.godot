@@ -37,6 +37,7 @@ renderer/rendering_method="mobile"
 rendering_device/fallback_to_opengl3=true
 textures/vram_compression/import_etc2_astc=true
 anti_aliasing/quality/msaa_3d=1
+lights_and_shadows/tighter_shadow_caster_culling=false
 
 [starward]
 
