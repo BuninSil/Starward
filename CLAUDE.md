@@ -14,11 +14,9 @@ Claude игру не видит — опираемся на описания и 
 
 ## Сборка и релизы (GitHub Actions)
 - На каждый пуш в `main` — сборка APK headless-экспортом Godot (`.github/workflows/build.yml`).
-- Подпись — **одним постоянным keystore** из GitHub Secrets:
-  - `ANDROID_KEYSTORE_BASE64` — keystore в base64;
-  - `ANDROID_KEYSTORE_PASSWORD` — пароль (он же пароль ключа);
-  - `ANDROID_KEY_ALIAS` — alias ключа.
-- **Никогда не генерировать новый ключ в CI сборки.** Если секретов нет — сборка падает с понятной ошибкой. Иначе обновления не встанут поверх старой версии. Единственное место, где ключ создаётся, — разовый ручной workflow `create-keystore.yml`, который отказывается работать, если ключ уже есть. Инструкция — `docs/KEYSTORE.md`.
+- Подпись — **одним постоянным keystore**. Сейчас он лежит открыто в репо (`signing/release.keystore` + `signing/keystore.properties`, решение пользователя). Если заданы Secrets `ANDROID_KEYSTORE_BASE64` / `ANDROID_KEYSTORE_PASSWORD` / `ANDROID_KEY_ALIAS` — CI берёт их, но там обязан лежать **тот же** ключ.
+- Отпечаток сертификата закреплён в `signing/cert_sha256.txt`; CI падает, если APK подписан другим ключом.
+- **Никогда не генерировать новый ключ** — ни в CI, ни где-либо ещё. Иначе обновления не встанут поверх старой версии. Подробности — `docs/KEYSTORE.md`.
 - `versionCode = github.run_number`, `versionName = 0.1.<run_number>`.
 - После сборки — GitHub Release с тегом `v0.1.<run_number>`, APK как asset, в описании — список коммитов с прошлого релиза.
 

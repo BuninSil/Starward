@@ -16,3 +16,4 @@ android_plugin/.gradle/
 android_plugin/build/
 android_plugin/local.properties
 addons/starward_updater/bin/*.aar
+!signing/release.keystore

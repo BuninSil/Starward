@@ -1,7 +1,7 @@
 name: Build APK
 
 # main            -> signed APK + GitHub Release v0.1.<run_number>
-# other branches  -> CI check only: APK uploaded as a short-lived artifact, no release
+# other branches  -> CI check only: signed APK as a short-lived artifact, no release
 on:
   push:
     branches: ["**"]
@@ -31,33 +31,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Resolve version and signing mode
+      - name: Resolve version
         id: meta
-        env:
-          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           code="${{ github.run_number }}"
           name="${VERSION_PREFIX}.${code}"
           is_release=false
           [ "${GITHUB_REF}" = "refs/heads/main" ] && is_release=true
-          if [ -n "$KS_B64" ] && [ -n "$KS_PASS" ] && [ -n "$KS_ALIAS" ]; then
-            signed=true
-          else
-            signed=false
-            if [ "$is_release" = true ]; then
-              echo "::error title=No signing key::Secrets ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS are not set. CI never generates a key: see docs/KEYSTORE.md"
-              exit 1
-            fi
-            echo "::warning::Signing secrets are not set: building an UNSIGNED APK for CI check only."
-          fi
           {
             echo "code=$code"
             echo "name=$name"
             echo "tag=v$name"
             echo "release=$is_release"
-            echo "signed=$signed"
             echo "apk=${APP_NAME}-v${name}.apk"
           } >> "$GITHUB_OUTPUT"
 
@@ -117,27 +102,39 @@ jobs:
           sed -i -E "s|^build/commit=.*|build/commit=\"${GITHUB_SHA::7}\"|" project.godot
           sed -i -E "s|^version/code=.*|version/code=${code}|" export_presets.cfg
           sed -i -E "s|^version/name=.*|version/name=\"${name}\"|" export_presets.cfg
-          if [ "${{ steps.meta.outputs.signed }}" != "true" ]; then
-            sed -i -E "s|^package/signed=.*|package/signed=false|" export_presets.cfg
-          fi
           grep -E "^(config/version|build/version_code|build/commit)=" project.godot
           grep -E "^(version/code|version/name|package/signed)=" export_presets.cfg
 
-      - name: Decode keystore
-        if: steps.meta.outputs.signed == 'true'
+      # The ONE permanent key. Secrets (if set) must hold this same keystore;
+      # otherwise the repo copy in signing/ is used. Never generate a key here.
+      - name: Prepare signing key
         env:
           KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
-          echo "GODOT_ANDROID_KEYSTORE_RELEASE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          ks="$RUNNER_TEMP/release.keystore"
+          if [ -n "$KS_B64" ] && [ -n "$KS_PASS" ] && [ -n "$KS_ALIAS" ]; then
+            echo "Signing key: GitHub Secrets"
+            echo "$KS_B64" | base64 -d > "$ks"
+            alias="$KS_ALIAS"; pass="$KS_PASS"
+          else
+            echo "Signing key: signing/release.keystore from the repo"
+            cp signing/release.keystore "$ks"
+            alias=$(grep '^alias=' signing/keystore.properties | cut -d= -f2-)
+            pass=$(grep '^password=' signing/keystore.properties | cut -d= -f2-)
+          fi
+          echo "::add-mask::$pass"
+          {
+            echo "GODOT_ANDROID_KEYSTORE_RELEASE_PATH=$ks"
+            echo "GODOT_ANDROID_KEYSTORE_RELEASE_USER=$alias"
+            echo "GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD=$pass"
+          } >> "$GITHUB_ENV"
 
       - name: Import project
         run: godot --headless --path . --import
 
       - name: Export APK
-        env:
-          GODOT_ANDROID_KEYSTORE_RELEASE_USER: ${{ secrets.ANDROID_KEY_ALIAS }}
-          GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
           mkdir -p build
           out="$GITHUB_WORKSPACE/build/${{ steps.meta.outputs.apk }}"
@@ -159,12 +156,17 @@ jobs:
 
       - name: Verify signature
         id: sig
-        if: steps.meta.outputs.signed == 'true'
         run: |
           bt=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
           "$ANDROID_HOME/build-tools/$bt/apksigner" verify --print-certs "build/${{ steps.meta.outputs.apk }}" | tee build/certs.txt
           sha=$(grep -m1 "certificate SHA-256 digest" build/certs.txt | awk -F': ' '{print $2}')
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          expected=$(tr -d ' \n' < signing/cert_sha256.txt)
+          if [ "$sha" != "$expected" ]; then
+            echo "::error title=Wrong signing key::APK cert SHA-256 $sha != pinned $expected. Updates would not install over the old version."
+            exit 1
+          fi
+          echo "Signing cert matches the pinned key"
 
       - name: Upload APK artifact (branch builds)
         if: steps.meta.outputs.release != 'true'
