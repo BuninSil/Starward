@@ -25,7 +25,7 @@ func _ready() -> void:
 	_apo = _marker(Color(1.0, 0.8, 0.35))
 	_peri = _marker(Color(0.55, 1.0, 0.6))
 	_ship = _marker(Color(1, 1, 1))
-	_ship.text = "▲"
+	_ship.text = "▲ ракета"
 
 
 func _marker(c: Color) -> Label3D:
@@ -75,11 +75,11 @@ func rebuild(el: Dictionary, body: CelestialBody, rel_pos: DVec3, cam_dist: floa
 		peri_dir = (el.e_vec as DVec3).normalized().to_v3()
 	_peri.visible = el.e > 0.002
 	_peri.position = peri_dir * el.periapsis
-	_peri.text = "Пе %s" % fmt_dist(el.periapsis - body.radius)
+	_peri.text = "Перицентр %s" % fmt_dist(el.periapsis - body.radius)
 	_apo.visible = bound and el.e > 0.002
 	if _apo.visible:
 		_apo.position = -peri_dir * el.apoapsis
-		_apo.text = "Ап %s" % fmt_dist(el.apoapsis - body.radius)
+		_apo.text = "Апоцентр %s" % fmt_dist(el.apoapsis - body.radius)
 
 
 static func fmt_dist(m: float) -> String:

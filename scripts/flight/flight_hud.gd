@@ -8,9 +8,9 @@ const ConsoleScript := preload("res://scripts/ui/debug_console.gd")
 const OrbitLine := preload("res://scripts/flight/orbit_line.gd")
 
 const HOLD_MODES := [
-	["sas", "Стаб"], ["prograde", "Прогр"], ["retrograde", "Ретро"],
-	["normal", "Норм"], ["antinormal", "Антинорм"],
-	["radial_out", "Рад+"], ["radial_in", "Рад−"],
+	["sas", "Стабилизация"], ["prograde", "По ходу"], ["retrograde", "Против хода"],
+	["normal", "Нормаль"], ["antinormal", "Антинормаль"],
+	["radial_out", "От планеты"], ["radial_in", "К планете"],
 ]
 
 var flight: Node3D
@@ -78,6 +78,13 @@ func _button(text: String, cb: Callable, min_w := 0.0) -> Button:
 	return b
 
 
+func _small_button(text: String, cb: Callable) -> Button:
+	var b := _button(text, cb)
+	b.add_theme_font_size_override("font_size", 21)
+	b.custom_minimum_size = Vector2(0, 58)
+	return b
+
+
 func _build_telemetry() -> void:
 	var p := _panel()
 	p.position = Vector2(16, 16)
@@ -108,7 +115,7 @@ func _build_top_right() -> void:
 	box.add_child(row)
 	_map_btn = _button("Карта", _on_map, 120)
 	row.add_child(_map_btn)
-	row.add_child(_button("Меню", func() -> void: _debug_menu.visible = not _debug_menu.visible, 110))
+	row.add_child(_button("Дебаг", func() -> void: _debug_menu.visible = not _debug_menu.visible, 110))
 	var op := _panel()
 	op.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	op.size_flags_horizontal = Control.SIZE_SHRINK_END
@@ -127,16 +134,16 @@ func _build_warp() -> void:
 	row.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 16)
 	row.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	_root.add_child(row)
-	row.add_child(_button("‹", func() -> void: flight.set_warp(flight.warp_index - 1), 70))
+	row.add_child(_small_button("Медленнее", func() -> void: flight.set_warp(flight.warp_index - 1)))
 	var p := _panel()
 	_warp_label = Label.new()
-	_warp_label.custom_minimum_size = Vector2(110, 0)
+	_warp_label.custom_minimum_size = Vector2(150, 0)
 	_warp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_warp_label.add_theme_font_size_override("font_size", 26)
+	_warp_label.add_theme_font_size_override("font_size", 22)
 	p.add_child(_warp_label)
 	row.add_child(p)
-	row.add_child(_button("›", func() -> void: flight.set_warp(flight.warp_index + 1), 70))
-	row.add_child(_button("1x", func() -> void: flight.set_warp(0), 70))
+	row.add_child(_small_button("Быстрее", func() -> void: flight.set_warp(flight.warp_index + 1)))
+	row.add_child(_small_button("×1", func() -> void: flight.set_warp(0)))
 
 
 func _build_throttle() -> void:
@@ -161,8 +168,8 @@ func _build_throttle() -> void:
 	quick.alignment = BoxContainer.ALIGNMENT_CENTER
 	quick.add_theme_constant_override("separation", 10)
 	row.add_child(quick)
-	quick.add_child(_button("MAX", func() -> void: _throttle.set_value(1.0), 90))
-	quick.add_child(_button("0", func() -> void: _throttle.set_value(0.0), 90))
+	quick.add_child(_button("Полный", func() -> void: _throttle.set_value(1.0), 120))
+	quick.add_child(_button("Выкл", func() -> void: _throttle.set_value(0.0), 120))
 
 
 func _build_attitude() -> void:
@@ -174,7 +181,7 @@ func _build_attitude() -> void:
 	_root.add_child(box)
 
 	var grid := GridContainer.new()
-	grid.columns = 4
+	grid.columns = 3
 	grid.add_theme_constant_override("h_separation", 6)
 	grid.add_theme_constant_override("v_separation", 6)
 	box.add_child(grid)
@@ -183,8 +190,8 @@ func _build_attitude() -> void:
 		b.text = m[1]
 		b.toggle_mode = true
 		b.focus_mode = Control.FOCUS_NONE
-		b.custom_minimum_size = Vector2(0, 54)
-		b.add_theme_font_size_override("font_size", 20)
+		b.custom_minimum_size = Vector2(160, 54)
+		b.add_theme_font_size_override("font_size", 19)
 		var mode: String = m[0]
 		b.pressed.connect(func() -> void: _set_hold(mode))
 		grid.add_child(b)
@@ -198,8 +205,8 @@ func _build_attitude() -> void:
 	roll_box.alignment = BoxContainer.ALIGNMENT_CENTER
 	roll_box.add_theme_constant_override("separation", 10)
 	row.add_child(roll_box)
-	roll_box.add_child(_hold_button("Крен ⟲", -1.0))
-	roll_box.add_child(_hold_button("Крен ⟳", 1.0))
+	roll_box.add_child(_hold_button("Крен влево", -1.0))
+	roll_box.add_child(_hold_button("Крен вправо", 1.0))
 	_joystick = JoystickScript.new()
 	_joystick.radius = 105.0
 	row.add_child(_joystick)
@@ -210,8 +217,8 @@ func _hold_button(text: String, dir: float) -> Button:
 	var b := Button.new()
 	b.text = text
 	b.focus_mode = Control.FOCUS_NONE
-	b.custom_minimum_size = Vector2(120, 64)
-	b.add_theme_font_size_override("font_size", 22)
+	b.custom_minimum_size = Vector2(150, 64)
+	b.add_theme_font_size_override("font_size", 20)
 	b.button_down.connect(func() -> void: _roll = dir)
 	b.button_up.connect(func() -> void: _roll = 0.0)
 	return b
@@ -219,10 +226,10 @@ func _hold_button(text: String, dir: float) -> Button:
 
 func _build_stage() -> void:
 	_stage_btn = Button.new()
-	_stage_btn.text = "СТУПЕНЬ"
+	_stage_btn.text = "Сбросить ступень"
 	_stage_btn.focus_mode = Control.FOCUS_NONE
-	_stage_btn.custom_minimum_size = Vector2(230, 84)
-	_stage_btn.add_theme_font_size_override("font_size", 30)
+	_stage_btn.custom_minimum_size = Vector2(280, 84)
+	_stage_btn.add_theme_font_size_override("font_size", 26)
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.55, 0.16, 0.1, 0.9)
 	sb.set_corner_radius_all(14)
@@ -400,30 +407,31 @@ func _update_texts() -> void:
 	if not stage.is_empty() and stage.fuel_max > 0.0:
 		fuel_pct = stage.fuel / stage.fuel_max * 100.0
 	var dvs := v.stage_delta_v()
-	var state := "НА ЗЕМЛЕ" if v.landed else ("В АТМОСФЕРЕ" if alt < b.atmosphere_height else "КОСМОС")
+	var state := "на земле" if v.landed else ("в атмосфере" if alt < b.atmosphere_height else "в космосе")
 	_telemetry.text = "\n".join(PackedStringArray([
-		"Высота", "Скорость", "Вертик.", "Апоцентр", "Перицентр",
-		"Δv ступени", "Δv всего", "TWR", "Топливо", "Режим",
+		"Высота", "Скорость", "Над землёй", "Верт. скорость", "Апоцентр", "Перицентр",
+		"Запас Δv ступени", "Запас Δv всего", "Тяга / вес", "Топливо ступени", "Где",
 	]))
 	_telemetry_values.text = "\n".join(PackedStringArray([
 		OrbitLine.fmt_dist(alt),
-		"%d м/с  (пов. %d)" % [int(v.vel.length()), int(v.surface_velocity().length())],
+		"%d м/с" % int(v.vel.length()),
+		"%d м/с" % int(v.surface_velocity().length()),
 		"%+d м/с" % int(vs),
 		"—" if v.landed else OrbitLine.fmt_dist(el.apoapsis - b.radius),
 		"—" if v.landed else OrbitLine.fmt_dist(el.periapsis - b.radius),
 		"%d м/с" % int(dvs[dvs.size() - 1] if dvs.size() > 0 else 0.0),
 		"%d м/с" % int(v.total_delta_v()),
 		"%.2f" % v.twr(),
-		"%d%%  · ступеней %d" % [int(fuel_pct), v.stages.size()],
+		"%d%%  (ступеней %d)" % [int(fuel_pct), v.stages.size()],
 		state,
 	]))
-	_warp_label.text = "%dx" % flight.warp()
+	_warp_label.text = "Время ×%d" % flight.warp()
 	_warp_label.add_theme_color_override("font_color", Color(1, 0.75, 0.35) if flight.is_rails() else Color(0.9, 0.95, 1))
 	_stage_btn.disabled = v.stages.size() <= 1
 
 	var fixed := b.inertial_to_fixed(v.pos, flight.sim_time)
 	var ll := CelestialBody.lat_lon(fixed)
-	_overlay.text = "FPS %d · v%s (%d)\nSOI: %s\n%.4f°, %.4f°\nt = %s" % [
+	_overlay.text = "FPS %d · v%s (%d)\nСфера влияния: %s\nШир. %.4f°, долг. %.4f°\nВремя полёта %s" % [
 		Engine.get_frames_per_second(),
 		ProjectSettings.get_setting("application/config/version"),
 		int(ProjectSettings.get_setting("starward/build/version_code")),
