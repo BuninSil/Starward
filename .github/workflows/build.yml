@@ -159,7 +159,7 @@ jobs:
         run: |
           bt=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
           "$ANDROID_HOME/build-tools/$bt/apksigner" verify --print-certs "build/${{ steps.meta.outputs.apk }}" | tee build/certs.txt
-          sha=$(grep -m1 "certificate SHA-256 digest" build/certs.txt | awk -F': ' '{print $2}')
+          sha=$(grep -m1 "certificate SHA-256 digest" build/certs.txt | awk '{print $NF}')
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
           expected=$(tr -d ' \n' < signing/cert_sha256.txt)
           if [ "$sha" != "$expected" ]; then
