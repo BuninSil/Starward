@@ -148,6 +148,15 @@ jobs:
           fi
           ls -la build/
 
+      - name: Verify updater plugin is in the APK
+        run: |
+          bt=$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)
+          "$ANDROID_HOME/build-tools/$bt/aapt2" dump xmltree --file AndroidManifest.xml "build/${{ steps.meta.outputs.apk }}" > build/manifest.txt
+          for needle in org.godotengine.plugin.v2.StarwardUpdater REQUEST_INSTALL_PACKAGES UpdateFileProvider; do
+            grep -q "$needle" build/manifest.txt || { echo "::error::'$needle' missing from APK manifest"; exit 1; }
+          done
+          echo "Updater plugin present in manifest"
+
       - name: Verify signature
         id: sig
         if: steps.meta.outputs.signed == 'true'
