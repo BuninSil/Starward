@@ -73,7 +73,7 @@ func _build_ui() -> void:
 	title.add_theme_constant_override("outline_size", 0)
 	title_box.add_child(title)
 	var subtitle := Label.new()
-	subtitle.text = "Этап 1 · каркас проекта"
+	subtitle.text = "Этап 1 · тест автообновления"
 	subtitle.add_theme_font_size_override("font_size", 26)
 	subtitle.add_theme_color_override("font_color", Color(0.55, 0.68, 0.9))
 	title_box.add_child(subtitle)

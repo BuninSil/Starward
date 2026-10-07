@@ -89,7 +89,19 @@ func _append(text: String, level: int) -> void:
 
 
 class _CaptureLogger extends Logger:
+	## Engine errors that are expected on Android and recover on their own.
+	const BENIGN := [
+		# VK_ERROR_SURFACE_LOST_KHR / OUT_OF_DATE: app paused, shade or screenshot overlay.
+		"Couldn't present to Vulkan queue",
+	]
+
 	var _owner: WeakRef
+
+	static func _is_benign(msg: String) -> bool:
+		for b in BENIGN:
+			if msg.contains(b):
+				return true
+		return false
 
 	func _init(owner: Node) -> void:
 		_owner = weakref(owner)
@@ -121,6 +133,9 @@ class _CaptureLogger extends Logger:
 			kind = "SCRIPT ERROR"
 		elif error_type == ERROR_TYPE_SHADER:
 			kind = "SHADER ERROR"
+		if _is_benign(msg):
+			kind = "WARNING (benign)"
+			level = Level.WARN
 		var where := "%s (%s:%d)" % [function, file, line]
 		for bt in script_backtraces:
 			if bt.get_frame_count() > 0:
