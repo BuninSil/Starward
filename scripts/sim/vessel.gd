@@ -33,7 +33,8 @@ var input_pitch := 0.0
 var input_yaw := 0.0
 var input_roll := 0.0
 var sas := true
-var hold_mode := ""   ## "", prograde, retrograde, normal, antinormal, radial_out, radial_in
+var hold_mode := ""   ## "", prograde, retrograde, normal, antinormal, radial_out, radial_in, target
+var target_dir := Vector3.UP   ## world direction for hold_mode "target" (autopilot)
 
 # Telemetry from the last step.
 var last_thrust := 0.0
@@ -233,6 +234,7 @@ func hold_direction() -> Vector3:
 		"antinormal": return -normal
 		"radial_out": return radial
 		"radial_in": return -radial
+		"target": return target_dir.normalized()
 	return Vector3.ZERO
 
 
@@ -268,7 +270,14 @@ func _check_ground(t: float) -> void:
 	if speed > CRASH_SPEED:
 		destroyed_flag = true
 		throttle = 0.0
-		destroyed.emit("Удар о поверхность на скорости %d м/с" % int(speed))
+		var radial := pos.normalized()
+		var v_vert := vs.dot(radial)
+		var v_horiz := sqrt(maxf(speed * speed - v_vert * v_vert, 0.0))
+		var path_angle := rad_to_deg(atan2(-v_vert, v_horiz))   # 90 = straight down
+		var nose_angle := rad_to_deg(up_world().angle_to(radial.to_v3()))  # 0 = nose up
+		destroyed.emit("Удар о поверхность: %d м/с (вниз %d, вбок %d), угол падения %d°, нос от вертикали %d°, газ %d%%, ступеней %d" % [
+			int(speed), int(-v_vert), int(v_horiz), int(path_angle), int(nose_angle),
+			int(last_thrust > 0.0) * 100, stages.size()])
 		_surface_fixed = body.inertial_to_fixed(pos.normalized().mul(body.radius + height_offset), t)
 		_stick_to_surface(t)
 		return
