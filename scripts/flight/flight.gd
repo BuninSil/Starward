@@ -4,7 +4,7 @@ extends Node3D
 
 const PlanetView := preload("res://scripts/flight/planet_view.gd")
 const RocketView := preload("res://scripts/flight/rocket_view.gd")
-const OrbitLine := preload("res://scripts/flight/orbit_line.gd")
+const TrajectoryView := preload("res://scripts/flight/trajectory_view.gd")
 const HudScript := preload("res://scripts/flight/flight_hud.gd")
 const SKY_SHADER := preload("res://shaders/starfield.gdshader")
 
@@ -15,15 +15,23 @@ const SUN_DIR := Vector3(0.62, 0.35, 0.7)   ## towards the sun, inertial
 
 signal message(text: String)
 
-var body: CelestialBody
+var root_body: CelestialBody
+var bodies: Array[CelestialBody] = []
+## Current reference body (the vessel's SOI).
+var body: CelestialBody:
+	get:
+		return vessel.body if vessel != null else root_body
 var vessel: Vessel
 var sim_time := 0.0
 var warp_index := 0
 var map_mode := false
 
-var planet: Node3D
+var planets := {}          ## CelestialBody -> PlanetView
 var rocket: Node3D
-var orbit_line: Node3D
+var traj_view: Node3D
+var map_focus: CelestialBody
+var trajectory: Array[Dictionary] = []
+var _traj_timer := 0.0
 var hud: CanvasLayer
 var camera: Camera3D
 var sun: DirectionalLight3D
@@ -47,16 +55,21 @@ var _pinch_dist0 := 0.0
 
 
 func _ready() -> void:
-	body = SolarSystem.earth()
+	root_body = SolarSystem.build()
+	_collect_bodies(root_body)
 	_set_morning_at_site()
 	_build_environment()
-	planet = PlanetView.new()
-	add_child(planet)
-	planet.setup(body, SolarSystem.LAUNCH_LAT, SolarSystem.LAUNCH_LON, SUN_DIR.normalized())
+	for b in bodies:
+		var pv := PlanetView.new()
+		add_child(pv)
+		pv.setup(b, b == root_body, SolarSystem.LAUNCH_LAT, SolarSystem.LAUNCH_LON, SUN_DIR.normalized())
+		planets[b] = pv
 	rocket = RocketView.new()
 	add_child(rocket)
-	orbit_line = OrbitLine.new()
-	add_child(orbit_line)
+	traj_view = TrajectoryView.new()
+	add_child(traj_view)
+	traj_view.setup(root_body)
+	map_focus = root_body
 	camera = Camera3D.new()
 	camera.near = 0.3
 	camera.far = 3.0e7
@@ -68,7 +81,13 @@ func _ready() -> void:
 	hud.flight = self
 	add_child(hud)
 	reset_to_pad()
-	Log.info("Flight: scene ready, body=%s R=%.0f m g=%.2f" % [body.name, body.radius, body.surface_gravity()])
+	Log.info("Flight: scene ready, bodies=%d, body=%s R=%.0f m g=%.2f" % [bodies.size(), body.name, body.radius, body.surface_gravity()])
+
+
+func _collect_bodies(b: CelestialBody) -> void:
+	bodies.append(b)
+	for c in b.children:
+		_collect_bodies(c)
 
 
 ## Picks the planet spin offset so the launch site has the sun ~35° high, rising, at t = 0.
@@ -85,7 +104,7 @@ func _set_morning_at_site() -> void:
 		if e1 > e0 and err < best_err:
 			best_err = err
 			best = a
-	body.rotation_offset = best
+	root_body.rotation_offset = best
 
 
 func _build_environment() -> void:
@@ -122,10 +141,11 @@ func reset_to_pad() -> void:
 	if vessel:
 		autopilot.disengage(vessel)
 	var inf_fuel := vessel.infinite_fuel if vessel else false
-	vessel = Vessel.default_rocket(body)
+	vessel = Vessel.default_rocket(root_body)
 	vessel.infinite_fuel = inf_fuel
 	vessel.staged.connect(_on_staged)
 	vessel.destroyed.connect(_on_destroyed)
+	vessel.soi_changed.connect(_on_soi_changed)
 	vessel.place_on_surface(SolarSystem.LAUNCH_LAT, SolarSystem.LAUNCH_LON, sim_time)
 	# Roll so local +X points east and +Z south: joystick right = nose east.
 	var up := vessel.pos.normalized().to_v3()
@@ -161,6 +181,64 @@ func teleport_to_orbit(altitude: float) -> void:
 	Log.info("Flight: teleported to circular orbit %.0f m" % altitude)
 
 
+## Debug: circular orbit around another body (e.g. the Moon).
+func teleport_to_body_orbit(target: CelestialBody, altitude: float) -> void:
+	autopilot.disengage(vessel)
+	var r := target.radius + altitude
+	var radial := DVec3.new(1, 0, 0)
+	var east := DVec3.new(0, 1, 0).cross(radial).normalized()
+	vessel.body = target
+	vessel.pos = radial.mul(r)
+	vessel.vel = east.mul(sqrt(target.mu / r))
+	_after_teleport("орбита %s %.0f км" % [target.name, altitude / 1000.0])
+
+
+## Debug: on a Hohmann transfer from a 20 km orbit that hits the Moon's SOI.
+func teleport_to_moon_transfer() -> void:
+	autopilot.disengage(vessel)
+	var moon := SolarSystem.find(root_body, "Луна")
+	var r1 := root_body.radius + 20_000.0
+	var r_m := moon.orbit_a
+	var tof := 0.0
+	var m_hat := DVec3.new()
+	for _k in 5:
+		var a_t := (r1 + r_m) * 0.5
+		tof = PI * sqrt(a_t * a_t * a_t / root_body.mu)
+		var mp: DVec3 = moon.state_at(sim_time + tof)[0]
+		m_hat = mp.normalized()
+		r_m = mp.length()
+	var st: Array = moon.state_at(sim_time)
+	var h_m := (st[0] as DVec3).cross(st[1]).normalized()
+	# Aim slightly off-centre so the pass misses the surface (~periapsis 50-100 km).
+	var p_ship := m_hat.mul(-r1)
+	var v_dir := h_m.cross(p_ship.normalized())
+	var a_tr := (r1 + r_m - 2.0 * moon.radius) * 0.5
+	vessel.body = root_body
+	vessel.pos = p_ship
+	vessel.vel = v_dir.mul(sqrt(root_body.mu * (2.0 / r1 - 1.0 / a_tr)))
+	_after_teleport("перелёт к Луне")
+
+
+func _after_teleport(what: String) -> void:
+	vessel.landed = false
+	vessel.destroyed_flag = false
+	vessel.throttle = 0.0
+	vessel.ang_vel = Vector3.ZERO
+	vessel.attitude = Quaternion(Vector3.UP, vessel.vel.normalized().to_v3()).normalized()
+	set_warp(0)
+	rocket.visible = not map_mode
+	hud.on_vessel_reset()
+	_traj_timer = 0.0
+	Log.info("Flight: teleported: " + what)
+
+
+func _exit_tree() -> void:
+	# Break parent <-> children reference cycles of the body tree.
+	for b in bodies:
+		b.children.clear()
+		b.parent = null
+
+
 func _on_staged(_dropped: Dictionary) -> void:
 	var node: Node3D = rocket.detach_bottom_stage()
 	if node == null:
@@ -173,6 +251,7 @@ func _on_staged(_dropped: Dictionary) -> void:
 		"pos": vessel.pos.add(DVec3.from_v3(node.global_position)),
 		"vel": vessel.vel.sub(DVec3.from_v3(vessel.up_world() * Vessel.STAGE_SEPARATION_DV * 2.0)),
 		"basis": node.global_transform.basis,
+		"body": vessel.body,
 		"life": 25.0,
 	})
 	Log.info("Flight: stage separated, %d stage(s) left" % vessel.stages.size())
@@ -196,6 +275,14 @@ func _on_autopilot_finished(ok: bool, msg: String) -> void:
 	message.emit(("Автопилот: " if ok else "Автопилот не справился: ") + msg)
 	Log.info("Autopilot: finished ok=%s %s" % [ok, msg])
 	hud.on_autopilot_finished()
+
+
+func _on_soi_changed(from: CelestialBody, to: CelestialBody) -> void:
+	Log.info("Flight: SOI %s -> %s at t=%.0f" % [from.name, to.name, sim_time])
+	message.emit("Сфера влияния: %s" % to.name)
+	if map_mode:
+		map_focus = to
+	_traj_timer = 0.0
 
 
 func _on_destroyed(reason: String) -> void:
@@ -256,12 +343,13 @@ func _step_debris(dt: float) -> void:
 		var d: Dictionary = _debris[i]
 		d.life -= dt
 		var p: DVec3 = d.pos
+		var db: CelestialBody = d.body
 		var r2 := p.length_squared()
-		var acc := p.mul(-body.mu / (r2 * sqrt(r2)))
+		var acc := p.mul(-db.mu / (r2 * sqrt(r2)))
 		var v: DVec3 = d.vel
 		v.add_scaled(acc, dt)
-		var alt := sqrt(r2) - body.radius
-		var rho := body.density_at(alt)
+		var alt := sqrt(r2) - db.radius
+		var rho := db.density_at(alt)
 		if rho > 0.0:
 			v.add_scaled(v, -minf(rho * v.length() * 0.0004 * dt, 0.5))
 		p.add_scaled(v, dt)
@@ -272,25 +360,65 @@ func _step_debris(dt: float) -> void:
 
 func _process(delta: float) -> void:
 	# Floating origin: vessel at 0; everything else relative to it in doubles.
-	var planet_rel := vessel.pos.mul(-1.0)
-	planet.update_view(planet_rel, sim_time)
-	orbit_line.position = planet_rel.to_v3()
+	var vabs := vessel_absolute()
+	for b in bodies:
+		var rel := b.absolute_position(sim_time).sub(vabs)
+		(planets[b] as Node3D).call("update_view", rel, sim_time, 1.0 if map_mode else _view_scale(rel.length(), b.radius))
 	rocket.basis = Basis(vessel.attitude)
 	rocket.update_visual(delta)
 	for d in _debris:
 		var n: Node3D = d.node
-		n.global_transform = Transform3D(d.basis, (d.pos as DVec3).sub(vessel.pos).to_v3())
+		var dabs := (d.body as CelestialBody).absolute_position(sim_time).add(d.pos)
+		n.global_transform = Transform3D(d.basis, dabs.sub(vabs).to_v3())
 
 	_update_sky()
 	if map_mode:
 		_update_map_camera()
 	else:
 		_update_flight_camera()
-	orbit_line.visible = map_mode
+	traj_view.visible = map_mode
 	if map_mode:
-		var el := OrbitMath.elements(vessel.pos, vessel.vel, body.mu)
-		orbit_line.rebuild(el, body, vessel.pos, camera.global_position.distance_to(orbit_line.global_position))
-		orbit_line.update_ship_arrow(vessel.up_world(), vessel.vel.to_v3(), camera)
+		_traj_timer -= delta
+		if _traj_timer <= 0.0:
+			_traj_timer = 0.25
+			refresh_trajectory()
+		traj_view.update_view(_body_pos_at, sim_time, camera, vessel.up_world(), vessel.vel.to_v3())
+
+
+## Scaled-space rule for the flight view: bodies whose surface is farther than
+## NEAR_LIMIT are drawn at a compressed (log) distance with the same angular size.
+const NEAR_LIMIT := 120_000.0
+
+
+func _view_scale(dist: float, radius: float) -> float:
+	if dist - radius <= NEAR_LIMIT:
+		return 1.0
+	var d := dist - radius
+	var compressed := NEAR_LIMIT * (1.0 + log(d / NEAR_LIMIT) * 0.25)
+	return (compressed + radius * (compressed / d)) / dist
+
+
+func vessel_absolute() -> DVec3:
+	return vessel.body.absolute_position(sim_time).add(vessel.pos)
+
+
+## Render position (relative to the vessel) of a body's centre.
+func body_render_pos(b: CelestialBody) -> Vector3:
+	return b.absolute_position(sim_time).sub(vessel_absolute()).to_v3()
+
+
+## Render position of a body at time t (t < 0 = now), relative to the vessel now.
+func _body_pos_at(b: CelestialBody, t: float) -> Vector3:
+	var tt := sim_time if t < 0.0 else t
+	return b.absolute_position(tt).sub(vessel_absolute()).to_v3()
+
+
+func refresh_trajectory() -> void:
+	if vessel.landed or vessel.destroyed_flag:
+		trajectory = []
+	else:
+		trajectory = Trajectory.predict(vessel.pos, vessel.vel, vessel.body, sim_time)
+	traj_view.set_trajectory(trajectory, vessel.body)
 
 
 func _update_sky() -> void:
@@ -308,9 +436,14 @@ func _update_sky() -> void:
 
 
 func _update_flight_camera() -> void:
-	# Keep far/near sane for depth precision and culling: far just covers the planet.
+	# Keep far/near sane for depth precision and culling: far just covers the bodies.
 	camera.near = 0.5
-	camera.far = vessel.pos.length() + body.radius * 1.05
+	var far := 1000.0
+	var vabs := vessel_absolute()
+	for b in bodies:
+		var dist := b.absolute_position(sim_time).sub(vabs).length()
+		far = maxf(far, (dist + b.radius * 1.05) * _view_scale(dist, b.radius))
+	camera.far = far
 	# Camera orbits the vessel in the local horizon frame (up = away from the planet),
 	# yaw 0 = looking north from the south side.
 	var up := vessel.pos.normalized().to_v3()
@@ -326,20 +459,29 @@ func _update_flight_camera() -> void:
 
 
 func _update_map_camera() -> void:
-	camera.far = map_dist + body.radius * 2.0 + vessel.pos.length()
-	camera.near = maxf(map_dist * 0.001, 10.0)
-	var center := orbit_line.position
+	var center := body_render_pos(map_focus)
 	var offset := Vector3(
 		sin(map_yaw) * cos(map_pitch),
 		sin(map_pitch),
 		cos(map_yaw) * cos(map_pitch)) * map_dist
+	var far := map_dist * 3.0
+	for b in bodies:
+		far = maxf(far, (center + offset).distance_to(body_render_pos(b)) + b.radius)
+	camera.far = far * 1.5
+	camera.near = maxf(map_dist * 0.001, 10.0)
 	camera.global_transform = Transform3D(Basis(), center + offset).looking_at(center, Vector3.UP)
+
+
+func _map_zoom_limits() -> Vector2:
+	return Vector2(map_focus.radius * 1.2, maxf(map_focus.radius * 200.0, 1.0e8 if map_focus.parent == null else map_focus.soi_radius * 3.0))
 
 
 func toggle_map() -> void:
 	map_mode = not map_mode
 	rocket.visible = not map_mode and not vessel.destroyed_flag
 	if map_mode:
+		map_focus = vessel.body
+		_traj_timer = 0.0
 		map_dist = maxf(vessel.pos.length() * 3.2, body.radius * 3.2)
 		# Look from above the orbit plane, offset toward the vessel: orbit reads as an ellipse.
 		var radial := vessel.pos.normalized().to_v3()
@@ -349,6 +491,14 @@ func toggle_map() -> void:
 			d = radial
 		map_yaw = atan2(d.x, d.z)
 		map_pitch = clampf(asin(clampf(d.y, -1.0, 1.0)), -1.5, 1.5)
+
+
+## Cycle the map focus through all bodies.
+func cycle_map_focus() -> void:
+	var i := bodies.find(map_focus)
+	map_focus = bodies[(i + 1) % bodies.size()]
+	map_dist = map_focus.radius * (12.0 if map_focus.parent != null else 80.0)
+	message.emit("Карта: %s" % map_focus.name)
 
 
 # --- Camera input (touches not taken by the HUD) --------------------------------------
@@ -378,20 +528,23 @@ func _unhandled_input(event: InputEvent) -> void:
 			var dnow := (ps[0] as Vector2).distance_to(ps[1])
 			var k := _pinch_dist0 / maxf(dnow, 1.0)
 			if map_mode:
-				map_dist = clampf(_pinch_start * k, body.radius * 1.2, body.radius * 60.0)
+				var lim := _map_zoom_limits()
+				map_dist = clampf(_pinch_start * k, lim.x, lim.y)
 			else:
 				cam_dist = clampf(_pinch_start * k, 8.0, 2000.0)
 	elif event is InputEventMouseButton and event.pressed:
 		# Desktop testing: wheel zoom.
 		var f := 0.9 if event.button_index == MOUSE_BUTTON_WHEEL_UP else (1.1 if event.button_index == MOUSE_BUTTON_WHEEL_DOWN else 1.0)
 		if map_mode:
-			map_dist = clampf(map_dist * f, body.radius * 1.2, body.radius * 60.0)
+			var lim := _map_zoom_limits()
+			map_dist = clampf(map_dist * f, lim.x, lim.y)
 		else:
 			cam_dist = clampf(cam_dist * f, 8.0, 2000.0)
 
 
 func zoom(f: float) -> void:
 	if map_mode:
-		map_dist = clampf(map_dist * f, body.radius * 1.2, body.radius * 60.0)
+		var lim := _map_zoom_limits()
+		map_dist = clampf(map_dist * f, lim.x, lim.y)
 	else:
 		cam_dist = clampf(cam_dist * f, 8.0, 2000.0)

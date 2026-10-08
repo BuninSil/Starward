@@ -5,7 +5,7 @@ extends CanvasLayer
 const JoystickScript := preload("res://scripts/ui/joystick.gd")
 const ThrottleScript := preload("res://scripts/ui/throttle_bar.gd")
 const ConsoleScript := preload("res://scripts/ui/debug_console.gd")
-const OrbitLine := preload("res://scripts/flight/orbit_line.gd")
+const OrbitLine := preload("res://scripts/flight/trajectory_view.gd")
 
 const HOLD_MODES := [
 	["sas", "Стабилизация"], ["prograde", "По ходу"], ["retrograde", "Против хода"],
@@ -24,6 +24,7 @@ var _throttle_label: Label
 var _warp_label: Label
 var _stage_btn: Button
 var _map_btn: Button
+var _focus_btn: Button
 var _ap_btn: Button
 var _ap_label: Label
 var _hold_buttons := {}
@@ -115,6 +116,9 @@ func _build_top_right() -> void:
 	row.alignment = BoxContainer.ALIGNMENT_END
 	row.add_theme_constant_override("separation", 8)
 	box.add_child(row)
+	_focus_btn = _button("Фокус", func() -> void: flight.cycle_map_focus(), 120)
+	_focus_btn.visible = false
+	row.add_child(_focus_btn)
 	_map_btn = _button("Карта", _on_map, 120)
 	row.add_child(_map_btn)
 	row.add_child(_button("Дебаг", func() -> void: _debug_menu.visible = not _debug_menu.visible, 110))
@@ -329,6 +333,12 @@ func _build_debug_menu() -> void:
 	grid.add_child(_button("Орбита 100 км", func() -> void:
 		_debug_menu.hide()
 		flight.teleport_to_orbit(100_000.0)))
+	grid.add_child(_button("Перелёт к Луне", func() -> void:
+		_debug_menu.hide()
+		flight.teleport_to_moon_transfer()))
+	grid.add_child(_button("Орбита Луны 30 км", func() -> void:
+		_debug_menu.hide()
+		flight.teleport_to_body_orbit(SolarSystem.find(flight.root_body, "Луна"), 30_000.0)))
 	grid.add_child(_button("Время ×1000", func() -> void: flight.set_warp(flight.WARPS.find(1000))))
 	grid.add_child(_button("Консоль", func() -> void: _console.visible = not _console.visible))
 	grid.add_child(_button("Скопировать лог", Log.copy_to_clipboard))
@@ -424,6 +434,7 @@ func on_autopilot_finished() -> void:
 func _on_map() -> void:
 	flight.toggle_map()
 	_map_btn.text = "Полёт" if flight.map_mode else "Карта"
+	_focus_btn.visible = flight.map_mode
 
 
 func _process(delta: float) -> void:
@@ -462,7 +473,8 @@ func _update_texts() -> void:
 	if not stage.is_empty() and stage.fuel_max > 0.0:
 		fuel_pct = stage.fuel / stage.fuel_max * 100.0
 	var dvs := v.stage_delta_v()
-	var state := "на земле" if v.landed else ("в атмосфере" if alt < b.atmosphere_height else "в космосе")
+	var state := "на поверхности" if v.landed else ("в атмосфере" if alt < b.atmosphere_height else "в космосе")
+	state += " · " + b.name
 	_telemetry.text = "\n".join(PackedStringArray([
 		"Высота", "Скорость", "Над землёй", "Верт. скорость", "Апоцентр", "Перицентр",
 		"Запас Δv ступени", "Запас Δv всего", "Тяга / вес", "Топливо ступени", "Где",

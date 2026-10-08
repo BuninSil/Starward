@@ -20,11 +20,13 @@ var _site: Node3D          ## ground patch, positioned in double precision
 var _site_normal_fixed: DVec3
 
 
-func setup(b: CelestialBody, lat: float, lon: float, sun_dir: Vector3) -> void:
+## with_site: build the detailed launch pad patch at lat/lon (Earth only for now).
+func setup(b: CelestialBody, with_site: bool, lat: float, lon: float, sun_dir: Vector3) -> void:
 	body = b
 	site_lat = lat
 	site_lon = lon
 	_site_normal_fixed = CelestialBody.surface_normal(lat, lon)
+	name = b.name
 
 	_spin = Node3D.new()
 	add_child(_spin)
@@ -32,8 +34,8 @@ func setup(b: CelestialBody, lat: float, lon: float, sun_dir: Vector3) -> void:
 	var mesh := SphereMesh.new()
 	mesh.radius = b.radius
 	mesh.height = b.radius * 2.0
-	mesh.radial_segments = SPHERE_SEGMENTS
-	mesh.rings = SPHERE_SEGMENTS / 2
+	mesh.radial_segments = SPHERE_SEGMENTS if b.has_atmosphere() else 256
+	mesh.rings = mesh.radial_segments / 2
 	mesh.material = _make_surface_material()
 	_surface = MeshInstance3D.new()
 	_surface.mesh = mesh
@@ -60,16 +62,25 @@ func setup(b: CelestialBody, lat: float, lon: float, sun_dir: Vector3) -> void:
 		_atmosphere.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(_atmosphere)
 
-	_site = Node3D.new()
-	_site.top_level = true
-	add_child(_site)
-	_build_site()
+	if with_site:
+		_site = Node3D.new()
+		_site.top_level = true
+		add_child(_site)
+		_build_site()
 
 
 ## origin_rel: planet centre relative to the vessel (inertial axes), double precision.
-func update_view(origin_rel: DVec3, t: float) -> void:
-	position = origin_rel.to_v3()
+## view_scale < 1: far body drawn closer and smaller with the same angular size
+## (keeps the camera depth range small).
+func update_view(origin_rel: DVec3, t: float, view_scale := 1.0) -> void:
+	position = origin_rel.mul(view_scale).to_v3()
+	scale = Vector3.ONE * view_scale
 	_spin.basis = Basis(Vector3.UP, body.rotation_angle(t))
+	if _site == null:
+		return
+	_site.visible = view_scale >= 0.999
+	if not _site.visible:
+		return
 	# Ground patch: compute its world position in doubles relative to the vessel,
 	# then undo the parent offset so float error stays small near the vessel.
 	var n := body.fixed_to_inertial(_site_normal_fixed, t)
@@ -90,11 +101,20 @@ func _make_surface_material() -> StandardMaterial3D:
 	noise.frequency = 0.0035
 	noise.fractal_octaves = 7
 	var ramp := Gradient.new()
-	ramp.offsets = PackedFloat32Array([0.0, 0.46, 0.5, 0.52, 0.62, 0.74, 0.84])
-	ramp.colors = PackedColorArray([
-		Color(0.02, 0.07, 0.22), Color(0.05, 0.2, 0.45), Color(0.76, 0.7, 0.5),
-		Color(0.24, 0.42, 0.17), Color(0.15, 0.32, 0.12), Color(0.45, 0.38, 0.3),
-		Color(0.95, 0.96, 0.98)])
+	if body.has_atmosphere():
+		ramp.offsets = PackedFloat32Array([0.0, 0.46, 0.5, 0.52, 0.62, 0.74, 0.84])
+		ramp.colors = PackedColorArray([
+			Color(0.02, 0.07, 0.22), Color(0.05, 0.2, 0.45), Color(0.76, 0.7, 0.5),
+			Color(0.24, 0.42, 0.17), Color(0.15, 0.32, 0.12), Color(0.45, 0.38, 0.3),
+			Color(0.95, 0.96, 0.98)])
+	else:
+		# Airless grey body: dark maria and bright highlands.
+		noise.seed = 21
+		noise.frequency = 0.006
+		ramp.offsets = PackedFloat32Array([0.0, 0.38, 0.48, 0.62, 1.0])
+		ramp.colors = PackedColorArray([
+			Color(0.22, 0.22, 0.23), Color(0.3, 0.3, 0.31), Color(0.5, 0.49, 0.47),
+			Color(0.62, 0.61, 0.58), Color(0.78, 0.77, 0.74)])
 	var tex := NoiseTexture2D.new()
 	tex.width = 2048
 	tex.height = 1024
