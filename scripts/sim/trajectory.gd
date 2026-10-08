@@ -72,7 +72,7 @@ static func _segment(r: DVec3, v: DVec3, b: CelestialBody, t0: float) -> Diction
 		var rv := OrbitMath.propagate(r, v, b.mu, tt)
 		var p: DVec3 = rv[0]
 		# Surface impact
-		if p.length() < b.radius or tt >= impact_limit:
+		if p.length() < b.radius or (impact_limit < horizon and tt >= impact_limit):
 			var ti := _bisect(r, v, b, prev_t, tt, func(q: DVec3, _t: float) -> bool: return q.length() < b.radius)
 			seg.t1 = t0 + ti
 			seg.end = "impact"

@@ -187,5 +187,45 @@ func _initialize() -> void:
 	if not enc.is_empty():
 		print("moon periapsis: %.0f km (r=%.0f km)" % [(enc.el.periapsis - moon.radius) / 1000.0, enc.el.periapsis / 1000.0])
 
+	# 9. Planner: full Moon mission on rails with impulsive burns
+	var t9 := 1000.0
+	var rr := DVec3.new(root.radius + 20_000.0, 0, 0).rotated_y(0.3)
+	var vv := DVec3.new(0, 1, 0).cross(rr).normalized().mul(sqrt(root.mu / rr.length()))
+	var t_c := Time.get_ticks_msec()
+	var plan := Planner.plan_transfer(rr, vv, root, t9, moon, 30_000.0)
+	print("transfer plan in %d ms: %s" % [Time.get_ticks_msec() - t_c, str(plan.keys())])
+	check(not plan.is_empty(), "found a Moon transfer window")
+	if not plan.is_empty():
+		var nd: ManeuverNode = plan.node
+		print("  burn in %.1f h, dv=%.1f pro %.1f nor, moon peri %.1f km, arrive in %.2f d" % [
+			(nd.t - t9) / 3600.0, nd.prograde, nd.normal, plan.peri_alt / 1000.0, (plan.t_arrive - t9) / 86400.0])
+		check(absf(plan.peri_alt - 30_000.0) < 3000.0, "transfer periapsis near 30 km")
+		# Fly it: propagate to the node, apply dv, rails to the Moon.
+		var mv := Vessel.default_rocket(root)
+		mv.landed = false
+		mv.pos = rr.copy()
+		mv.vel = vv.copy()
+		mv.rails_step(nd.t - t9, t9)
+		var dvw := ManeuverNode.dv_vector(mv.pos, mv.vel, nd.prograde, nd.normal, nd.radial)
+		mv.vel = mv.vel.add(dvw)
+		mv.rails_step(plan.t_arrive - nd.t + 60.0, nd.t)
+		check(mv.body == moon, "arrived in Moon SOI")
+		var t_now: float = plan.t_arrive + 60.0
+		var cap := Planner.circularize(mv.pos, mv.vel, moon, t_now, "peri")
+		print("  capture dv=%.1f at peri alt %.1f km" % [cap.prograde, (OrbitMath.elements(mv.pos, mv.vel, moon.mu).periapsis - moon.radius) / 1000.0])
+		mv.rails_step(cap.t - t_now, t_now)
+		mv.vel = mv.vel.add(ManeuverNode.dv_vector(mv.pos, mv.vel, cap.prograde, 0, 0))
+		t_now = cap.t
+		var mel2 := OrbitMath.elements(mv.pos, mv.vel, moon.mu)
+		print("  moon orbit: apo %.1f peri %.1f km" % [(mel2.apoapsis - moon.radius) / 1000.0, (mel2.periapsis - moon.radius) / 1000.0])
+		check(mel2.e < 0.01, "circular lunar orbit after capture")
+		t_c = Time.get_ticks_msec()
+		var ret := Planner.plan_return(mv.pos, mv.vel, moon, t_now, 4000.0)
+		print("  return plan in %d ms: dv=%.1f earth peri %.1f km" % [Time.get_ticks_msec() - t_c,
+			ret.node.prograde if not ret.is_empty() else 0.0, ret.peri_alt / 1000.0 if not ret.is_empty() else 0.0])
+		check(not ret.is_empty() and absf(ret.peri_alt - 4000.0) < 1500.0, "return periapsis near 4 km")
+		var total_dv: float = nd.total() + absf(cap.prograde) + (ret.node.prograde if not ret.is_empty() else 0.0)
+		print("  mission dv from LEO: %.0f m/s" % total_dv)
+
 	print("FAILURES: %d" % failures)
 	quit(1 if failures > 0 else 0)
