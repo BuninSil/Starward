@@ -7,6 +7,9 @@ const RocketView := preload("res://scripts/flight/rocket_view.gd")
 const TrajectoryView := preload("res://scripts/flight/trajectory_view.gd")
 const HudScript := preload("res://scripts/flight/flight_hud.gd")
 const SKY_SHADER := preload("res://shaders/starfield.gdshader")
+const AstronautScript := preload("res://scripts/eva/astronaut.gd")
+const TetherScript := preload("res://scripts/eva/tether.gd")
+const EvaHudScript := preload("res://scripts/eva/eva_hud.gd")
 
 const DT := 1.0 / 60.0
 const WARPS: Array[int] = [1, 2, 4, 10, 50, 100, 1000, 10000]
@@ -48,6 +51,13 @@ var map_pitch := 0.5
 var map_dist := 2_500_000.0
 
 var autopilot := Autopilot.new()
+# EVA
+var eva_mode := false
+var astronaut: RigidBody3D = null
+var tether: Node3D = null
+var eva_hud: CanvasLayer = null
+var eva_cam_dist := 5.0
+var _ship_kick := 0.0
 var maneuver: ManeuverNode = null
 var preview: Array[Dictionary] = []
 var maneuver_info := ""
@@ -140,6 +150,7 @@ func _build_environment() -> void:
 # --- Vessel lifecycle -------------------------------------------------------------
 
 func reset_to_pad() -> void:
+	abort_eva()
 	for d in _debris:
 		d.node.queue_free()
 	_debris.clear()
@@ -225,6 +236,7 @@ func teleport_to_moon_transfer() -> void:
 
 
 func _after_teleport(what: String) -> void:
+	abort_eva()
 	vessel.landed = false
 	vessel.destroyed_flag = false
 	vessel.throttle = 0.0
@@ -319,6 +331,9 @@ func is_rails() -> bool:
 
 func set_warp(i: int) -> void:
 	i = clampi(i, 0, WARPS.size() - 1)
+	if eva_mode and i > 0:
+		message.emit("Во время выхода ускорение времени недоступно")
+		i = 0
 	if WARPS[i] > PHYSICS_WARP_MAX and not vessel.can_rails_warp():
 		var why := "двигатель работает" if vessel.throttle > 0.0 else "в атмосфере"
 		message.emit("Ускорение > %dx недоступно: %s" % [PHYSICS_WARP_MAX, why])
@@ -349,6 +364,8 @@ func sim_tick() -> void:
 				set_warp(0)
 			_step_debris(step)
 			return
+	if eva_mode:
+		_eva_physics(DT)
 	var n := warp()
 	for _k in n:
 		autopilot.update(vessel, sim_time)
@@ -422,6 +439,9 @@ func _process(delta: float) -> void:
 	_update_sky()
 	if map_mode:
 		_update_map_camera()
+	elif eva_mode:
+		_update_eva_camera()
+		tether.update_visual(hatch_world(), astronaut.global_position + astronaut.global_transform.basis * Vector3(0, 0.15, 0.32), camera.global_position, delta)
 	else:
 		_update_flight_camera()
 	traj_view.visible = map_mode
@@ -527,6 +547,154 @@ func describe_trajectory(segs: Array[Dictionary]) -> String:
 	if s0.end == "exit":
 		parts.append("уход из сферы %s" % b.name)
 	return ", ".join(parts)
+
+
+# --- EVA ----------------------------------------------------------------------------
+
+func can_eva() -> String:
+	if eva_mode:
+		return "уже снаружи"
+	if vessel.destroyed_flag:
+		return "корабль разрушен"
+	if vessel.landed:
+		return "выход на поверхность — в следующем этапе"
+	if vessel.body.has_atmosphere() and vessel.altitude() < vessel.body.atmosphere_height:
+		return "в атмосфере выходить нельзя"
+	if vessel.throttle > 0.0:
+		return "сначала выключи двигатель"
+	return ""
+
+
+func start_eva() -> void:
+	var why := can_eva()
+	if why != "":
+		message.emit("Выход невозможен: " + why)
+		return
+	autopilot.stop(vessel)
+	if map_mode:
+		toggle_map()
+	set_warp(0)
+	vessel.throttle = 0.0
+	vessel.sas = true
+	vessel.hold_mode = ""
+	astronaut = AstronautScript.new()
+	add_child(astronaut)
+	var hatch: Vector3 = hatch_world()
+	var out: Vector3 = (hatch - rocket.global_transform * (rocket.hatch_local() - Vector3(0, 0, 0.35))).normalized()
+	astronaut.global_transform = Transform3D(Basis.looking_at(-out, rocket.global_transform.basis.y), hatch + out * 0.3)
+	astronaut.linear_velocity = out * 0.15
+	tether = TetherScript.new()
+	add_child(tether)
+	tether.length = 12.0
+	tether.reset_chain(hatch, astronaut.global_position)
+	eva_mode = true
+	_tether_broken_reported = false
+	hud.visible = false
+	eva_hud = EvaHudScript.new()
+	eva_hud.flight = self
+	add_child(eva_hud)
+	eva_cam_dist = 5.0
+	Log.info("EVA: started at %s, alt %.0f m" % [vessel.body.name, vessel.altitude()])
+	message.emit("Выход в открытый космос. Трос 12 м")
+
+
+func end_eva(forced_reason := "") -> void:
+	if not eva_mode:
+		return
+	if forced_reason == "" and astronaut_hatch_distance() > 2.5:
+		message.emit("До люка дальше 2.5 м")
+		return
+	astronaut.queue_free()
+	tether.queue_free()
+	eva_hud.queue_free()
+	astronaut = null
+	tether = null
+	eva_hud = null
+	eva_mode = false
+	hud.visible = true
+	if forced_reason != "":
+		Log.warn("EVA: " + forced_reason)
+		hud.show_destroyed(forced_reason)
+	else:
+		Log.info("EVA: back inside")
+		message.emit("Космонавт в корабле")
+
+
+## Removes the astronaut without checks (reset / teleport).
+func abort_eva() -> void:
+	if not eva_mode:
+		return
+	astronaut.queue_free()
+	tether.queue_free()
+	eva_hud.queue_free()
+	astronaut = null
+	tether = null
+	eva_hud = null
+	eva_mode = false
+	hud.visible = true
+
+
+func hatch_world() -> Vector3:
+	return rocket.global_transform * rocket.hatch_local()
+
+
+func astronaut_hatch_distance() -> float:
+	if astronaut == null:
+		return INF
+	return astronaut.global_position.distance_to(hatch_world())
+
+
+## Debug: put the astronaut back at the hatch with a fresh tether.
+func debug_eva_to_hatch() -> void:
+	if not eva_mode:
+		return
+	astronaut.global_position = hatch_world()
+	astronaut.linear_velocity = Vector3.ZERO
+	astronaut.angular_velocity = Vector3.ZERO
+	tether.attach(3.0)
+	tether.reset_chain(hatch_world(), astronaut.global_position)
+	_tether_broken_reported = false
+
+
+## Debug: fire the ship's engine for 2 s during EVA (to test tether loads).
+func debug_ship_kick() -> void:
+	_ship_kick = 2.0
+	message.emit("Корабль: тяга 2 с")
+
+
+func _eva_physics(dt: float) -> void:
+	if _ship_kick > 0.0:
+		_ship_kick -= dt
+		vessel.throttle = 1.0 if _ship_kick > 0.0 else 0.0
+	var ship_acc := vessel.last_accel_ng
+	astronaut.physics_tick(dt, ship_acc)
+	var anchor := hatch_world()
+	var f: Vector3 = tether.force_on(astronaut.global_position, astronaut.linear_velocity, anchor, Vector3.ZERO, dt)
+	astronaut.apply_central_force(f)
+	if tether.broken and not _tether_broken_reported:
+		_tether_broken_reported = true
+		Log.warn("EVA: tether broke")
+		message.emit("ТРОС ОБОРВАЛСЯ!")
+	if astronaut.oxygen <= 0.0:
+		end_eva("Космонавт погиб: кончился кислород")
+
+
+var _tether_broken_reported := false
+
+
+func _update_eva_camera() -> void:
+	# Chase camera behind the astronaut's back, up = astronaut up.
+	var b := astronaut.global_transform.basis
+	var target := astronaut.global_position + b.y * 0.4
+	var cam_pos := target + b.z * eva_cam_dist + b.y * eva_cam_dist * 0.25
+	camera.near = 0.1
+	var far := 1000.0
+	var vabs := vessel_absolute()
+	for bd in bodies:
+		var dist := bd.absolute_position(sim_time).sub(vabs).length()
+		far = maxf(far, (dist + bd.radius * 1.05) * _view_scale(dist, bd.radius))
+	camera.far = far
+	camera.global_transform = Transform3D(Basis(), cam_pos).looking_at(target, b.y)
 
 
 func _view_scale(dist: float, radius: float) -> float:
@@ -656,7 +824,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		if _touches.size() == 2:
 			var ps: Array = _touches.values()
 			_pinch_dist0 = (ps[0] as Vector2).distance_to(ps[1])
-			_pinch_start = map_dist if map_mode else cam_dist
+			_pinch_start = map_dist if map_mode else (eva_cam_dist if eva_mode else cam_dist)
 	elif event is InputEventScreenDrag:
 		_touches[event.index] = event.position
 		if _touches.size() == 1:
@@ -674,6 +842,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			if map_mode:
 				var lim := _map_zoom_limits()
 				map_dist = clampf(_pinch_start * k, lim.x, lim.y)
+			elif eva_mode:
+				eva_cam_dist = clampf(_pinch_start * k, 2.0, 40.0)
 			else:
 				cam_dist = clampf(_pinch_start * k, 8.0, 2000.0)
 	elif event is InputEventMouseButton and event.pressed:

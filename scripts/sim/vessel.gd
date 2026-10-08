@@ -46,6 +46,7 @@ var target_dir := Vector3.UP   ## world direction for hold_mode "target" (autopi
 var last_thrust := 0.0
 var last_drag := 0.0
 var last_g := 0.0
+var last_accel_ng := Vector3.ZERO   ## non-gravitational acceleration (thrust + drag), world
 
 
 func mass() -> float:
@@ -169,6 +170,7 @@ func step(dt: float, t: float) -> void:
 	last_thrust = thrust
 
 	if landed:
+		last_accel_ng = Vector3.ZERO
 		if thrust / m <= body.mu / pos.length_squared() * 1.0001:
 			_stick_to_surface(t + dt)
 			ang_vel = Vector3.ZERO
@@ -193,8 +195,9 @@ func _accel(p: DVec3, v: DVec3, thrust: float, m: float) -> DVec3:
 	var r := sqrt(r2)
 	var a := p.mul(-body.mu / (r2 * r))
 	last_g = body.mu / r2
+	var a_ng := DVec3.new()
 	if thrust > 0.0:
-		a.add_scaled(DVec3.from_v3(up_world()), thrust / m)
+		a_ng.add_scaled(DVec3.from_v3(up_world()), thrust / m)
 	var rho := body.density_at(r - body.radius)
 	last_drag = 0.0
 	if rho > 0.0:
@@ -206,8 +209,9 @@ func _accel(p: DVec3, v: DVec3, thrust: float, m: float) -> DVec3:
 			var cda := 0.5 * area + (CHUTE_CDA if chute_deployed else 0.0)
 			var drag := 0.5 * rho * sp * sp * cda
 			last_drag = drag
-			a.add_scaled(vrel, -drag / (m * sp))
-	return a
+			a_ng.add_scaled(vrel, -drag / (m * sp))
+	last_accel_ng = a_ng.to_v3()
+	return a.add(a_ng)
 
 
 func _max_diameter() -> float:
@@ -336,6 +340,7 @@ func rails_step(dt: float, t: float) -> void:
 		_stick_to_surface(t + dt)
 		return
 	ang_vel = Vector3.ZERO
+	last_accel_ng = Vector3.ZERO
 	var done := 0.0
 	var guard := 0
 	while done < dt and guard < 200:

@@ -7,6 +7,9 @@ var _stage_nodes: Array[Node3D] = []
 var _flame: MeshInstance3D
 var _flame_mat: StandardMaterial3D
 var _chute: Node3D
+## Ship collision for EVA (follows the rocket node, pushes the astronaut).
+var collider: AnimatableBody3D
+const HATCH_HEIGHT := 0.35   ## fraction of the capsule height
 
 
 func build(v: Vessel) -> void:
@@ -30,6 +33,7 @@ func build(v: Vessel) -> void:
 		y += s.length
 	_build_flame()
 	_build_chute()
+	_build_collider()
 
 
 func _material(color: Color, metallic := 0.3, rough := 0.5) -> StandardMaterial3D:
@@ -103,6 +107,17 @@ func _build_capsule(node: Node3D, s: Dictionary) -> void:
 	cone.material_override = _material(Color(0.82, 0.84, 0.86), 0.5, 0.45)
 	cone.position.y = s.length * 0.5
 	node.add_child(cone)
+	# Hatch on the +Z side of the capsule.
+	var hatch := MeshInstance3D.new()
+	var hm := BoxMesh.new()
+	hm.size = Vector3(0.75, 0.9, 0.08)
+	hatch.mesh = hm
+	hatch.material_override = _material(Color(0.25, 0.27, 0.3), 0.6, 0.4)
+	var hy: float = s.length * HATCH_HEIGHT
+	var hr := lerpf(d * 0.5, d * 0.18, HATCH_HEIGHT)
+	hatch.position = Vector3(0, hy, hr - 0.02)
+	hatch.rotation.x = -atan2(d * 0.5 - d * 0.18, s.length)
+	node.add_child(hatch)
 	var window := MeshInstance3D.new()
 	var wm := SphereMesh.new()
 	wm.radius = 0.22
@@ -132,6 +147,35 @@ func _build_flame() -> void:
 	_flame.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(_flame)
 	_flame.visible = false
+
+
+## Hatch position in the rocket node's local frame (slightly outside the hull).
+func hatch_local() -> Vector3:
+	if _stage_nodes.is_empty():
+		return Vector3.ZERO
+	var cap: Node3D = _stage_nodes[0]
+	var s: Dictionary = vessel.stages[0]
+	var d: float = s.diameter
+	var hr := lerpf(d * 0.5, d * 0.18, HATCH_HEIGHT)
+	return cap.position + Vector3(0, float(s.length) * HATCH_HEIGHT, hr + 0.35)
+
+
+func _build_collider() -> void:
+	if collider:
+		collider.queue_free()
+	collider = AnimatableBody3D.new()
+	collider.sync_to_physics = false
+	add_child(collider)
+	for i in _stage_nodes.size():
+		var s: Dictionary = vessel.stages[i]
+		var node: Node3D = _stage_nodes[i]
+		var cs := CollisionShape3D.new()
+		var sh := CylinderShape3D.new()
+		sh.radius = float(s.diameter) * (0.38 if i == 0 else 0.5)
+		sh.height = float(s.length)
+		cs.shape = sh
+		cs.position = node.position + Vector3(0, float(s.length) * 0.5, 0)
+		collider.add_child(cs)
 
 
 func _build_chute() -> void:
@@ -180,6 +224,7 @@ func detach_bottom_stage() -> Node3D:
 	for n in _stage_nodes:
 		n.position.y -= drop
 	node.set_meta("global", gt)
+	_build_collider()
 	return node
 
 

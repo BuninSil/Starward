@@ -31,6 +31,12 @@ window/handheld/orientation=4
 
 pointing/emulate_touch_from_mouse=true
 
+[physics]
+
+3d/default_gravity=0.0
+3d/default_linear_damp=0.0
+3d/default_angular_damp=0.0
+
 [rendering]
 
 renderer/rendering_method="mobile"

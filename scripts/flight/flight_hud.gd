@@ -27,6 +27,7 @@ var _warp_label: Label
 var _stage_btn: Button
 var _map_btn: Button
 var _focus_btn: Button
+var _eva_btn: Button
 var _node_btn: Button
 var _chute_btn: Button
 var _ap_panel: PanelContainer
@@ -141,6 +142,8 @@ func _build_top_right() -> void:
 	_focus_btn = _button("Фокус: тело", func() -> void: flight.cycle_map_focus(), 160)
 	_focus_btn.visible = false
 	map_row.add_child(_focus_btn)
+	_eva_btn = _button("Выйти наружу", func() -> void: flight.start_eva(), 190)
+	row.add_child(_eva_btn)
 	_map_btn = _button("Карта", _on_map, 120)
 	row.add_child(_map_btn)
 	row.add_child(_button("Дебаг", func() -> void: _debug_menu.visible = not _debug_menu.visible, 110))
@@ -502,6 +505,7 @@ func _process(delta: float) -> void:
 	var ap: Autopilot = flight.autopilot
 	_ap_label.text = "Автопилот · " + ap.status() if ap.active() else ""
 	_ap_btn.text = "Стоп автопилот" if ap.active() else "Автопилот"
+	_eva_btn.visible = flight.can_eva() == "" and not flight.map_mode
 	_chute_btn.visible = v.has_chute() and not v.chute_deployed and not v.landed \
 		and v.body.has_atmosphere() and v.altitude() < v.body.atmosphere_height
 
