@@ -37,6 +37,45 @@ static func elements(r: DVec3, v: DVec3, mu: float) -> Dictionary:
 	}
 
 
+## State [r, v] from classical elements. Frame: Y = north (spin axis), orbits with
+## inc = 0 lie in the XZ plane and are prograde (counter-clockwise seen from +Y).
+static func state_from_elements(a: float, e: float, inc: float, lan: float, argp: float,
+		mean_anomaly: float, mu: float) -> Array:
+	var m := fmod(mean_anomaly, TAU)
+	var ea := m if e < 0.8 else PI
+	for _i in 30:
+		var d := (ea - e * sin(ea) - m) / (1.0 - e * cos(ea))
+		ea -= d
+		if absf(d) < 1e-12:
+			break
+	var cos_e := cos(ea)
+	var sin_e := sin(ea)
+	var r := a * (1.0 - e * cos_e)
+	# Perifocal coordinates.
+	var px := a * (cos_e - e)
+	var py := a * sqrt(1.0 - e * e) * sin_e
+	var k := sqrt(mu * a) / r
+	var vx := -k * sin_e
+	var vy := k * sqrt(1.0 - e * e) * cos_e
+	var rp := _perifocal_to_frame(px, py, inc, lan, argp)
+	var vp := _perifocal_to_frame(vx, vy, inc, lan, argp)
+	return [rp, vp]
+
+
+## Standard z-up rotation (Ω, i, ω), then mapped to the game frame (x, z, -y).
+static func _perifocal_to_frame(px: float, py: float, inc: float, lan: float, argp: float) -> DVec3:
+	var co := cos(lan)
+	var so := sin(lan)
+	var ci := cos(inc)
+	var si := sin(inc)
+	var cw := cos(argp)
+	var sw := sin(argp)
+	var x := (co * cw - so * sw * ci) * px + (-co * sw - so * cw * ci) * py
+	var y := (so * cw + co * sw * ci) * px + (-so * sw + co * cw * ci) * py
+	var z := (sw * si) * px + (cw * si) * py
+	return DVec3.new(x, z, -y)
+
+
 # --- Kepler propagation (universal variables, Curtis alg. 3.3/3.4) -----------
 
 static func _stumpff_c(z: float) -> float:

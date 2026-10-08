@@ -7,6 +7,7 @@ extends RefCounted
 signal staged(dropped: Dictionary)
 signal destroyed(reason: String)
 signal landed_changed(landed: bool)
+signal soi_changed(from: CelestialBody, to: CelestialBody)
 
 const SAS_ACCEL := 1.2          ## rad/s^2 max angular acceleration from control
 const CRASH_SPEED := 12.0       ## m/s impact speed that destroys the craft
@@ -161,6 +162,7 @@ func step(dt: float, t: float) -> void:
 	vel.add_scaled(a0.add(a1), 0.5 * dt)
 
 	_check_ground(t + dt)
+	check_soi(t + dt)
 
 
 func _accel(p: DVec3, v: DVec3, thrust: float, m: float) -> DVec3:
@@ -302,19 +304,66 @@ func can_rails_warp() -> bool:
 	return throttle == 0.0 and altitude() > body.atmosphere_height
 
 
-## Advances the state analytically by dt (no thrust, no drag).
+## Advances the state analytically by dt (no thrust, no drag). Splits the step
+## near sphere-of-influence boundaries so transitions happen close to the edge.
 func rails_step(dt: float, t: float) -> void:
 	if landed or destroyed_flag:
 		_stick_to_surface(t + dt)
 		return
-	var rv := OrbitMath.propagate(pos, vel, body.mu, dt)
-	pos = rv[0]
-	vel = rv[1]
 	ang_vel = Vector3.ZERO
-	if altitude() < body.atmosphere_height:
-		# Entered the atmosphere during warp; caller drops warp to 1x.
-		pass
-	_check_ground(t + dt)
+	var done := 0.0
+	var guard := 0
+	while done < dt and guard < 200:
+		guard += 1
+		var h := minf(dt - done, _rails_substep(t + done))
+		var rv := OrbitMath.propagate(pos, vel, body.mu, h)
+		pos = rv[0]
+		vel = rv[1]
+		done += h
+		check_soi(t + done)
+		_check_ground(t + done)
+		if landed or destroyed_flag:
+			return
+
+
+## Largest safe rails step: limits the distance travelled to a fraction of the
+## distance to the nearest SOI boundary.
+func _rails_substep(t: float) -> float:
+	var speed := maxf(vel.length(), 1.0)
+	var margin := INF
+	if body.parent != null:
+		margin = body.soi_radius - pos.length()
+	for c in body.children:
+		var rel := pos.sub(c.state_at(t)[0])
+		margin = minf(margin, rel.length() - c.soi_radius)
+	if is_inf(margin):
+		return INF
+	return maxf(absf(margin) * 0.5 / speed, 5.0)
+
+
+## Switches the reference body when crossing a sphere of influence. Returns true if changed.
+func check_soi(t: float) -> bool:
+	if landed:
+		return false
+	if body.parent != null and pos.length() > body.soi_radius:
+		var st: Array = body.state_at(t)
+		var old := body
+		pos = pos.add(st[0])
+		vel = vel.add(st[1])
+		body = body.parent
+		soi_changed.emit(old, body)
+		return true
+	for c in body.children:
+		var st: Array = c.state_at(t)
+		var rel := pos.sub(st[0])
+		if rel.length() < c.soi_radius:
+			var old := body
+			pos = rel
+			vel = vel.sub(st[1])
+			body = c
+			soi_changed.emit(old, body)
+			return true
+	return false
 
 
 # --- Prebuilt rocket ------------------------------------------------------------

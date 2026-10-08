@@ -120,5 +120,44 @@ func _initialize() -> void:
 	check(not res.is_empty() and res[0][0], "autopilot reached orbit")
 	check(fe.periapsis - earth.radius > earth.atmosphere_height, "autopilot periapsis above atmosphere")
 
+	# 6. Moon: elements round trip, SOI size, period
+	var root := SolarSystem.build()
+	var moon := SolarSystem.find(root, "Луна")
+	var mst: Array = moon.state_at(12345.0)
+	var mel := OrbitMath.elements(mst[0], mst[1], root.mu)
+	print("moon: a=%.0f km e=%.4f inc=%.2f deg period=%.2f d soi=%.0f km" % [mel.a / 1000.0, mel.e,
+		rad_to_deg(mel.inc), moon.orbital_period() / 86400.0, moon.soi_radius / 1000.0])
+	check(absf(mel.a - moon.orbit_a) < 1.0 and absf(mel.e - moon.orbit_e) < 1e-6, "moon elements round trip")
+	check(absf(rad_to_deg(mel.inc) - 28.58) < 1e-6, "moon inclination")
+	var mst2: Array = moon.state_at(moon.orbital_period() + 12345.0)
+	check((mst2[0] as DVec3).sub(mst[0]).length() < 10.0, "moon orbit periodic")
+	var kp := OrbitMath.propagate(mst[0], mst[1], root.mu, 50000.0)
+	var mst3: Array = moon.state_at(12345.0 + 50000.0)
+	check((kp[0] as DVec3).sub(mst3[0]).length() < 50.0, "moon ephemeris == Kepler")
+
+	# 7. SOI transitions keep the absolute state continuous
+	var sv := Vessel.default_rocket(root)
+	sv.landed = false
+	var t_enc := 200000.0
+	var mpos: DVec3 = moon.state_at(t_enc)[0]
+	var mvel: DVec3 = moon.state_at(t_enc)[1]
+	sv.pos = mpos.add(mpos.normalized().mul(-moon.soi_radius - 20_000.0))
+	sv.vel = mvel.add(mpos.normalized().mul(800.0))
+	var abs0 := sv.pos.copy()
+	var v_abs0 := sv.vel.copy()
+	var changed := []
+	sv.soi_changed.connect(func(_a, b): changed.append(b.name))
+	sv.rails_step(200.0, t_enc)
+	print("soi changes: ", changed, " now in ", sv.body.name, " r=", sv.pos.length() / 1000.0, " km")
+	check(changed == ["Луна"], "entered Moon SOI")
+	var abs1 := sv.pos.add(moon.state_at(t_enc + 200.0)[0])
+	var kep_abs := OrbitMath.propagate(abs0, v_abs0, root.mu, 200.0)
+	print("abs position diff vs earth-only propagation: %.2f km" % (abs1.sub(kep_abs[0]).length() / 1000.0))
+	check(abs1.sub(kep_abs[0]).length() < 5000.0, "absolute position continuous across SOI")
+	sv.pos = sv.pos.normalized().mul(moon.soi_radius + 1000.0)
+	sv.vel = sv.pos.normalized().mul(500.0)
+	sv.rails_step(10.0, t_enc + 200.0)
+	check(sv.body == root, "left Moon SOI back to Earth")
+
 	print("FAILURES: %d" % failures)
 	quit(1 if failures > 0 else 0)

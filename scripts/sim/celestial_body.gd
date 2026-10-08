@@ -15,8 +15,53 @@ var sea_level_density: float = 0.0      ## kg/m^3
 var scale_height: float = 1.0           ## m
 var atmosphere_height: float = 0.0      ## m, above it density is treated as 0
 
+# Orbit around the parent (patched conics). Root body has parent == null.
+var parent: CelestialBody = null
+var children: Array[CelestialBody] = []
+var orbit_a := 0.0          ## semi-major axis, m
+var orbit_e := 0.0
+var orbit_inc := 0.0        ## rad, to the parent's equator (XZ plane)
+var orbit_lan := 0.0        ## longitude of ascending node, rad
+var orbit_argp := 0.0       ## argument of periapsis, rad
+var orbit_m0 := 0.0         ## mean anomaly at t = 0, rad
+
 var color: Color = Color.WHITE
 var atmosphere_color: Color = Color(0.35, 0.6, 1.0)
+
+
+func add_child_body(c: CelestialBody) -> void:
+	c.parent = self
+	children.append(c)
+	# Laplace SOI radius.
+	c.soi_radius = c.orbit_a * pow(c.mu / mu, 0.4)
+
+
+func orbital_period() -> float:
+	if parent == null:
+		return INF
+	return TAU * sqrt(pow(orbit_a, 3) / parent.mu)
+
+
+## [pos, vel] relative to the parent at time t.
+func state_at(t: float) -> Array:
+	if parent == null:
+		return [DVec3.new(), DVec3.new()]
+	var n := TAU / orbital_period()
+	return OrbitMath.state_from_elements(orbit_a, orbit_e, orbit_inc, orbit_lan, orbit_argp,
+		orbit_m0 + n * t, parent.mu)
+
+
+## Position relative to the root body (Earth for now) at time t.
+func absolute_position(t: float) -> DVec3:
+	if parent == null:
+		return DVec3.new()
+	return parent.absolute_position(t).add(state_at(t)[0])
+
+
+func absolute_velocity(t: float) -> DVec3:
+	if parent == null:
+		return DVec3.new()
+	return parent.absolute_velocity(t).add(state_at(t)[1])
 
 
 func surface_gravity() -> float:
