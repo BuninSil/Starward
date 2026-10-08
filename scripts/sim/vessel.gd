@@ -24,6 +24,11 @@ var infinite_fuel := false
 var landed := true
 var destroyed_flag := false
 var height_offset := 0.0        ## distance from vessel origin to its lowest point
+var chute_deployed := false
+var touchdown_speed := 0.0
+
+const CHUTE_CDA := 260.0        ## Cd * area of the open main chute, m^2
+const CHUTE_MAX_SPEED := 500.0  ## faster than this the chute tears
 
 ## Each stage: {name, dry_mass, fuel, fuel_max, thrust_vac, isp_sl, isp_vac,
 ##              diameter, length, has_engine}
@@ -126,6 +131,24 @@ func stage() -> bool:
 	return true
 
 
+func has_chute() -> bool:
+	return not stages.is_empty() and stages[0].get("parachute", false)
+
+
+## Opens the parachute. Returns "" on success or the reason it did not open.
+func deploy_chute() -> String:
+	if chute_deployed:
+		return ""
+	if not has_chute():
+		return "парашюта нет"
+	if body.density_at(altitude()) <= 0.0:
+		return "парашют работает только в атмосфере"
+	if surface_velocity().length() > CHUTE_MAX_SPEED:
+		return "слишком быстро для парашюта (> %d м/с)" % int(CHUTE_MAX_SPEED)
+	chute_deployed = true
+	return ""
+
+
 # --- Simulation ---------------------------------------------------------------
 
 ## One physics step of dt seconds at time t (time after the step is t + dt).
@@ -180,7 +203,8 @@ func _accel(p: DVec3, v: DVec3, thrust: float, m: float) -> DVec3:
 		var sp := vrel.length()
 		if sp > 0.01:
 			var area := PI * pow(_max_diameter() * 0.5, 2)
-			var drag := 0.5 * rho * sp * sp * 0.5 * area
+			var cda := 0.5 * area + (CHUTE_CDA if chute_deployed else 0.0)
+			var drag := 0.5 * rho * sp * sp * cda
 			last_drag = drag
 			a.add_scaled(vrel, -drag / (m * sp))
 	return a
@@ -269,6 +293,7 @@ func _check_ground(t: float) -> void:
 		return
 	var vs := surface_velocity()
 	var speed := vs.length()
+	touchdown_speed = speed
 	if speed > CRASH_SPEED:
 		destroyed_flag = true
 		throttle = 0.0
@@ -383,8 +408,9 @@ static func default_rocket(b: CelestialBody) -> Vessel:
 	v.body = b
 	v.stages = [
 		make_stage("Капсула", 1200.0, 0.0, 0.0, 1.0, 1.0, 1.8, 2.2),
-		make_stage("Вторая ступень", 800.0, 2000.0, 60_000.0, 300.0, 340.0, 2.0, 4.0),
+		make_stage("Вторая ступень", 800.0, 2400.0, 60_000.0, 300.0, 340.0, 2.0, 4.0),
 		make_stage("Первая ступень", 2500.0, 9000.0, 270_000.0, 280.0, 310.0, 2.5, 9.0),
 	]
+	v.stages[0]["parachute"] = true
 	v.height_offset = 0.0
 	return v

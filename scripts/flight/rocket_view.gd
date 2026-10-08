@@ -6,6 +6,7 @@ var vessel: Vessel
 var _stage_nodes: Array[Node3D] = []
 var _flame: MeshInstance3D
 var _flame_mat: StandardMaterial3D
+var _chute: Node3D
 
 
 func build(v: Vessel) -> void:
@@ -28,6 +29,7 @@ func build(v: Vessel) -> void:
 			_build_tank_stage(node, s, i == v.stages.size() - 1)
 		y += s.length
 	_build_flame()
+	_build_chute()
 
 
 func _material(color: Color, metallic := 0.3, rough := 0.5) -> StandardMaterial3D:
@@ -132,6 +134,40 @@ func _build_flame() -> void:
 	_flame.visible = false
 
 
+func _build_chute() -> void:
+	_chute = Node3D.new()
+	var canopy := MeshInstance3D.new()
+	var cm := SphereMesh.new()
+	cm.radius = 8.0
+	cm.height = 8.0
+	cm.is_hemisphere = true
+	cm.radial_segments = 24
+	cm.rings = 8
+	canopy.mesh = cm
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(1.0, 0.45, 0.15)
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat.roughness = 0.8
+	canopy.material_override = mat
+	canopy.position.y = 14.0
+	_chute.add_child(canopy)
+	for k in 8:
+		var line := MeshInstance3D.new()
+		var lm := CylinderMesh.new()
+		lm.top_radius = 0.03
+		lm.bottom_radius = 0.03
+		lm.height = 14.0
+		line.mesh = lm
+		var ang := TAU * k / 8.0
+		var top := Vector3(cos(ang) * 7.5, 14.0, sin(ang) * 7.5)
+		line.position = top * 0.5
+		line.look_at_from_position(top * 0.5, Vector3.ZERO, Vector3.FORWARD if absf(top.normalized().y) > 0.99 else Vector3.UP)
+		line.rotate_object_local(Vector3.RIGHT, PI * 0.5)
+		_chute.add_child(line)
+	add_child(_chute)
+	_chute.visible = false
+
+
 ## Drops the visual of the bottom stage; returns it re-parented for debris.
 func detach_bottom_stage() -> Node3D:
 	if _stage_nodes.size() <= 1:
@@ -148,6 +184,10 @@ func detach_bottom_stage() -> Node3D:
 
 
 func update_visual(delta: float) -> void:
+	if _chute and not _stage_nodes.is_empty():
+		_chute.visible = vessel.chute_deployed
+		var top: Node3D = _stage_nodes[0]
+		_chute.position.y = top.position.y + float(vessel.stages[0].length)
 	var on := vessel.last_thrust > 0.0
 	_flame.visible = on
 	if not on or _stage_nodes.is_empty():

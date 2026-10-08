@@ -6,6 +6,8 @@ const JoystickScript := preload("res://scripts/ui/joystick.gd")
 const ThrottleScript := preload("res://scripts/ui/throttle_bar.gd")
 const ConsoleScript := preload("res://scripts/ui/debug_console.gd")
 const OrbitLine := preload("res://scripts/flight/trajectory_view.gd")
+const AutopilotPanel := preload("res://scripts/flight/autopilot_panel.gd")
+const ManeuverPanel := preload("res://scripts/flight/maneuver_panel.gd")
 
 const HOLD_MODES := [
 	["sas", "Стабилизация"], ["prograde", "По ходу"], ["retrograde", "Против хода"],
@@ -25,6 +27,10 @@ var _warp_label: Label
 var _stage_btn: Button
 var _map_btn: Button
 var _focus_btn: Button
+var _node_btn: Button
+var _chute_btn: Button
+var _ap_panel: PanelContainer
+var _mn_panel: PanelContainer
 var _ap_btn: Button
 var _ap_label: Label
 var _hold_buttons := {}
@@ -54,6 +60,15 @@ func _ready() -> void:
 	_build_toast()
 	_build_debug_menu()
 	_build_destroyed()
+	_ap_panel = AutopilotPanel.new()
+	_ap_panel.flight = flight
+	_ap_panel.hide()
+	_root.add_child(_ap_panel)
+	_mn_panel = ManeuverPanel.new()
+	_mn_panel.flight = flight
+	_mn_panel.hide()
+	_root.add_child(_mn_panel)
+
 	_console = ConsoleScript.new()
 	_console.hide()
 	_root.add_child(_console)
@@ -116,9 +131,16 @@ func _build_top_right() -> void:
 	row.alignment = BoxContainer.ALIGNMENT_END
 	row.add_theme_constant_override("separation", 8)
 	box.add_child(row)
-	_focus_btn = _button("Фокус", func() -> void: flight.cycle_map_focus(), 120)
+	# Map-only buttons live in their own row under the overlay.
+	var map_row := HBoxContainer.new()
+	map_row.alignment = BoxContainer.ALIGNMENT_END
+	map_row.add_theme_constant_override("separation", 8)
+	_node_btn = _button("Манёвр", _on_node_button, 140)
+	_node_btn.visible = false
+	map_row.add_child(_node_btn)
+	_focus_btn = _button("Фокус: тело", func() -> void: flight.cycle_map_focus(), 160)
 	_focus_btn.visible = false
-	row.add_child(_focus_btn)
+	map_row.add_child(_focus_btn)
 	_map_btn = _button("Карта", _on_map, 120)
 	row.add_child(_map_btn)
 	row.add_child(_button("Дебаг", func() -> void: _debug_menu.visible = not _debug_menu.visible, 110))
@@ -132,6 +154,7 @@ func _build_top_right() -> void:
 	_overlay.add_theme_color_override("font_color", Color(0.6, 0.95, 0.7))
 	_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	op.add_child(_overlay)
+	box.add_child(map_row)
 
 
 func _build_warp() -> void:
@@ -259,9 +282,18 @@ func _build_stage() -> void:
 	_stage_btn.pressed.connect(_on_stage)
 	_root.add_child(_stage_btn)
 
+	_chute_btn = _button("Парашют", _on_chute, 170)
+	_chute_btn.add_theme_font_size_override("font_size", 22)
+	_chute_btn.custom_minimum_size = Vector2(170, 70)
+	_chute_btn.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 24)
+	_chute_btn.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_chute_btn.position += Vector2(250, -96)
+	_chute_btn.visible = false
+	_root.add_child(_chute_btn)
+
 	_ap_btn = _button("Автопилот на орбиту", _on_autopilot, 270)
 	_ap_btn.add_theme_font_size_override("font_size", 22)
-	_ap_btn.custom_minimum_size = Vector2(270, 70)
+	_ap_btn.custom_minimum_size = Vector2(230, 70)
 	var apsb := StyleBoxFlat.new()
 	apsb.bg_color = Color(0.06, 0.3, 0.38, 0.9)
 	apsb.set_corner_radius_all(12)
@@ -422,9 +454,26 @@ func _on_autopilot() -> void:
 	if flight.autopilot.active():
 		flight.disengage_autopilot("кнопка")
 	else:
-		flight.engage_autopilot(20_000.0)
-		if flight.autopilot.active():
-			toast("Автопилот: выход на орбиту 20 км")
+		_ap_panel.visible = not _ap_panel.visible
+
+
+func _on_node_button() -> void:
+	if flight.maneuver == null:
+		flight.create_maneuver()
+	_mn_panel.visible = flight.maneuver != null
+	on_maneuver_changed()
+
+
+func on_maneuver_changed() -> void:
+	if flight.maneuver == null:
+		_mn_panel.hide()
+		return
+	_mn_panel.refresh(flight.maneuver_info)
+
+
+func _on_chute() -> void:
+	var err: String = flight.vessel.deploy_chute()
+	toast("Парашют раскрыт" if err == "" else err)
 
 
 func on_autopilot_finished() -> void:
@@ -435,6 +484,9 @@ func _on_map() -> void:
 	flight.toggle_map()
 	_map_btn.text = "Полёт" if flight.map_mode else "Карта"
 	_focus_btn.visible = flight.map_mode
+	_node_btn.visible = flight.map_mode
+	if not flight.map_mode:
+		_mn_panel.hide()
 
 
 func _process(delta: float) -> void:
@@ -448,8 +500,10 @@ func _process(delta: float) -> void:
 		_throttle.set_value_no_signal(v.throttle)
 	_throttle_label.text = "Газ %d%%" % int(round(v.throttle * 100.0))
 	var ap: Autopilot = flight.autopilot
-	_ap_label.text = "Автопилот: " + ap.status() if ap.active() else ""
-	_ap_btn.text = "Стоп автопилот" if ap.active() else "Автопилот на орбиту"
+	_ap_label.text = "Автопилот · " + ap.status() if ap.active() else ""
+	_ap_btn.text = "Стоп автопилот" if ap.active() else "Автопилот"
+	_chute_btn.visible = v.has_chute() and not v.chute_deployed and not v.landed \
+		and v.body.has_atmosphere() and v.altitude() < v.body.atmosphere_height
 
 	if _toast_time > 0.0:
 		_toast_time -= delta

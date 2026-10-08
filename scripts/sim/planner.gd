@@ -223,3 +223,52 @@ static func deorbit(r: DVec3, v: DVec3, b: CelestialBody, t_now: float, target_a
 	# Burn at the current point: keep r1 as apoapsis.
 	var v_needed := sqrt(b.mu * (2.0 / r1 - 1.0 / a))
 	return ManeuverNode.new(t_now + delay, b, v_needed - (st[1] as DVec3).length())
+
+
+## Small mid-course correction ~2 minutes from now to hit `target_alt` at `target`.
+static func plan_correction(r: DVec3, v: DVec3, b: CelestialBody, t_now: float, target: CelestialBody,
+		target_alt: float) -> ManeuverNode:
+	var node := ManeuverNode.new(t_now + 120.0, b)
+	var best := _transfer_score(r, v, t_now, node, target, target_alt)
+	for st in [20.0, 5.0, 1.0, 0.2, 0.05]:
+		var improved := true
+		var guard := 0
+		while improved and guard < 20:
+			improved = false
+			guard += 1
+			for d in [[st, 0, 0], [-st, 0, 0], [0, st, 0], [0, -st, 0], [0, 0, st], [0, 0, -st]]:
+				var cand := ManeuverNode.new(node.t, b, node.prograde + d[0], node.normal + d[1], node.radial + d[2])
+				var sc := _transfer_score(r, v, t_now, cand, target, target_alt)
+				if sc.score < best.score:
+					best = sc
+					node = cand
+					improved = true
+	if not best.encounter:
+		return null
+	return node
+
+
+## Correction burn ~2 minutes from now (prograde/radial) so the periapsis in the
+## current SOI gets `target_alt`. Used on the way back from the Moon.
+static func plan_periapsis_correction(r: DVec3, v: DVec3, b: CelestialBody, t_now: float, target_alt: float) -> ManeuverNode:
+	var node := ManeuverNode.new(t_now + 120.0, b)
+	var score := func(n: ManeuverNode) -> float:
+		var st := n.state_before(r, v, t_now)
+		var dv := ManeuverNode.dv_vector(st[0], st[1], n.prograde, n.normal, n.radial)
+		var el := OrbitMath.elements(st[0], (st[1] as DVec3).add(dv), b.mu)
+		return absf(el.periapsis - b.radius - target_alt)
+	var best: float = score.call(node)
+	for stp in [20.0, 5.0, 1.0, 0.2, 0.05, 0.01]:
+		var improved := true
+		var guard := 0
+		while improved and guard < 40:
+			improved = false
+			guard += 1
+			for d in [[stp, 0.0], [-stp, 0.0], [0.0, stp], [0.0, -stp]]:
+				var cand := ManeuverNode.new(node.t, b, node.prograde + d[0], 0.0, node.radial + d[1])
+				var sc: float = score.call(cand)
+				if sc < best:
+					best = sc
+					node = cand
+					improved = true
+	return node

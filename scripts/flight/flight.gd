@@ -48,6 +48,10 @@ var map_pitch := 0.5
 var map_dist := 2_500_000.0
 
 var autopilot := Autopilot.new()
+var maneuver: ManeuverNode = null
+var preview: Array[Dictionary] = []
+var maneuver_info := ""
+var _last_ap_warp := -1
 var _debris: Array[Dictionary] = []
 var _touches := {}
 var _pinch_start := 0.0
@@ -77,6 +81,7 @@ func _ready() -> void:
 	add_child(camera)
 	camera.make_current()
 	autopilot.finished.connect(_on_autopilot_finished)
+	autopilot.task_changed.connect(func(title: String) -> void: message.emit("Автопилот: " + title))
 	hud = HudScript.new()
 	hud.flight = self
 	add_child(hud)
@@ -258,10 +263,16 @@ func _on_staged(_dropped: Dictionary) -> void:
 
 
 func engage_autopilot(altitude: float) -> void:
-	if vessel.destroyed_flag:
+	start_mission(Autopilot.tasks_orbit(altitude))
+
+
+## Runs a chain of autopilot tasks.
+func start_mission(tasks: Array) -> void:
+	if vessel.destroyed_flag or tasks.is_empty():
 		return
-	autopilot.engage(vessel, altitude)
-	Log.info("Autopilot: engaged, target %.0f m" % altitude)
+	_last_ap_warp = -1
+	autopilot.start_chain(tasks, vessel, sim_time)
+	Log.info("Autopilot: mission started, %d task(s)" % tasks.size())
 
 
 func disengage_autopilot(reason: String) -> void:
@@ -272,12 +283,16 @@ func disengage_autopilot(reason: String) -> void:
 
 
 func _on_autopilot_finished(ok: bool, msg: String) -> void:
+	if ok and maneuver != null and maneuver.t < sim_time:
+		clear_maneuver()
 	message.emit(("Автопилот: " if ok else "Автопилот не справился: ") + msg)
 	Log.info("Autopilot: finished ok=%s %s" % [ok, msg])
 	hud.on_autopilot_finished()
 
 
 func _on_soi_changed(from: CelestialBody, to: CelestialBody) -> void:
+	if maneuver != null and maneuver.body != to:
+		clear_maneuver()
 	Log.info("Flight: SOI %s -> %s at t=%.0f" % [from.name, to.name, sim_time])
 	message.emit("Сфера влияния: %s" % to.name)
 	if map_mode:
@@ -314,11 +329,14 @@ func set_warp(i: int) -> void:
 # --- Main loop -----------------------------------------------------------------------
 
 func _physics_process(_delta: float) -> void:
-	autopilot.update(vessel)
-	if autopilot.wants_warp_reset:
-		autopilot.wants_warp_reset = false
-		if is_rails():
-			set_warp(0)
+	sim_tick()
+
+
+## One fixed tick of the simulation (60 Hz). Also used by headless tests.
+func sim_tick() -> void:
+	if is_rails():
+		autopilot.update(vessel, sim_time)
+		_apply_autopilot_warp()
 	if is_rails():
 		if not vessel.can_rails_warp():
 			set_warp(WARPS.find(PHYSICS_WARP_MAX))
@@ -326,16 +344,46 @@ func _physics_process(_delta: float) -> void:
 			var step := DT * warp()
 			vessel.rails_step(step, sim_time)
 			sim_time += step
-			if not vessel.landed and vessel.altitude() < body.atmosphere_height:
+			if not vessel.landed and vessel.altitude() < body.atmosphere_height and body.has_atmosphere():
 				message.emit("Вход в атмосферу — ускорение времени сброшено")
 				set_warp(0)
 			_step_debris(step)
 			return
-	for _k in warp():
-		autopilot.update(vessel)
+	var n := warp()
+	for _k in n:
+		autopilot.update(vessel, sim_time)
+		_apply_autopilot_warp()
+		if warp() != n:
+			break
 		vessel.step(DT, sim_time)
 		sim_time += DT
-	_step_debris(DT * warp())
+	_step_debris(DT * n)
+
+
+## Autopilot drives time warp: forced 1x before burns, otherwise its request is
+## applied when it changes (so the player can still change warp in between).
+func _apply_autopilot_warp() -> void:
+	if not autopilot.active():
+		_last_ap_warp = -1
+		autopilot.wants_warp_reset = false
+		return
+	if autopilot.wants_warp_reset:
+		autopilot.wants_warp_reset = false
+		_last_ap_warp = 1
+		if warp() != 1:
+			warp_index = 0
+		return
+	var req := autopilot.requested_warp
+	if req == _last_ap_warp:
+		return
+	_last_ap_warp = req
+	var idx := 0
+	for i in WARPS.size():
+		if WARPS[i] <= req:
+			idx = i
+	if WARPS[idx] > PHYSICS_WARP_MAX and not vessel.can_rails_warp():
+		idx = WARPS.find(PHYSICS_WARP_MAX) if req >= PHYSICS_WARP_MAX else idx
+	warp_index = idx
 
 
 func _step_debris(dt: float) -> void:
@@ -382,12 +430,103 @@ func _process(delta: float) -> void:
 		if _traj_timer <= 0.0:
 			_traj_timer = 0.25
 			refresh_trajectory()
-		traj_view.update_view(_body_pos_at, sim_time, camera, vessel.up_world(), vessel.vel.to_v3())
+		var node_pos = null
+		var shown: ManeuverNode = maneuver if maneuver != null else autopilot.node
+		if shown != null and shown.body == vessel.body and shown.t > sim_time:
+			var st := shown.state_before(vessel.pos, vessel.vel, sim_time)
+			node_pos = body_render_pos(vessel.body) + (st[0] as DVec3).to_v3()
+		traj_view.update_view(_body_pos_at, sim_time, camera, vessel.up_world(), vessel.vel.to_v3(), node_pos)
 
 
 ## Scaled-space rule for the flight view: bodies whose surface is farther than
 ## NEAR_LIMIT are drawn at a compressed (log) distance with the same angular size.
 const NEAR_LIMIT := 120_000.0
+
+
+# --- Maneuver node (map editor) ---------------------------------------------------------
+
+func create_maneuver() -> void:
+	if vessel.landed or vessel.destroyed_flag:
+		message.emit("Манёвр можно ставить только в полёте")
+		return
+	maneuver = ManeuverNode.new(sim_time + 120.0, vessel.body)
+	_update_preview()
+
+
+func clear_maneuver() -> void:
+	maneuver = null
+	preview = []
+	traj_view.set_preview(preview, vessel.body)
+	hud.on_maneuver_changed()
+
+
+func maneuver_set_time(where: String) -> void:
+	if maneuver == null:
+		create_maneuver()
+	var el := OrbitMath.elements(vessel.pos, vessel.vel, vessel.body.mu)
+	match where:
+		"soon": maneuver.t = sim_time + 120.0
+		"apo":
+			if el.e >= 1.0:
+				message.emit("Орбита незамкнута — апоцентра нет")
+				return
+			maneuver.t = sim_time + Planner.time_to_anomaly(el, PI)
+		"peri": maneuver.t = sim_time + Planner.time_to_anomaly(el, 0.0)
+	maneuver.body = vessel.body
+	_update_preview()
+
+
+func maneuver_shift(dt: float) -> void:
+	if maneuver == null:
+		create_maneuver()
+	maneuver.t = maxf(maneuver.t + dt, sim_time + 10.0)
+	_update_preview()
+
+
+func maneuver_add(key: String, dv: float) -> void:
+	if maneuver == null:
+		create_maneuver()
+	maneuver.set(key, maneuver.get(key) + dv)
+	_update_preview()
+
+
+func execute_maneuver() -> void:
+	if maneuver == null:
+		return
+	start_mission(Autopilot.tasks_execute(maneuver))
+
+
+func _update_preview() -> void:
+	if maneuver == null or maneuver.body != vessel.body:
+		clear_maneuver()
+		return
+	preview = maneuver.predict_after(vessel.pos, vessel.vel, sim_time)
+	traj_view.set_preview(preview, vessel.body)
+	maneuver_info = describe_trajectory(preview)
+	hud.on_maneuver_changed()
+
+
+## Short text about a predicted trajectory: apsides and encounters.
+func describe_trajectory(segs: Array[Dictionary]) -> String:
+	if segs.is_empty():
+		return ""
+	var s0: Dictionary = segs[0]
+	var b: CelestialBody = s0.body
+	var parts := PackedStringArray()
+	parts.append("Пе %s" % TrajectoryView.fmt_dist(s0.el.periapsis - b.radius))
+	if s0.el.e < 1.0 and s0.end == "loop":
+		parts.append("Ап %s" % TrajectoryView.fmt_dist(s0.el.apoapsis - b.radius))
+	for i in range(1, segs.size()):
+		var sg: Dictionary = segs[i]
+		var sb: CelestialBody = sg.body
+		if sb != b:
+			parts.append("%s: Пе %s" % [sb.name, TrajectoryView.fmt_dist(sg.el.periapsis - sb.radius)])
+			break
+	if s0.end == "impact":
+		parts.append("падение!")
+	if s0.end == "exit":
+		parts.append("уход из сферы %s" % b.name)
+	return ", ".join(parts)
 
 
 func _view_scale(dist: float, radius: float) -> float:
@@ -419,6 +558,11 @@ func refresh_trajectory() -> void:
 	else:
 		trajectory = Trajectory.predict(vessel.pos, vessel.vel, vessel.body, sim_time)
 	traj_view.set_trajectory(trajectory, vessel.body)
+	if maneuver != null:
+		if maneuver.t < sim_time and not autopilot.active():
+			clear_maneuver()
+		else:
+			_update_preview()
 
 
 func _update_sky() -> void:
