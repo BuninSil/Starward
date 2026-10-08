@@ -104,13 +104,13 @@ func _initialize() -> void:
 	var ap_r := Vessel.default_rocket(earth)
 	ap_r.place_on_surface(SolarSystem.LAUNCH_LAT, SolarSystem.LAUNCH_LON, 0.0)
 	var ap := Autopilot.new()
-	ap.engage(ap_r, 20_000.0)
 	var res := []
 	ap.finished.connect(func(ok: bool, msg: String) -> void: res.append([ok, msg]))
+	ap.start_chain(Autopilot.tasks_orbit(20_000.0), ap_r, 0.0)
 	t = 0.0
 	var phases := {}
 	while t < 1500.0 and res.is_empty():
-		ap.update(ap_r)
+		ap.update(ap_r, t)
 		phases[ap.status()] = phases.get(ap.status(), 0.0) + dt
 		ap_r.step(dt, t)
 		t += dt

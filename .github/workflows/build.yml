@@ -137,6 +137,9 @@ jobs:
       - name: Physics tests
         run: timeout 300 godot --headless --path . --script tests/test_sim.gd
 
+      - name: Autopilot mission test (pad -> Moon -> landing)
+        run: timeout 600 godot --headless --path . --script tests/test_mission.gd
+
       - name: Export APK
         run: |
           mkdir -p build
