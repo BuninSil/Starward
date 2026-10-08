@@ -1,0 +1,17 @@
+{
+ "width": 2048,
+ "height": 1024,
+ "unit_m": 1.0,
+ "scale_div": 10.0,
+ "format": "int16le",
+ "rows": "north_to_south",
+ "cols": "lon_-180_to_180",
+ "color": "moon_color.jpg",
+ "normal": "moon_normal.png",
+ "sources": [
+  "https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/lroc_color_poles_4k.tif",
+  "https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/ldem_16.tif"
+ ],
+ "min_m": -8657.111328125,
+ "max_m": 10494.9453125
+}

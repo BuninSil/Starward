@@ -1,0 +1,18 @@
+{
+ "width": 2048,
+ "height": 1024,
+ "unit_m": 1.0,
+ "scale_div": 10.0,
+ "format": "int16le",
+ "rows": "north_to_south",
+ "cols": "lon_-180_to_180",
+ "color": "earth_color.jpg",
+ "normal": "earth_normal.png",
+ "sources": [
+  "https://eoimages.gsfc.nasa.gov/images/imagerecords/74000/74218/world.200412.3x5400x2700.jpg",
+  "https://eoimages.gsfc.nasa.gov/images/imagerecords/73000/73934/gebco_08_rev_elev_21600x10800.png",
+  "https://eoimages.gsfc.nasa.gov/images/imagerecords/73000/73963/gebco_08_rev_bath_21600x10800.png"
+ ],
+ "min_m": -8000.0,
+ "max_m": 6232.0712890625
+}
