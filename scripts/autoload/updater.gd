@@ -11,6 +11,8 @@ const REPO := "BuninSil/Starward"
 const API_LATEST := "https://api.github.com/repos/%s/releases/latest" % REPO
 const PLUGIN_SINGLETON := "StarwardUpdater"
 const TIMEOUT_SEC := 15.0
+const RETRY_DELAY_SEC := 2.0
+const RESUME_RECHECK_SEC := 600.0   ## re-check on app resume if the last check is older
 
 ## Last found release: {tag, version_code, name, notes, apk_url, apk_size, html_url}
 var latest: Dictionary = {}
@@ -18,6 +20,8 @@ var is_checking := false
 var is_downloading := false
 
 var _startup_checked := false
+var _retried := false
+var _last_check_msec := -1
 var _check_request: HTTPRequest
 var _download_request: HTTPRequest
 var _download_path := ""
@@ -48,15 +52,32 @@ func check_on_startup() -> void:
 	check_now()
 
 
+func _notification(what: int) -> void:
+	# After the app was in background Android may have dropped its sockets;
+	# re-check if the last check is old enough.
+	if what == NOTIFICATION_APPLICATION_RESUMED and _startup_checked and current_version_code() > 0:
+		if _last_check_msec < 0 or Time.get_ticks_msec() - _last_check_msec > RESUME_RECHECK_SEC * 1000.0:
+			Log.info("Updater: app resumed, re-checking")
+			check_now()
+
+
 func check_now() -> void:
+	_retried = false
+	_start_check()
+
+
+func _start_check() -> void:
 	if is_checking:
 		return
 	is_checking = true
-	if _check_request == null:
-		_check_request = HTTPRequest.new()
-		_check_request.timeout = TIMEOUT_SEC
-		_check_request.request_completed.connect(_on_check_completed)
-		add_child(_check_request)
+	_last_check_msec = Time.get_ticks_msec()
+	# Fresh HTTPRequest every time: a node reused after background can hold a dead connection.
+	if _check_request != null:
+		_check_request.queue_free()
+	_check_request = HTTPRequest.new()
+	_check_request.timeout = TIMEOUT_SEC
+	_check_request.request_completed.connect(_on_check_completed)
+	add_child(_check_request)
 	Log.info("Updater: checking %s (current build %d)" % [API_LATEST, current_version_code()])
 	var err := _check_request.request(API_LATEST, _headers("application/vnd.github+json"))
 	if err != OK:
@@ -65,6 +86,20 @@ func check_now() -> void:
 
 func _on_check_completed(result: int, code: int, _headers_in: PackedStringArray, body: PackedByteArray) -> void:
 	if result != HTTPRequest.RESULT_SUCCESS:
+		if not _retried:
+			# One silent retry: first request after resume often fails.
+			_retried = true
+			is_checking = false
+			Log.info("Updater: request failed (result %d), retrying in %.0f s" % [result, RETRY_DELAY_SEC])
+			var timer := Timer.new()
+			timer.one_shot = true
+			timer.wait_time = RETRY_DELAY_SEC
+			timer.timeout.connect(func() -> void:
+				timer.queue_free()
+				_start_check())
+			add_child(timer)
+			timer.start()
+			return
 		_finish_check(false, "Сеть недоступна (result %d)" % result)
 		return
 	if code == 404:
