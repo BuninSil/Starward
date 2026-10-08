@@ -1,0 +1,46 @@
+name: Fetch planet maps (NASA, one-time)
+
+# Manual: downloads public-domain NASA maps, downsamples them for mobile and
+# commits the results to assets/planets/. Re-run only to change resolution.
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "Commit the result (no = dry run, only logs)"
+        default: "yes"
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools
+        run: pip install --quiet pillow numpy tifffile imagecodecs
+
+      - name: Download and process
+        run: python tools/fetch_planet_maps.py --out assets/planets --work "$RUNNER_TEMP/maps"
+
+      - name: Show result
+        run: ls -la assets/planets && cat assets/planets/*.json
+
+      - name: Commit
+        if: github.event.inputs.commit == 'yes'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/planets
+          if git diff --cached --quiet; then
+            echo "No changes"
+          else
+            git commit -m "Update planet maps from NASA sources (fetch-planet-maps workflow)"
+            git push
+          fi
