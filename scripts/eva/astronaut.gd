@@ -24,6 +24,18 @@ var face_point := Vector3.ZERO
 var ship_velocity := Vector3.ZERO   ## velocity of the ship frame point (always ~0 here)
 
 var last_thrust := Vector3.ZERO     ## world-space thrust this tick, for effects
+
+# Surface (walking) mode
+var surface_mode := false
+var up_dir := Vector3.UP            ## local vertical (away from the body centre)
+var gravity := 0.0                  ## m/s^2 toward -up_dir
+var breathable := false             ## Earth near the surface: no oxygen use
+var walk_input := Vector2.ZERO      ## x right, y forward (relative to `cam_forward`)
+var cam_forward := Vector3.FORWARD
+var jump_requested := false
+var on_ground := false
+const WALK_SPEED := 1.6
+const JUMP_SPEED := 2.2
 var _puffs: Array[MeshInstance3D] = []
 
 
@@ -120,7 +132,11 @@ func has_propellant() -> bool:
 
 ## ship_accel: non-gravitational acceleration of the ship (thrust, drag), world.
 func physics_tick(dt: float, ship_accel: Vector3) -> void:
-	oxygen = maxf(oxygen - dt, 0.0)
+	if not breathable:
+		oxygen = maxf(oxygen - dt, 0.0)
+	if surface_mode:
+		_walk_tick(dt)
+		return
 	var b := global_transform.basis
 	# Pseudo-force: the ship frame accelerates, so the astronaut "falls" backwards.
 	apply_central_force(-ship_accel * mass)
@@ -158,3 +174,52 @@ func physics_tick(dt: float, ship_accel: Vector3) -> void:
 		var dir: Vector3 = p.get_meta("dir")
 		# A nozzle pointing along `dir` fires when thrust pushes opposite to it.
 		p.visible = force_local.dot(-dir) > THRUST * 0.2 or (torque_local.length() > TORQUE * 0.3 and (dir == Vector3.UP or dir == Vector3.DOWN))
+
+
+func set_surface_mode(on: bool, up: Vector3, g: float, air: bool) -> void:
+	surface_mode = on
+	up_dir = up
+	gravity = g
+	breathable = air
+	axis_lock_angular_x = on
+	axis_lock_angular_y = on
+	axis_lock_angular_z = on
+	angular_velocity = Vector3.ZERO
+	for p in _puffs:
+		p.visible = false
+
+
+func _walk_tick(dt: float) -> void:
+	apply_central_force(-up_dir * gravity * mass)
+	# Ground check: short ray down from the body centre.
+	var space := get_world_3d().direct_space_state
+	var q := PhysicsRayQueryParameters3D.create(global_position, global_position - up_dir * 1.05)
+	q.exclude = [get_rid()]
+	on_ground = not space.intersect_ray(q).is_empty()
+	# Heading from the camera, projected on the horizon.
+	var fwd := cam_forward - up_dir * cam_forward.dot(up_dir)
+	fwd = fwd.normalized() if fwd.length() > 1e-3 else up_dir.cross(Vector3.RIGHT).normalized()
+	var right := fwd.cross(up_dir)
+	var move := (fwd * walk_input.y + right * walk_input.x).limit_length(1.0)
+	var v_up := linear_velocity.dot(up_dir)
+	var v_h := linear_velocity - up_dir * v_up
+	if on_ground:
+		# Snappy on the ground, but low gravity means slow stops (feels lunar).
+		var target := move * WALK_SPEED
+		var accel := 6.0 if gravity > 3.0 else 2.5
+		v_h = v_h.move_toward(target, accel * dt)
+		if jump_requested:
+			v_up = JUMP_SPEED if gravity < 3.0 else JUMP_SPEED * 1.3
+		jump_requested = false
+		linear_velocity = v_h + up_dir * v_up
+	else:
+		jump_requested = false
+		# A little air control.
+		linear_velocity += move * 0.4 * dt
+	# Stand upright, face the walking direction (or the camera heading).
+	var face := move if move.length() > 0.1 else (fwd if not on_ground else -global_transform.basis.z)
+	face = face - up_dir * face.dot(up_dir)
+	if face.length() > 1e-3:
+		var z := -face.normalized()
+		var x := up_dir.cross(z).normalized()
+		global_transform.basis = Basis(x, up_dir, z)

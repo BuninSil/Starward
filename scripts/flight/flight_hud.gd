@@ -374,6 +374,10 @@ func _build_debug_menu() -> void:
 	grid.add_child(_button("Орбита Луны 30 км", func() -> void:
 		_debug_menu.hide()
 		flight.teleport_to_body_orbit(SolarSystem.find(flight.root_body, "Луна"), 30_000.0)))
+	grid.add_child(_button("На поверхность Луны", func() -> void:
+		_debug_menu.hide()
+		var moon := SolarSystem.find(flight.root_body, "Луна")
+		flight.teleport_to_surface(moon, 0.0, flight.sunlit_longitude(moon))))
 	grid.add_child(_button("Время ×1000", func() -> void: flight.set_warp(flight.WARPS.find(1000))))
 	grid.add_child(_button("Консоль", func() -> void: _console.visible = not _console.visible))
 	grid.add_child(_button("Скопировать лог", Log.copy_to_clipboard))

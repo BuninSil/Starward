@@ -6,6 +6,7 @@ extends CanvasLayer
 const JoystickScript := preload("res://scripts/ui/joystick.gd")
 
 var flight: Node3D
+var surface := false   ## walking on the ground instead of floating in space
 
 var _root: Control
 var _joy: JoystickScript
@@ -44,8 +45,11 @@ func _ready() -> void:
 	_root.add_child(_swipe)
 
 	_build_bars()
-	_build_left()
-	_build_right()
+	if surface:
+		_build_surface()
+	else:
+		_build_left()
+		_build_right()
 
 
 func _panel() -> PanelContainer:
@@ -91,7 +95,7 @@ func _build_bars() -> void:
 	box.add_theme_constant_override("separation", 6)
 	p.add_child(box)
 	var title := Label.new()
-	title.text = "Выход в открытый космос"
+	title.text = "На поверхности" if surface else "Выход в открытый космос"
 	title.add_theme_font_size_override("font_size", 22)
 	box.add_child(title)
 	_fuel_bar = _bar(box, "Топливо ранца", Color(0.4, 0.8, 1.0))
@@ -176,6 +180,32 @@ func _build_right() -> void:
 	top.add_child(_btn("Дебаг: тяга корабля 2 с", func() -> void: flight.debug_ship_kick(), 300))
 
 
+func _build_surface() -> void:
+	var box := HBoxContainer.new()
+	box.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT, Control.PRESET_MODE_MINSIZE, 24)
+	box.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_root.add_child(box)
+	_joy = JoystickScript.new()
+	_joy.radius = 120.0
+	box.add_child(_joy)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 10)
+	col.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT, Control.PRESET_MODE_MINSIZE, 24)
+	col.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	col.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_root.add_child(col)
+	var jump := _btn("Прыжок", func() -> void: flight.astronaut.jump_requested = true, 220)
+	jump.custom_minimum_size = Vector2(220, 90)
+	col.add_child(jump)
+	_enter_btn = _btn("В корабль", func() -> void: flight.end_eva(), 220)
+	col.add_child(_enter_btn)
+	var hint := Label.new()
+	hint.text = "Свайп по правой половине — камера"
+	hint.add_theme_font_size_override("font_size", 16)
+	hint.add_theme_color_override("font_color", Color(0.7, 0.78, 0.9))
+	col.add_child(hint)
+
+
 func _sync_toggles() -> void:
 	var a: Node = flight.astronaut
 	if a == null:
@@ -197,6 +227,21 @@ func _on_detach() -> void:
 		flight.message.emit("Пристегнуться можно только у люка (ближе 3.5 м)")
 
 
+func _update_texts_surface(a: Node, delta: float) -> void:
+	_timer -= delta
+	if _timer > 0.0:
+		return
+	_timer = 0.1
+	_fuel_bar.value = a.propellant / a.PROPELLANT_MAX
+	_o2_bar.value = a.oxygen / a.OXYGEN_MAX
+	var o2 := int(a.oxygen)
+	_o2_label.text = "Дышим воздухом" if a.breathable else "Кислорода на %d:%02d" % [o2 / 60, o2 % 60]
+	var dist: float = flight.entry_distance()
+	_info.text = "%s · g = %.2f м/с²\nДо ракеты %.1f м · %s" % [flight.vessel.body.name, a.gravity, dist,
+		"на земле" if a.on_ground else "в прыжке"]
+	_enter_btn.disabled = dist > 2.5
+
+
 func _on_swipe(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
 		_swipe_touch = event.index if event.pressed else -1
@@ -209,6 +254,13 @@ func _process(delta: float) -> void:
 	if a == null:
 		return
 	var j: Vector2 = _joy.value
+	if surface:
+		a.walk_input = j
+		flight.cam_yaw -= _swipe_rel.x * 0.006
+		flight.cam_pitch = clampf(flight.cam_pitch + _swipe_rel.y * 0.006, -0.2, 1.2)
+		_swipe_rel = Vector2.ZERO
+		_update_texts_surface(a, delta)
+		return
 	a.move_input = Vector3(j.x, _up, -j.y)
 	# Swipe speed -> rotation command (pitch about X, yaw about Y), decays when idle.
 	var rot := Vector3(-_swipe_rel.y, -_swipe_rel.x, 0.0) * 0.04

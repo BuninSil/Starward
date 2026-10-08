@@ -235,6 +235,35 @@ func teleport_to_moon_transfer() -> void:
 	_after_teleport("перелёт к Луне")
 
 
+## Longitude on the equator of `b` where the sun is ~40° high right now.
+func sunlit_longitude(b: CelestialBody) -> float:
+	var sdir := DVec3.from_v3(SUN_DIR.normalized())
+	var best := 0.0
+	var best_err := INF
+	for i in 360:
+		var n := b.fixed_to_inertial(CelestialBody.surface_normal(0.0, float(i)), sim_time)
+		var err := absf(n.dot(sdir) - sin(deg_to_rad(40.0)))
+		if err < best_err:
+			best_err = err
+			best = float(i)
+	return best
+
+
+## Debug: landed on a body's surface at lat/lon.
+func teleport_to_surface(target: CelestialBody, lat: float, lon: float) -> void:
+	autopilot.disengage(vessel)
+	abort_eva()
+	vessel.body = target
+	vessel.throttle = 0.0
+	vessel.destroyed_flag = false
+	vessel.place_on_surface(lat, lon, sim_time)
+	set_warp(0)
+	rocket.visible = not map_mode
+	hud.on_vessel_reset()
+	_traj_timer = 0.0
+	Log.info("Flight: teleported to the surface of %s (%.1f, %.1f)" % [target.name, lat, lon])
+
+
 func _after_teleport(what: String) -> void:
 	abort_eva()
 	vessel.landed = false
@@ -426,6 +455,10 @@ func _step_debris(dt: float) -> void:
 func _process(delta: float) -> void:
 	# Floating origin: vessel at 0; everything else relative to it in doubles.
 	var vabs := vessel_absolute()
+	# Detailed ground patch under a low vessel (any body).
+	if vessel.altitude() < 30_000.0:
+		var fixed_n := vessel.body.inertial_to_fixed(vessel.pos, sim_time).normalized()
+		(planets[vessel.body] as Node3D).call("ensure_patch", fixed_n)
 	for b in bodies:
 		var rel := b.absolute_position(sim_time).sub(vabs)
 		(planets[b] as Node3D).call("update_view", rel, sim_time, 1.0 if map_mode else _view_scale(rel.length(), b.radius))
@@ -441,7 +474,8 @@ func _process(delta: float) -> void:
 		_update_map_camera()
 	elif eva_mode:
 		_update_eva_camera()
-		tether.update_visual(hatch_world(), astronaut.global_position + astronaut.global_transform.basis * Vector3(0, 0.15, 0.32), camera.global_position, delta)
+		if not is_surface_eva():
+			tether.update_visual(hatch_world(), astronaut.global_position + astronaut.global_transform.basis * Vector3(0, 0.15, 0.32), camera.global_position, delta)
 	else:
 		_update_flight_camera()
 	traj_view.visible = map_mode
@@ -557,7 +591,7 @@ func can_eva() -> String:
 	if vessel.destroyed_flag:
 		return "корабль разрушен"
 	if vessel.landed:
-		return "выход на поверхность — в следующем этапе"
+		return ""
 	if vessel.body.has_atmosphere() and vessel.altitude() < vessel.body.atmosphere_height:
 		return "в атмосфере выходить нельзя"
 	if vessel.throttle > 0.0:
@@ -579,6 +613,9 @@ func start_eva() -> void:
 	vessel.hold_mode = ""
 	astronaut = AstronautScript.new()
 	add_child(astronaut)
+	if vessel.landed:
+		_start_surface_eva()
+		return
 	var hatch: Vector3 = hatch_world()
 	var out: Vector3 = (hatch - rocket.global_transform * (rocket.hatch_local() - Vector3(0, 0, 0.35))).normalized()
 	astronaut.global_transform = Transform3D(Basis.looking_at(-out, rocket.global_transform.basis.y), hatch + out * 0.3)
@@ -598,12 +635,75 @@ func start_eva() -> void:
 	message.emit("Выход в открытый космос. Трос 12 м")
 
 
+## Surface EVA: down the ladder to the ground next to the rocket, walking mode.
+func _start_surface_eva() -> void:
+	var up := vessel.pos.normalized().to_v3()
+	var side := Vector3.UP.cross(up)
+	side = side.normalized() if side.length() > 1e-3 else Vector3.RIGHT
+	var rocket_r := 1.3
+	_ground = StaticBody3D.new()
+	var cs := CollisionShape3D.new()
+	cs.shape = WorldBoundaryShape3D.new()
+	_ground.add_child(cs)
+	add_child(_ground)
+	_update_ground()
+	astronaut.global_position = side * (rocket_r + 1.5) + up * 1.0
+	astronaut.linear_velocity = Vector3.ZERO
+	var b := vessel.body
+	astronaut.set_surface_mode(true, up, b.surface_gravity(), b.has_atmosphere())
+	astronaut.cam_forward = -side
+	tether = TetherScript.new()
+	add_child(tether)
+	tether.attached = false
+	eva_mode = true
+	_tether_broken_reported = true
+	hud.visible = false
+	eva_hud = EvaHudScript.new()
+	eva_hud.flight = self
+	eva_hud.surface = true
+	add_child(eva_hud)
+	eva_cam_dist = 6.0
+	cam_yaw = 0.0
+	Log.info("EVA: surface walk on %s, g=%.2f" % [vessel.body.name, b.surface_gravity()])
+	message.emit("Выход на поверхность: %s" % vessel.body.name)
+
+
+var _ground: StaticBody3D = null
+
+
+## Ground plane under the landed vessel (the vessel origin is on the surface).
+func _update_ground() -> void:
+	if _ground == null:
+		return
+	var up := vessel.pos.normalized().to_v3()
+	var x := up.cross(Vector3.FORWARD if absf(up.z) < 0.9 else Vector3.RIGHT).normalized()
+	var z := x.cross(up)
+	_ground.global_transform = Transform3D(Basis(x, up, z), -up * maxf(vessel.altitude() - vessel.height_offset, 0.0))
+
+
+func is_surface_eva() -> bool:
+	return eva_mode and astronaut != null and astronaut.surface_mode
+
+
+## Distance used for "back inside": hatch in space, rocket base on the ground.
+func entry_distance() -> float:
+	if not is_surface_eva():
+		return astronaut_hatch_distance()
+	var up := vessel.pos.normalized().to_v3()
+	var p: Vector3 = astronaut.global_position
+	var horiz := p - up * p.dot(up)
+	return maxf(horiz.length() - 1.3, 0.0)
+
+
 func end_eva(forced_reason := "") -> void:
 	if not eva_mode:
 		return
-	if forced_reason == "" and astronaut_hatch_distance() > 2.5:
-		message.emit("До люка дальше 2.5 м")
+	if forced_reason == "" and entry_distance() > 2.5:
+		message.emit("Слишком далеко от %s" % ("ракеты" if is_surface_eva() else "люка"))
 		return
+	if _ground:
+		_ground.queue_free()
+		_ground = null
 	astronaut.queue_free()
 	tether.queue_free()
 	eva_hud.queue_free()
@@ -624,6 +724,9 @@ func end_eva(forced_reason := "") -> void:
 func abort_eva() -> void:
 	if not eva_mode:
 		return
+	if _ground:
+		_ground.queue_free()
+		_ground = null
 	astronaut.queue_free()
 	tether.queue_free()
 	eva_hud.queue_free()
@@ -663,6 +766,14 @@ func debug_ship_kick() -> void:
 
 
 func _eva_physics(dt: float) -> void:
+	if is_surface_eva():
+		_update_ground()
+		astronaut.up_dir = vessel.pos.normalized().to_v3()
+		astronaut.cam_forward = -camera.global_transform.basis.z
+		astronaut.physics_tick(dt, Vector3.ZERO)
+		if astronaut.oxygen <= 0.0:
+			end_eva("Космонавт погиб: кончился кислород")
+		return
 	if _ship_kick > 0.0:
 		_ship_kick -= dt
 		vessel.throttle = 1.0 if _ship_kick > 0.0 else 0.0
@@ -687,6 +798,18 @@ func _update_eva_camera() -> void:
 	var b := astronaut.global_transform.basis
 	var target := astronaut.global_position + b.y * 0.4
 	var cam_pos := target + b.z * eva_cam_dist + b.y * eva_cam_dist * 0.25
+	if is_surface_eva():
+		# On the ground: orbit camera around the astronaut in the horizon frame
+		# (drag on the empty screen turns it), so walking is camera-relative.
+		var up: Vector3 = astronaut.up_dir
+		var ref := Vector3.UP.cross(up)
+		ref = ref.normalized() if ref.length() > 1e-3 else Vector3.RIGHT
+		var ref2 := ref.cross(up)
+		var horiz := ref2 * cos(cam_yaw) + ref * sin(cam_yaw)
+		var pitch := clampf(cam_pitch, -0.2, 1.2)
+		target = astronaut.global_position + up * 0.6
+		cam_pos = target + (horiz * cos(pitch) + up * sin(pitch)) * eva_cam_dist
+		b = Basis(ref, up, ref2)
 	camera.near = 0.1
 	var far := 1000.0
 	var vabs := vessel_absolute()

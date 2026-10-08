@@ -18,6 +18,9 @@ var _surface: MeshInstance3D
 var _atmosphere: MeshInstance3D
 var _site: Node3D          ## ground patch, positioned in double precision
 var _site_normal_fixed: DVec3
+var _launch_normal_fixed: DVec3
+var _has_launch_pad := false
+var _patch_built := true
 
 
 ## with_site: build the detailed launch pad patch at lat/lon (Earth only for now).
@@ -62,11 +65,16 @@ func setup(b: CelestialBody, with_site: bool, lat: float, lon: float, sun_dir: V
 		_atmosphere.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(_atmosphere)
 
+	_site = Node3D.new()
+	_site.top_level = true
+	add_child(_site)
+	_launch_normal_fixed = _site_normal_fixed
+	_has_launch_pad = with_site
 	if with_site:
-		_site = Node3D.new()
-		_site.top_level = true
-		add_child(_site)
-		_build_site()
+		_build_site(true)
+	else:
+		_site.visible = false
+		_patch_built = false
 
 
 ## origin_rel: planet centre relative to the vessel (inertial axes), double precision.
@@ -76,7 +84,7 @@ func update_view(origin_rel: DVec3, t: float, view_scale := 1.0) -> void:
 	position = origin_rel.mul(view_scale).to_v3()
 	scale = Vector3.ONE * view_scale
 	_spin.basis = Basis(Vector3.UP, body.rotation_angle(t))
-	if _site == null:
+	if _site == null or not _patch_built:
 		return
 	_site.visible = view_scale >= 0.999
 	if not _site.visible:
@@ -128,7 +136,21 @@ func _make_surface_material() -> StandardMaterial3D:
 
 
 ## Spherical cap around the launch site with real curvature, plus the pad.
-func _build_site() -> void:
+## Makes sure the detailed ground patch covers `fixed_normal` (body-fixed unit
+## vector); rebuilds it there if it is more than a few km away. Returns true if rebuilt.
+func ensure_patch(fixed_normal: DVec3) -> bool:
+	if _patch_built and _site_normal_fixed.dot(fixed_normal) > cos(CAP_RADIUS * 0.4 / body.radius):
+		return false
+	for c in _site.get_children():
+		c.queue_free()
+	var near_pad := _has_launch_pad and _launch_normal_fixed.dot(fixed_normal) > cos(CAP_RADIUS * 0.4 / body.radius)
+	_site_normal_fixed = _launch_normal_fixed if near_pad else fixed_normal
+	_build_site(near_pad)
+	_patch_built = true
+	return true
+
+
+func _build_site(with_pad := true) -> void:
 	var r := body.radius
 	var rings := 48
 	var segs := 64
@@ -151,13 +173,16 @@ func _build_site() -> void:
 			var p := Vector3(r * sin(a) * cos(phi), r * cos(a) - r, r * sin(a) * sin(phi))
 			verts.append(p)
 			var c: Color
-			if dist < PAD_RADIUS:
+			var n := noise.get_noise_2d(p.x, p.z) * 0.5 + 0.5
+			if with_pad and dist < PAD_RADIUS:
 				c = Color(0.55, 0.55, 0.55)
-			else:
-				var n := noise.get_noise_2d(p.x, p.z) * 0.5 + 0.5
+			elif body.has_atmosphere():
 				c = Color(0.34, 0.33, 0.2).lerp(Color(0.22, 0.36, 0.14), n)
 				# fade into the sphere texture tint at the edge
 				c = c.lerp(Color(0.2, 0.38, 0.16), clampf((f - 0.7) / 0.3, 0.0, 1.0))
+			else:
+				var fine := noise.get_noise_2d(p.x * 9.0, p.z * 9.0) * 0.5 + 0.5
+				c = Color(0.36, 0.36, 0.37).lerp(Color(0.58, 0.57, 0.55), n * 0.7 + fine * 0.3)
 			cols.append(c)
 	var idx := func(i: int, j: int) -> int:
 		return 0 if i == 0 else 1 + (i - 1) * segs + (j % segs)
@@ -183,6 +208,8 @@ func _build_site() -> void:
 	mi.material_override = mat
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_site.add_child(mi)
+	if not with_pad:
+		return
 
 	# Launch tower next to the rocket.
 	var tower := MeshInstance3D.new()
