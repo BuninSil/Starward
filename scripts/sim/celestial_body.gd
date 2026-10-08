@@ -25,6 +25,8 @@ var orbit_lan := 0.0        ## longitude of ascending node, rad
 var orbit_argp := 0.0       ## argument of periapsis, rad
 var orbit_m0 := 0.0         ## mean anomaly at t = 0, rad
 
+var terrain: Terrain = null   ## surface relief (null = smooth sphere)
+
 var color: Color = Color.WHITE
 var atmosphere_color: Color = Color(0.35, 0.6, 1.0)
 
@@ -62,6 +64,11 @@ func absolute_velocity(t: float) -> DVec3:
 	if parent == null:
 		return DVec3.new()
 	return parent.absolute_velocity(t).add(state_at(t)[1])
+
+
+## Terrain height (game metres above `radius`) under a body-fixed direction.
+func surface_height(fixed_dir: DVec3) -> float:
+	return terrain.height_at(fixed_dir, radius) if terrain != null else 0.0
 
 
 func surface_gravity() -> float:

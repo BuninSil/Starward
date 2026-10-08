@@ -64,6 +64,16 @@ func altitude() -> float:
 	return pos.length() - body.radius
 
 
+## Ground level (terrain height) under the vessel at time t.
+func ground_height(t: float) -> float:
+	return body.surface_height(body.inertial_to_fixed(pos, t))
+
+
+## Height above the terrain at time t.
+func altitude_above_ground(t: float) -> float:
+	return altitude() - ground_height(t)
+
+
 ## Velocity relative to the rotating atmosphere / surface.
 func surface_velocity() -> DVec3:
 	var omega := DVec3.new(0, body.angular_velocity(), 0)
@@ -275,7 +285,7 @@ var _surface_fixed := DVec3.new()   ## body-fixed position while landed
 
 func place_on_surface(lat_deg: float, lon_deg: float, t: float) -> void:
 	var n := CelestialBody.surface_normal(lat_deg, lon_deg)
-	_surface_fixed = n.mul(body.radius + height_offset)
+	_surface_fixed = n.mul(body.radius + body.surface_height(n) + height_offset)
 	_set_landed(true)
 	destroyed_flag = false
 	_stick_to_surface(t)
@@ -293,8 +303,14 @@ func _stick_to_surface(t: float) -> void:
 
 func _check_ground(t: float) -> void:
 	var alt := altitude() - height_offset
+	if alt > 2000.0 + _max_relief():
+		return
+	var fixed_dir := body.inertial_to_fixed(pos, t)
+	var ground := body.surface_height(fixed_dir)
+	alt -= ground
 	if alt > 0.0:
 		return
+	var ground_r := body.radius + ground + height_offset
 	var vs := surface_velocity()
 	var speed := vs.length()
 	touchdown_speed = speed
@@ -309,12 +325,16 @@ func _check_ground(t: float) -> void:
 		destroyed.emit("Удар о поверхность: %d м/с (вниз %d, вбок %d), угол падения %d°, нос от вертикали %d°, газ %d%%, ступеней %d" % [
 			int(speed), int(-v_vert), int(v_horiz), int(path_angle), int(nose_angle),
 			int(last_thrust > 0.0) * 100, stages.size()])
-		_surface_fixed = body.inertial_to_fixed(pos.normalized().mul(body.radius + height_offset), t)
+		_surface_fixed = body.inertial_to_fixed(pos.normalized().mul(ground_r), t)
 		_stick_to_surface(t)
 		return
-	_surface_fixed = body.inertial_to_fixed(pos.normalized().mul(body.radius + height_offset), t)
+	_surface_fixed = body.inertial_to_fixed(pos.normalized().mul(ground_r), t)
 	_set_landed(true)
 	_stick_to_surface(t)
+
+
+func _max_relief() -> float:
+	return 1200.0 if body.terrain != null and body.terrain.has_map() else 100.0
 
 
 func _set_landed(v: bool) -> void:
