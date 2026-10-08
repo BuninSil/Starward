@@ -100,5 +100,25 @@ func _initialize() -> void:
 		(fin.apoapsis - earth.radius) / 1000.0, (fin.periapsis - earth.radius) / 1000.0, rk.total_delta_v()])
 	check(done, "reached orbit with periapsis > 15 km")
 
+	# 5. Autopilot flies the real controls to a 20 km orbit
+	var ap_r := Vessel.default_rocket(earth)
+	ap_r.place_on_surface(SolarSystem.LAUNCH_LAT, SolarSystem.LAUNCH_LON, 0.0)
+	var ap := Autopilot.new()
+	ap.engage(ap_r, 20_000.0)
+	var res := []
+	ap.finished.connect(func(ok: bool, msg: String) -> void: res.append([ok, msg]))
+	t = 0.0
+	var phases := {}
+	while t < 1500.0 and res.is_empty():
+		ap.update(ap_r)
+		phases[ap.status()] = phases.get(ap.status(), 0.0) + dt
+		ap_r.step(dt, t)
+		t += dt
+	var fe := OrbitMath.elements(ap_r.pos, ap_r.vel, earth.mu)
+	print("autopilot: t=%.0fs %s apo=%.1f peri=%.1f dv left=%.0f phases=%s" % [t, str(res),
+		(fe.apoapsis - earth.radius) / 1000.0, (fe.periapsis - earth.radius) / 1000.0, ap_r.total_delta_v(), str(phases)])
+	check(not res.is_empty() and res[0][0], "autopilot reached orbit")
+	check(fe.periapsis - earth.radius > earth.atmosphere_height, "autopilot periapsis above atmosphere")
+
 	print("FAILURES: %d" % failures)
 	quit(1 if failures > 0 else 0)

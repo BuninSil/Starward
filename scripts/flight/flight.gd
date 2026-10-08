@@ -39,6 +39,7 @@ var map_yaw := 0.0
 var map_pitch := 0.5
 var map_dist := 2_500_000.0
 
+var autopilot := Autopilot.new()
 var _debris: Array[Dictionary] = []
 var _touches := {}
 var _pinch_start := 0.0
@@ -62,6 +63,7 @@ func _ready() -> void:
 	camera.fov = 60.0
 	add_child(camera)
 	camera.make_current()
+	autopilot.finished.connect(_on_autopilot_finished)
 	hud = HudScript.new()
 	hud.flight = self
 	add_child(hud)
@@ -117,6 +119,8 @@ func reset_to_pad() -> void:
 	for d in _debris:
 		d.node.queue_free()
 	_debris.clear()
+	if vessel:
+		autopilot.disengage(vessel)
 	var inf_fuel := vessel.infinite_fuel if vessel else false
 	vessel = Vessel.default_rocket(body)
 	vessel.infinite_fuel = inf_fuel
@@ -139,6 +143,7 @@ func reset_to_pad() -> void:
 
 ## Debug: circular orbit at the given altitude (prograde, equatorial-ish over the site).
 func teleport_to_orbit(altitude: float) -> void:
+	autopilot.disengage(vessel)
 	var r := body.radius + altitude
 	var radial := vessel.pos.normalized()
 	if radial.length() < 0.5:
@@ -173,6 +178,26 @@ func _on_staged(_dropped: Dictionary) -> void:
 	Log.info("Flight: stage separated, %d stage(s) left" % vessel.stages.size())
 
 
+func engage_autopilot(altitude: float) -> void:
+	if vessel.destroyed_flag:
+		return
+	autopilot.engage(vessel, altitude)
+	Log.info("Autopilot: engaged, target %.0f m" % altitude)
+
+
+func disengage_autopilot(reason: String) -> void:
+	if autopilot.active():
+		autopilot.disengage(vessel)
+		message.emit("Автопилот выключен: " + reason)
+		Log.info("Autopilot: disengaged (%s)" % reason)
+
+
+func _on_autopilot_finished(ok: bool, msg: String) -> void:
+	message.emit(("Автопилот: " if ok else "Автопилот не справился: ") + msg)
+	Log.info("Autopilot: finished ok=%s %s" % [ok, msg])
+	hud.on_autopilot_finished()
+
+
 func _on_destroyed(reason: String) -> void:
 	Log.warn("Flight: vessel destroyed: " + reason)
 	rocket.visible = false
@@ -202,6 +227,11 @@ func set_warp(i: int) -> void:
 # --- Main loop -----------------------------------------------------------------------
 
 func _physics_process(_delta: float) -> void:
+	autopilot.update(vessel)
+	if autopilot.wants_warp_reset:
+		autopilot.wants_warp_reset = false
+		if is_rails():
+			set_warp(0)
 	if is_rails():
 		if not vessel.can_rails_warp():
 			set_warp(WARPS.find(PHYSICS_WARP_MAX))
@@ -215,6 +245,7 @@ func _physics_process(_delta: float) -> void:
 			_step_debris(step)
 			return
 	for _k in warp():
+		autopilot.update(vessel)
 		vessel.step(DT, sim_time)
 		sim_time += DT
 	_step_debris(DT * warp())
@@ -259,6 +290,7 @@ func _process(delta: float) -> void:
 	if map_mode:
 		var el := OrbitMath.elements(vessel.pos, vessel.vel, body.mu)
 		orbit_line.rebuild(el, body, vessel.pos, camera.global_position.distance_to(orbit_line.global_position))
+		orbit_line.update_ship_arrow(vessel.up_world(), vessel.vel.to_v3(), camera)
 
 
 func _update_sky() -> void:
@@ -308,10 +340,15 @@ func toggle_map() -> void:
 	map_mode = not map_mode
 	rocket.visible = not map_mode and not vessel.destroyed_flag
 	if map_mode:
-		map_dist = maxf(vessel.pos.length() * 3.0, body.radius * 3.0)
-		var p := vessel.pos.to_v3().normalized()
-		map_yaw = atan2(p.x, p.z)
-		map_pitch = 0.6
+		map_dist = maxf(vessel.pos.length() * 3.2, body.radius * 3.2)
+		# Look from above the orbit plane, offset toward the vessel: orbit reads as an ellipse.
+		var radial := vessel.pos.normalized().to_v3()
+		var normal := vessel.pos.cross(vessel.vel).normalized().to_v3()
+		var d := (normal * 0.75 + radial * 0.65).normalized()
+		if normal.length() < 0.5:
+			d = radial
+		map_yaw = atan2(d.x, d.z)
+		map_pitch = clampf(asin(clampf(d.y, -1.0, 1.0)), -1.5, 1.5)
 
 
 # --- Camera input (touches not taken by the HUD) --------------------------------------
@@ -332,7 +369,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			var rel: Vector2 = event.relative * 0.006
 			if map_mode:
 				map_yaw -= rel.x
-				map_pitch = clampf(map_pitch + rel.y, -1.45, 1.45)
+				map_pitch = clampf(map_pitch + rel.y, -1.5, 1.5)
 			else:
 				cam_yaw -= rel.x
 				cam_pitch = clampf(cam_pitch + rel.y, -1.45, 1.45)

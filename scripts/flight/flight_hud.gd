@@ -24,6 +24,8 @@ var _throttle_label: Label
 var _warp_label: Label
 var _stage_btn: Button
 var _map_btn: Button
+var _ap_btn: Button
+var _ap_label: Label
 var _hold_buttons := {}
 var _joystick: JoystickScript
 var _roll := 0.0
@@ -162,13 +164,16 @@ func _build_throttle() -> void:
 	row.add_theme_constant_override("separation", 10)
 	box.add_child(row)
 	_throttle = ThrottleScript.new()
-	_throttle.changed.connect(func(v: float) -> void: flight.vessel.throttle = v)
+	_throttle.changed.connect(func(v: float) -> void:
+		flight.disengage_autopilot("ручной газ")
+		flight.vessel.throttle = v)
 	row.add_child(_throttle)
 	var quick := VBoxContainer.new()
 	quick.alignment = BoxContainer.ALIGNMENT_CENTER
 	quick.add_theme_constant_override("separation", 10)
 	row.add_child(quick)
 	quick.add_child(_button("Полный", func() -> void: _throttle.set_value(1.0), 120))
+	# (set_value emits changed -> also disengages the autopilot)
 	quick.add_child(_button("Выкл", func() -> void: _throttle.set_value(0.0), 120))
 
 
@@ -193,7 +198,9 @@ func _build_attitude() -> void:
 		b.custom_minimum_size = Vector2(160, 54)
 		b.add_theme_font_size_override("font_size", 19)
 		var mode: String = m[0]
-		b.pressed.connect(func() -> void: _set_hold(mode))
+		b.pressed.connect(func() -> void:
+			flight.disengage_autopilot("ручная ориентация")
+			_set_hold(mode))
 		grid.add_child(b)
 		_hold_buttons[mode] = b
 
@@ -209,6 +216,9 @@ func _build_attitude() -> void:
 	roll_box.add_child(_hold_button("Крен вправо", 1.0))
 	_joystick = JoystickScript.new()
 	_joystick.radius = 105.0
+	_joystick.changed.connect(func(val: Vector2) -> void:
+		if val.length() > 0.2:
+			flight.disengage_autopilot("джойстик"))
 	row.add_child(_joystick)
 
 
@@ -219,7 +229,9 @@ func _hold_button(text: String, dir: float) -> Button:
 	b.focus_mode = Control.FOCUS_NONE
 	b.custom_minimum_size = Vector2(150, 64)
 	b.add_theme_font_size_override("font_size", 20)
-	b.button_down.connect(func() -> void: _roll = dir)
+	b.button_down.connect(func() -> void:
+		flight.disengage_autopilot("крен")
+		_roll = dir)
 	b.button_up.connect(func() -> void: _roll = 0.0)
 	return b
 
@@ -243,15 +255,42 @@ func _build_stage() -> void:
 	_stage_btn.pressed.connect(_on_stage)
 	_root.add_child(_stage_btn)
 
+	_ap_btn = _button("Автопилот на орбиту", _on_autopilot, 270)
+	_ap_btn.add_theme_font_size_override("font_size", 22)
+	_ap_btn.custom_minimum_size = Vector2(270, 70)
+	var apsb := StyleBoxFlat.new()
+	apsb.bg_color = Color(0.06, 0.3, 0.38, 0.9)
+	apsb.set_corner_radius_all(12)
+	apsb.border_color = Color(0.4, 0.9, 1.0)
+	apsb.set_border_width_all(2)
+	_ap_btn.add_theme_stylebox_override("normal", apsb)
+	_ap_btn.add_theme_stylebox_override("hover", apsb)
+	_ap_btn.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 24)
+	_ap_btn.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_ap_btn.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_ap_btn.position.y -= 96
+	_root.add_child(_ap_btn)
+
 
 func _build_toast() -> void:
+	_ap_label = Label.new()
+	_ap_label.add_theme_font_size_override("font_size", 22)
+	_ap_label.add_theme_color_override("font_color", Color(0.45, 0.9, 1.0))
+	_ap_label.add_theme_constant_override("outline_size", 6)
+	_ap_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
+	_ap_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_ap_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 84)
+	_ap_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_ap_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_root.add_child(_ap_label)
+
 	_toast = Label.new()
 	_toast.add_theme_font_size_override("font_size", 26)
 	_toast.add_theme_color_override("font_color", Color(1.0, 0.85, 0.45))
 	_toast.add_theme_constant_override("outline_size", 6)
 	_toast.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
 	_toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_toast.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 110)
+	_toast.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 120)
 	_toast.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	_toast.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_root.add_child(_toast)
@@ -369,6 +408,19 @@ func _on_stage() -> void:
 		toast("Больше нет ступеней")
 
 
+func _on_autopilot() -> void:
+	if flight.autopilot.active():
+		flight.disengage_autopilot("кнопка")
+	else:
+		flight.engage_autopilot(20_000.0)
+		if flight.autopilot.active():
+			toast("Автопилот: выход на орбиту 20 км")
+
+
+func on_autopilot_finished() -> void:
+	_set_hold("sas")
+
+
 func _on_map() -> void:
 	flight.toggle_map()
 	_map_btn.text = "Полёт" if flight.map_mode else "Карта"
@@ -384,6 +436,9 @@ func _process(delta: float) -> void:
 	if absf(v.throttle - _throttle.value) > 0.001:
 		_throttle.set_value_no_signal(v.throttle)
 	_throttle_label.text = "Газ %d%%" % int(round(v.throttle * 100.0))
+	var ap: Autopilot = flight.autopilot
+	_ap_label.text = "Автопилот: " + ap.status() if ap.active() else ""
+	_ap_btn.text = "Стоп автопилот" if ap.active() else "Автопилот на орбиту"
 
 	if _toast_time > 0.0:
 		_toast_time -= delta

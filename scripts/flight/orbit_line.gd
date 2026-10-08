@@ -9,6 +9,8 @@ var _line: MeshInstance3D
 var _apo: Label3D
 var _peri: Label3D
 var _ship: Label3D
+var _arrow: MeshInstance3D
+var _vel_arrow: MeshInstance3D
 
 
 func _ready() -> void:
@@ -25,7 +27,56 @@ func _ready() -> void:
 	_apo = _marker(Color(1.0, 0.8, 0.35))
 	_peri = _marker(Color(0.55, 1.0, 0.6))
 	_ship = _marker(Color(1, 1, 1))
-	_ship.text = "▲ ракета"
+	_ship.text = "ракета"
+	_ship.offset = Vector2(0, -60)
+	_arrow = _make_arrow(Color(1.0, 0.6, 0.2))
+	_vel_arrow = _make_arrow(Color(0.5, 1.0, 0.55))
+
+
+## Flat-shaded arrow (cylinder + cone) along local +Y, drawn on top of everything.
+func _make_arrow(c: Color) -> MeshInstance3D:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var shaft := CylinderMesh.new()
+	shaft.top_radius = 0.06
+	shaft.bottom_radius = 0.06
+	shaft.height = 0.7
+	shaft.radial_segments = 10
+	st.append_from(shaft, 0, Transform3D(Basis(), Vector3(0, 0.35, 0)))
+	var head := CylinderMesh.new()
+	head.top_radius = 0.0
+	head.bottom_radius = 0.18
+	head.height = 0.3
+	head.radial_segments = 12
+	st.append_from(head, 0, Transform3D(Basis(), Vector3(0, 0.85, 0)))
+	var mi := MeshInstance3D.new()
+	mi.mesh = st.commit()
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = c
+	mat.no_depth_test = true
+	mat.render_priority = 9
+	mi.material_override = mat
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
+	return mi
+
+
+## Orange arrow = where the nose points, green = direction of flight.
+func update_ship_arrow(nose: Vector3, velocity: Vector3, cam: Camera3D) -> void:
+	var pos := _ship.global_position
+	var size := cam.global_position.distance_to(pos) * 0.12
+	_place_arrow(_arrow, pos, nose, size)
+	_vel_arrow.visible = velocity.length() > 1.0
+	if _vel_arrow.visible:
+		_place_arrow(_vel_arrow, pos, velocity.normalized(), size * 0.8)
+
+
+func _place_arrow(a: MeshInstance3D, pos: Vector3, dir: Vector3, size: float) -> void:
+	var y := dir.normalized()
+	var x := y.cross(Vector3.UP if absf(y.y) < 0.95 else Vector3.RIGHT).normalized()
+	var z := x.cross(y)
+	a.global_transform = Transform3D(Basis(x, y, z).scaled(Vector3.ONE * size), pos)
 
 
 func _marker(c: Color) -> Label3D:
@@ -73,7 +124,7 @@ func rebuild(el: Dictionary, body: CelestialBody, rel_pos: DVec3, cam_dist: floa
 	var peri_dir: Vector3 = pts[POINTS / 2].normalized() if bound else pts[pts.size() / 2].normalized()
 	if (el.e_vec as DVec3).length() > 1e-6:
 		peri_dir = (el.e_vec as DVec3).normalized().to_v3()
-	_peri.visible = el.e > 0.002
+	_peri.visible = el.e > 0.002 and el.periapsis > body.radius
 	_peri.position = peri_dir * el.periapsis
 	_peri.text = "Перицентр %s" % fmt_dist(el.periapsis - body.radius)
 	_apo.visible = bound and el.e > 0.002
