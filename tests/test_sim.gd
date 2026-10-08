@@ -159,5 +159,33 @@ func _initialize() -> void:
 	sv.rails_step(10.0, t_enc + 200.0)
 	check(sv.body == root, "left Moon SOI back to Earth")
 
+	# 8. Trajectory prediction finds a Moon encounter on a Hohmann transfer
+	var r1 := root.radius + 20_000.0
+	var tof := 0.0
+	var m_hat := DVec3.new()
+	var r_m := moon.orbit_a
+	for _k in 5:
+		var a_t := (r1 + r_m) * 0.5
+		tof = PI * sqrt(a_t * a_t * a_t / root.mu)
+		var mp: DVec3 = moon.state_at(tof)[0]
+		m_hat = mp.normalized()
+		r_m = mp.length()
+	var h_m := (moon.state_at(0.0)[0] as DVec3).cross(moon.state_at(0.0)[1]).normalized()
+	var p_ship := m_hat.mul(-r1)
+	var v_dir := h_m.cross(p_ship.normalized())
+	var a_tr := (r1 + r_m) * 0.5
+	var v_peri := sqrt(root.mu * (2.0 / r1 - 1.0 / a_tr))
+	var t_start := Time.get_ticks_msec()
+	var segs := Trajectory.predict(p_ship, v_dir.mul(v_peri), root, 0.0)
+	var ms := Time.get_ticks_msec() - t_start
+	var names := []
+	for sg in segs:
+		names.append("%s:%s" % [sg.body.name, sg.end])
+	print("transfer tof=%.2f d, segments=%s, predict %d ms" % [tof / 86400.0, str(names), ms])
+	var enc := Trajectory.find_encounter(segs, moon)
+	check(not enc.is_empty(), "prediction enters Moon SOI")
+	if not enc.is_empty():
+		print("moon periapsis: %.0f km (r=%.0f km)" % [(enc.el.periapsis - moon.radius) / 1000.0, enc.el.periapsis / 1000.0])
+
 	print("FAILURES: %d" % failures)
 	quit(1 if failures > 0 else 0)
