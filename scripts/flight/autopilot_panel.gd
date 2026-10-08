@@ -8,6 +8,8 @@ var flight: Node3D
 const TASKS := [
 	["orbit", "Выход на орбиту Земли", "высота", "км", 15, 100, 5, 20],
 	["moon", "Перелёт к Луне и выход на орбиту", "высота у Луны", "км", 10, 200, 10, 30],
+	["moon_land", "Посадка на Луну (с орбиты Луны)", "", "", 0, 0, 0, 0],
+	["moon_up", "Взлёт с Луны на орбиту", "высота", "км", 15, 60, 5, 20],
 	["home", "Возврат на Землю и посадка", "перицентр у Земли", "км", 1, 8, 1, 3],
 	["deorbit", "Сход с орбиты и посадка", "", "", 0, 0, 0, 0],
 	["circ_apo", "Скруглить орбиту в апоцентре", "", "", 0, 0, 0, 0],
@@ -38,12 +40,20 @@ func _ready() -> void:
 	head.add_child(title)
 	head.add_child(_btn("Закрыть", hide))
 
+	# Task rows scroll: the list is taller than a phone screen in landscape.
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.custom_minimum_size = Vector2(0, 330)
+	box.add_child(scroll)
+	var rows := VBoxContainer.new()
+	rows.add_theme_constant_override("separation", 8)
+	scroll.add_child(rows)
 	for t in TASKS:
 		var kind: String = t[0]
 		_values[kind] = t[7]
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 6)
-		box.add_child(row)
+		rows.add_child(row)
 		var name_l := Label.new()
 		name_l.text = t[1]
 		name_l.custom_minimum_size = Vector2(380, 0)
@@ -66,6 +76,16 @@ func _ready() -> void:
 		row.add_child(_btn("+ в цепочку", func() -> void: _add(kind)))
 		_refresh_value(kind)
 
+	var presets := HBoxContainer.new()
+	presets.add_theme_constant_override("separation", 10)
+	box.add_child(presets)
+	var pl := Label.new()
+	pl.text = "Миссии:"
+	pl.add_theme_font_size_override("font_size", 20)
+	presets.add_child(pl)
+	presets.add_child(_btn("Орбита → Луна → домой", _full_mission))
+	presets.add_child(_btn("На Луну с посадкой", func() -> void: _run(_to_orbit_items() + [["moon", _values["moon"]], ["moon_land", 0]])))
+	presets.add_child(_btn("Взлёт с Луны и домой", func() -> void: _run([["moon_up", _values["moon_up"]], ["home", _values["home"]]])))
 	var sep := HSeparator.new()
 	box.add_child(sep)
 	_chain_label = Label.new()
@@ -76,7 +96,6 @@ func _ready() -> void:
 	var bottom := HBoxContainer.new()
 	bottom.add_theme_constant_override("separation", 10)
 	box.add_child(bottom)
-	bottom.add_child(_btn("Полная миссия: орбита → Луна → домой", _full_mission))
 	bottom.add_child(_btn("Запустить цепочку", func() -> void: _run(_chain.duplicate())))
 	bottom.add_child(_btn("Очистить", func() -> void:
 		_chain.clear()
@@ -114,11 +133,16 @@ func _add(kind: String) -> void:
 	_refresh_chain()
 
 
-func _full_mission() -> void:
-	var items: Array = []
+## Ascent to Earth orbit if the vessel is on the ground / suborbital at Earth.
+func _to_orbit_items() -> Array:
 	var v: Vessel = flight.vessel
 	if v.landed or v.body.has_atmosphere() and OrbitMath.elements(v.pos, v.vel, v.body.mu).periapsis - v.body.radius < v.body.atmosphere_height:
-		items.append(["orbit", _values["orbit"]])
+		return [["orbit", _values["orbit"]]]
+	return []
+
+
+func _full_mission() -> void:
+	var items: Array = _to_orbit_items()
 	items.append(["moon", _values["moon"]])
 	items.append(["home", _values["home"]])
 	_run(items)
@@ -148,6 +172,8 @@ func _run(items: Array) -> void:
 			"orbit": tasks += Autopilot.tasks_orbit(it[1] * 1000.0)
 			"moon": tasks += Autopilot.tasks_moon(flight.root_body, it[1] * 1000.0)
 			"home": tasks += Autopilot.tasks_home(it[1] * 1000.0)
+			"moon_land": tasks += Autopilot.tasks_moon_land()
+			"moon_up": tasks += Autopilot.tasks_moon_ascent(it[1] * 1000.0)
 			"deorbit": tasks += Autopilot.tasks_deorbit()
 			"circ_apo": tasks += Autopilot.tasks_circularize("apo")
 			"circ_peri": tasks += Autopilot.tasks_circularize("peri")

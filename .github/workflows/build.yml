@@ -140,8 +140,11 @@ jobs:
       - name: EVA test
         run: timeout 300 godot --headless --path . --script tests/test_eva.gd
 
-      - name: Autopilot mission test (pad -> Moon -> landing)
-        run: timeout 600 godot --headless --path . --script tests/test_mission.gd
+      - name: Autopilot mission test (pad -> Moon landing -> liftoff -> Earth)
+        run: timeout 900 godot --headless --path . --script tests/test_mission.gd
+
+      - name: Lunar module test (Moon orbit -> landing -> liftoff -> Earth)
+        run: timeout 600 godot --headless --path . --script tests/test_moon_landing.gd
 
       - name: Export APK
         run: |

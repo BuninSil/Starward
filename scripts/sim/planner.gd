@@ -225,6 +225,27 @@ static func deorbit(r: DVec3, v: DVec3, b: CelestialBody, t_now: float, target_a
 	return ManeuverNode.new(t_now + delay, b, v_needed - (st[1] as DVec3).length())
 
 
+## Deorbit for a landing in daylight on an airless body: picks the burn time
+## within one orbit so the point half an orbit later (≈ the new periapsis, where
+## the powered descent ends) has the sun ~35° above the horizon.
+static func deorbit_sunlit(r: DVec3, v: DVec3, b: CelestialBody, t_now: float, target_alt: float) -> ManeuverNode:
+	var el := OrbitMath.elements(r, v, b.mu)
+	var period: float = TAU * sqrt(pow(el.a, 3) / b.mu) if el.e < 1.0 else 3600.0
+	var sun := DVec3.from_v3(SolarSystem.SUN_DIR.normalized())
+	var best_delay := 60.0
+	var best := INF
+	for i in 96:
+		var delay := 60.0 + period * i / 96.0
+		var st := OrbitMath.propagate(r, v, b.mu, delay + period * 0.5)
+		var n := (st[0] as DVec3).normalized()
+		var elev := n.dot(sun)
+		var score := absf(elev - 0.57) + (5.0 if elev < 0.2 else 0.0)
+		if score < best:
+			best = score
+			best_delay = delay
+	return deorbit(r, v, b, t_now, target_alt, best_delay)
+
+
 ## Small mid-course correction ~2 minutes from now to hit `target_alt` at `target`.
 static func plan_correction(r: DVec3, v: DVec3, b: CelestialBody, t_now: float, target: CelestialBody,
 		target_alt: float) -> ManeuverNode:

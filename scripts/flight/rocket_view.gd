@@ -34,6 +34,7 @@ func build(v: Vessel) -> void:
 	_build_flame()
 	_build_chute()
 	_build_collider()
+	_update_legs()
 
 
 func _material(color: Color, metallic := 0.3, rough := 0.5) -> StandardMaterial3D:
@@ -48,6 +49,11 @@ func _build_tank_stage(node: Node3D, s: Dictionary, bottom: bool) -> void:
 	var d: float = s.diameter
 	var length: float = s.length
 	var engine_len := 1.2 if bottom else 0.9
+	var base := 0.0
+	if s.get("legs", false):
+		base = 0.6           # ground clearance under the bell, legs reach y = 0
+		engine_len = 0.7
+		_build_legs(node, s, base)
 	# Engine bell
 	var bell := MeshInstance3D.new()
 	var bm := CylinderMesh.new()
@@ -57,18 +63,19 @@ func _build_tank_stage(node: Node3D, s: Dictionary, bottom: bool) -> void:
 	bm.radial_segments = 20
 	bell.mesh = bm
 	bell.material_override = _material(Color(0.25, 0.25, 0.28), 0.8, 0.35)
-	bell.position.y = engine_len * 0.5
+	bell.position.y = base + engine_len * 0.5
 	node.add_child(bell)
 	# Tank
 	var tank := MeshInstance3D.new()
 	var tm := CylinderMesh.new()
 	tm.top_radius = d * 0.5
 	tm.bottom_radius = d * 0.5
-	tm.height = length - engine_len
-	tm.radial_segments = 32
+	tm.height = length - engine_len - base
+	tm.radial_segments = 32 if not s.get("legs", false) else 8
 	tank.mesh = tm
-	tank.material_override = _material(Color(0.92, 0.92, 0.9), 0.1, 0.6)
-	tank.position.y = engine_len + tm.height * 0.5
+	var gold: bool = s.get("legs", false) or s.name == "Взлётная ступень"
+	tank.material_override = _material(Color(0.85, 0.68, 0.3), 0.7, 0.35) if gold else _material(Color(0.92, 0.92, 0.9), 0.1, 0.6)
+	tank.position.y = base + engine_len + tm.height * 0.5
 	node.add_child(tank)
 	# Dark band = decoupler at the top of the stage
 	var band := MeshInstance3D.new()
@@ -81,8 +88,8 @@ func _build_tank_stage(node: Node3D, s: Dictionary, bottom: bool) -> void:
 	band.material_override = _material(Color(0.12, 0.12, 0.14), 0.4, 0.5)
 	band.position.y = length - 0.18
 	node.add_child(band)
-	# Fins on the bottom stage
-	if bottom:
+	# Fins on the bottom stage (not on a lander)
+	if bottom and not s.get("legs", false):
 		for k in 4:
 			var fin := MeshInstance3D.new()
 			var fm := BoxMesh.new()
@@ -93,6 +100,70 @@ func _build_tank_stage(node: Node3D, s: Dictionary, bottom: bool) -> void:
 			fin.position = Vector3(cos(ang), 0, sin(ang)) * (d * 0.5 + 0.5) + Vector3(0, engine_len + 1.0, 0)
 			fin.rotation.y = -ang
 			node.add_child(fin)
+
+
+## Four landing legs: struts from the tank side down to foot pads at y = 0.
+## Hidden while a stage is attached below (see _update_legs).
+func _build_legs(node: Node3D, s: Dictionary, base: float) -> void:
+	var legs := Node3D.new()
+	legs.name = "Legs"
+	node.add_child(legs)
+	var r: float = float(s.diameter) * 0.5
+	var mat := _material(Color(0.7, 0.7, 0.72), 0.8, 0.4)
+	for k in 4:
+		var ang := TAU * k / 4.0 + PI / 4.0
+		var dir := Vector3(cos(ang), 0.0, sin(ang))
+		var top := dir * (r * 0.9) + Vector3(0, base + float(s.length) * 0.55, 0)
+		var foot := dir * (r + 1.1) + Vector3(0, 0.12, 0)
+		var strut := MeshInstance3D.new()
+		var cm := CylinderMesh.new()
+		cm.top_radius = 0.07
+		cm.bottom_radius = 0.07
+		cm.height = top.distance_to(foot)
+		cm.radial_segments = 8
+		strut.mesh = cm
+		strut.material_override = mat
+		legs.add_child(strut)
+		strut.transform = _segment(top, foot)
+		# Diagonal brace from the tank bottom.
+		var brace := MeshInstance3D.new()
+		var bm := CylinderMesh.new()
+		var b0 := dir * (r * 0.9) + Vector3(0, base + 0.2, 0)
+		var b1 := (top + foot) * 0.5
+		bm.top_radius = 0.045
+		bm.bottom_radius = 0.045
+		bm.height = b0.distance_to(b1)
+		bm.radial_segments = 6
+		brace.mesh = bm
+		brace.material_override = mat
+		legs.add_child(brace)
+		brace.transform = _segment(b0, b1)
+		var pad := MeshInstance3D.new()
+		var pm := CylinderMesh.new()
+		pm.top_radius = 0.3
+		pm.bottom_radius = 0.38
+		pm.height = 0.12
+		pm.radial_segments = 12
+		pad.mesh = pm
+		pad.material_override = mat
+		pad.position = foot - Vector3(0, 0.06, 0)
+		legs.add_child(pad)
+
+
+## Local transform for a Y-axis cylinder spanning a..b.
+static func _segment(a: Vector3, b: Vector3) -> Transform3D:
+	var y := (b - a).normalized()
+	var x := y.cross(Vector3.FORWARD if absf(y.z) < 0.9 else Vector3.RIGHT).normalized()
+	var z := x.cross(y)
+	return Transform3D(Basis(x, y, z), (a + b) * 0.5)
+
+
+## Legs are deployed only on the bottom stage.
+func _update_legs() -> void:
+	for i in _stage_nodes.size():
+		var legs := _stage_nodes[i].get_node_or_null("Legs") as Node3D
+		if legs:
+			legs.visible = i == _stage_nodes.size() - 1
 
 
 func _build_capsule(node: Node3D, s: Dictionary) -> void:
@@ -225,6 +296,7 @@ func detach_bottom_stage() -> Node3D:
 		n.position.y -= drop
 	node.set_meta("global", gt)
 	_build_collider()
+	_update_legs()
 	return node
 
 

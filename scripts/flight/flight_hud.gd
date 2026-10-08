@@ -362,6 +362,17 @@ func _build_debug_menu() -> void:
 	grid.add_child(_button("Сброс на старт", func() -> void:
 		_debug_menu.hide()
 		flight.reset_to_pad()))
+	var design_btn := _button("Ракета: " + Vessel.DESIGNS[Vessel.design], func() -> void: pass)
+	design_btn.pressed.connect(func() -> void:
+		Vessel.design = "orbit" if Vessel.design == "moon" else "moon"
+		design_btn.text = "Ракета: " + Vessel.DESIGNS[Vessel.design]
+		_debug_menu.hide()
+		flight.reset_to_pad()
+		toast("На старте: " + Vessel.DESIGNS[Vessel.design]))
+	grid.add_child(design_btn)
+	grid.add_child(_button("Лунный модуль на орбите Луны", func() -> void:
+		_debug_menu.hide()
+		flight.teleport_lunar_module_to_orbit(30_000.0)))
 	grid.add_child(_button("Орбита 20 км", func() -> void:
 		_debug_menu.hide()
 		flight.teleport_to_orbit(20_000.0)))

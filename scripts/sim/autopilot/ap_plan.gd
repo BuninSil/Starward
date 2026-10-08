@@ -19,6 +19,7 @@ func _init(k: String, p: Dictionary) -> void:
 		"circularize": title = "Скругление в %s" % ("апоцентре" if p.where == "apo" else "перицентре")
 		"return": title = "Отлёт домой (перицентр %d км)" % int(p.alt / 1000.0)
 		"deorbit": title = "Сход с орбиты"
+		"moon_deorbit": title = "Сход с орбиты к освещённому месту"
 		"peri_correction": title = "Коррекция перицентра (%d км)" % int(p.alt / 1000.0)
 		_: title = "Расчёт манёвра"
 
@@ -107,6 +108,14 @@ func _compute(r: DVec3, vel: DVec3, b: CelestialBody, t: float) -> Dictionary:
 			return {"node": ret.node, "msg": "перицентр у %s %.1f км" % [b.parent.name, ret.peri_alt / 1000.0]}
 		"deorbit":
 			return {"node": Planner.deorbit(r, vel, b, t, params.alt)}
+		"moon_deorbit":
+			if b.has_atmosphere():
+				return {"msg": "посадка на двигателях — только на тело без атмосферы"}
+			var el3 := OrbitMath.elements(r, vel, b.mu)
+			if el3.e >= 1.0:
+				return {"msg": "сначала нужна орбита вокруг %s" % b.name}
+			var dn := Planner.deorbit_sunlit(r, vel, b, t, params.alt)
+			return {"node": dn, "msg": "тормозной импульс через %s" % ApExecute._fmt(dn.t - t)}
 		"peri_correction":
 			var el2 := OrbitMath.elements(r, vel, b.mu)
 			if absf(el2.periapsis - b.radius - params.alt) < 300.0:

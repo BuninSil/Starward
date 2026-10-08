@@ -14,7 +14,7 @@ const EvaHudScript := preload("res://scripts/eva/eva_hud.gd")
 const DT := 1.0 / 60.0
 const WARPS: Array[int] = [1, 2, 4, 10, 50, 100, 1000, 10000]
 const PHYSICS_WARP_MAX := 4
-const SUN_DIR := Vector3(0.62, 0.35, 0.7)   ## towards the sun, inertial
+const SUN_DIR := SolarSystem.SUN_DIR
 
 signal message(text: String)
 
@@ -157,11 +157,8 @@ func reset_to_pad() -> void:
 	if vessel:
 		autopilot.disengage(vessel)
 	var inf_fuel := vessel.infinite_fuel if vessel else false
-	vessel = Vessel.default_rocket(root_body)
+	_set_vessel(Vessel.make(Vessel.design, root_body))
 	vessel.infinite_fuel = inf_fuel
-	vessel.staged.connect(_on_staged)
-	vessel.destroyed.connect(_on_destroyed)
-	vessel.soi_changed.connect(_on_soi_changed)
 	vessel.place_on_surface(SolarSystem.LAUNCH_LAT, SolarSystem.LAUNCH_LON, sim_time)
 	# Roll so local +X points east and +Z south: joystick right = nose east.
 	var up := vessel.pos.normalized().to_v3()
@@ -175,6 +172,26 @@ func reset_to_pad() -> void:
 	cam_dist = 40.0
 	hud.on_vessel_reset()
 	Log.info("Flight: vessel on pad, mass %.0f kg, dV %.0f m/s, TWR %.2f" % [vessel.mass(), vessel.total_delta_v(), vessel.twr()])
+
+
+func _set_vessel(v: Vessel) -> void:
+	vessel = v
+	vessel.staged.connect(_on_staged)
+	vessel.destroyed.connect(_on_destroyed)
+	vessel.soi_changed.connect(_on_soi_changed)
+
+
+## Debug: replaces the vessel by the lunar module (capsule + ascent + descent
+## stage) in a circular orbit around the Moon.
+func teleport_lunar_module_to_orbit(altitude: float) -> void:
+	autopilot.disengage(vessel)
+	abort_eva()
+	var inf_fuel := vessel.infinite_fuel
+	_set_vessel(Vessel.lunar_module(vessel.body))
+	vessel.infinite_fuel = inf_fuel
+	rocket.build(vessel)
+	teleport_to_body_orbit(SolarSystem.find(root_body, "Луна"), altitude)
+	Log.info("Flight: lunar module in Moon orbit, dV %.0f m/s" % vessel.total_delta_v())
 
 
 ## Debug: circular orbit at the given altitude (prograde, equatorial-ish over the site).
@@ -292,6 +309,15 @@ func _on_staged(_dropped: Dictionary) -> void:
 	add_child(node)
 	node.top_level = true
 	node.global_transform = node.get_meta("global")
+	if vessel.landed:
+		# Left standing on the ground (e.g. the descent stage on the Moon).
+		_debris.append({
+			"node": node, "body": vessel.body, "basis": node.global_transform.basis,
+			"fixed": vessel.body.inertial_to_fixed(vessel.pos.add(DVec3.from_v3(node.global_position)), sim_time),
+			"pos": DVec3.new(), "vel": DVec3.new(), "life": INF,
+		})
+		Log.info("Flight: stage left on the surface, %d stage(s) left" % vessel.stages.size())
+		return
 	_debris.append({
 		"node": node,
 		"pos": vessel.pos.add(DVec3.from_v3(node.global_position)),
@@ -435,6 +461,13 @@ func _apply_autopilot_warp() -> void:
 func _step_debris(dt: float) -> void:
 	for i in range(_debris.size() - 1, -1, -1):
 		var d: Dictionary = _debris[i]
+		if d.has("fixed"):
+			# Static on the surface: rotates with the body; dropped when far away.
+			d.pos = (d.body as CelestialBody).fixed_to_inertial(d.fixed, sim_time)
+			if d.body != vessel.body or (d.pos as DVec3).sub(vessel.pos).length() > 50_000.0:
+				(d.node as Node3D).queue_free()
+				_debris.remove_at(i)
+			continue
 		d.life -= dt
 		var p: DVec3 = d.pos
 		var db: CelestialBody = d.body

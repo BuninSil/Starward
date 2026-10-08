@@ -62,9 +62,14 @@ func update(ap: Autopilot, v: Vessel, _t: float) -> int:
 			v.target_dir = (up * cos(pitch) + east * sin(pitch)).normalized()
 			v.throttle = 1.0
 			# Overshoot a little: the horizon-hold circularization trims apoapsis.
+			var vs_turn := v.vel.to_v3().dot(up)
 			if apo_alt >= target_altitude * 1.12:
 				v.throttle = 0.0
 				phase = Phase.COAST
+			elif apo_alt >= target_altitude * 0.97 and vs_turn < 25.0 and alt > b.atmosphere_height:
+				# Strong rocket: already at the target height and flying level —
+				# circularize right here instead of sagging back down.
+				phase = Phase.CIRCULARIZE
 		Phase.COAST:
 			v.throttle = 0.0
 			v.hold_mode = "prograde"
@@ -85,12 +90,20 @@ func update(ap: Autopilot, v: Vessel, _t: float) -> int:
 			var horiz := v.vel.to_v3() - up * v.vel.to_v3().dot(up)
 			horiz = horiz.normalized() if horiz.length() > 1e-3 else east
 			var vs := v.vel.to_v3().dot(up)
-			var hold_alt := maxf(apo_alt, b.atmosphere_height * 1.1)
-			var pitch_up := clampf((hold_alt - alt) * 0.0004 - vs * 0.01, -0.35, 0.35)
+			# Hold near the apoapsis, but never chase it above the target.
+			var hold_alt := maxf(minf(apo_alt, target_altitude * 1.05), b.atmosphere_height * 1.1)
+			# Vertical acceleration needed: gravity minus centrifugal relief, plus a
+			# soft altitude/vertical-speed hold; the pitch gives it from the thrust.
+			var r := v.pos.length()
+			var vh2 := (v.vel.to_v3() - up * vs).length_squared()
+			var a_need := b.mu / (r * r) - vh2 / r + (hold_alt - alt) * 0.004 - vs * 0.15
+			var a_thr := maxf(v.current_thrust_max() / v.mass(), 0.1)
+			var pitch_up := asin(clampf(a_need / a_thr, -0.35, 0.9))
 			v.hold_mode = "target"
 			v.target_dir = (horiz * cos(pitch_up) + up * sin(pitch_up)).normalized()
 			v.throttle = 1.0
-			if peri_alt >= target_altitude * 0.95 or (el.e < 0.003 and peri_alt > b.atmosphere_height):
+			var overshoot: bool = apo_alt > target_altitude * 1.5 and peri_alt > maxf(b.atmosphere_height, target_altitude * 0.5)
+			if peri_alt >= target_altitude * 0.95 or (el.e < 0.003 and peri_alt > b.atmosphere_height) or overshoot:
 				v.throttle = 0.0
 				message = "орбита %.1f × %.1f км" % [apo_alt / 1000.0, peri_alt / 1000.0]
 				return DONE

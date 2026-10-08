@@ -149,5 +149,20 @@ static func tasks_deorbit() -> Array:
 	]
 
 
+## Powered landing from orbit around an airless body (the Moon).
+static func tasks_moon_land(peri_alt := 6000.0) -> Array:
+	return [
+		ApPlan.new("moon_deorbit", {"alt": peri_alt}),
+		ApDescent.new(),
+	]
+
+
+## Liftoff from an airless body to a circular orbit (drops the descent stage).
+static func tasks_moon_ascent(alt := 20_000.0) -> Array:
+	var asc := ApAscent.new(alt)
+	asc.title = "Взлёт на орбиту %d км" % int(alt / 1000.0)
+	return [ApLiftoff.new(), asc]
+
+
 static func tasks_execute(n: ManeuverNode) -> Array:
 	return [ApExecute.new(n)]

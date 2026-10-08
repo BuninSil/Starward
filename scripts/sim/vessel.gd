@@ -135,6 +135,11 @@ func stage() -> bool:
 	if stages.size() <= 1 or destroyed_flag:
 		return false
 	var dropped: Dictionary = stages.pop_back()
+	if landed:
+		# The dropped stage stays on the ground; the rest now stands on top of it.
+		_surface_fixed = _surface_fixed.add(_surface_fixed.normalized().mul(float(dropped.length)))
+		staged.emit(dropped)
+		return true
 	# Small separation kick along the nose.
 	var kick := up_world() * STAGE_SEPARATION_DV
 	vel.add_scaled(DVec3.from_v3(kick), 1.0)
@@ -425,6 +430,49 @@ static func make_stage(name: String, dry: float, fuel: float, thrust: float,
 		"thrust_vac": thrust, "isp_sl": isp_sl, "isp_vac": isp_vac,
 		"diameter": diameter, "length": length, "has_engine": thrust > 0.0,
 	}
+
+
+## Prebuilt designs: id -> title (shown on the title screen and in the debug menu).
+const DESIGNS := {"orbit": "Ракета «Орбита»", "moon": "Лунная ракета"}
+## Design used by the next flight / reset (picked on the title screen).
+static var design := "moon"
+
+
+static func make(id: String, b: CelestialBody) -> Vessel:
+	return moon_rocket(b) if id == "moon" else default_rocket(b)
+
+
+## Index of the stage with landing legs, or -1.
+func legs_stage() -> int:
+	for i in stages.size():
+		if stages[i].get("legs", false):
+			return i
+	return -1
+
+
+## Lunar rocket (~7.6 km/s): capsule, ascent stage, descent stage with legs,
+## translunar block, two booster stages. TWR ~1.4 at liftoff, ~3 on the Moon.
+static func moon_rocket(b: CelestialBody) -> Vessel:
+	var v := Vessel.new()
+	v.body = b
+	v.stages = [
+		make_stage("Капсула", 1200.0, 0.0, 0.0, 1.0, 1.0, 1.8, 2.2),
+		make_stage("Взлётная ступень", 400.0, 700.0, 12_000.0, 300.0, 320.0, 2.2, 2.2),
+		make_stage("Посадочная ступень", 600.0, 1500.0, 22_000.0, 290.0, 315.0, 2.8, 2.6),
+		make_stage("Разгонный блок", 800.0, 3400.0, 40_000.0, 300.0, 340.0, 2.6, 5.0),
+		make_stage("Вторая ступень", 1200.0, 6000.0, 120_000.0, 300.0, 340.0, 2.8, 7.0),
+		make_stage("Первая ступень", 3500.0, 17000.0, 560_000.0, 280.0, 310.0, 3.4, 13.0),
+	]
+	v.stages[0]["parachute"] = true
+	v.stages[2]["legs"] = true
+	return v
+
+
+## Just the lunar module (capsule + ascent + descent stage), for debug teleports.
+static func lunar_module(b: CelestialBody) -> Vessel:
+	var v := moon_rocket(b)
+	v.stages.resize(3)
+	return v
 
 
 ## Two-stage rocket for stage 1 of the game: ~4.4 km/s total, TWR ~1.5 at liftoff.

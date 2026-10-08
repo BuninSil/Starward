@@ -6,6 +6,7 @@ extends RefCounted
 
 const SCALE := 0.1
 const G0 := 9.80665
+const SUN_DIR := Vector3(0.62, 0.35, 0.7)   ## towards the sun, inertial (fixed for now)
 
 
 static func earth() -> CelestialBody:
