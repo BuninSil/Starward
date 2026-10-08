@@ -45,7 +45,7 @@ static func build() -> CelestialBody:
 	var e := earth()
 	var m := moon()
 	e.add_child_body(m)
-	e.terrain = Terrain.load_for("earth", 15.0, 3)
+	e.terrain = Terrain.load_for("earth", 15.0, 3, true)
 	m.terrain = Terrain.load_for("moon", 25.0, 21)
 	# Baikonur pad: flat 1.5 km around the launch site.
 	e.terrain.add_flat_spot(CelestialBody.surface_normal(LAUNCH_LAT, LAUNCH_LON), 1500.0, e.radius)

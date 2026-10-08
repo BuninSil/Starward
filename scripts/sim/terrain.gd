@@ -10,11 +10,13 @@ var scale_div := 10.0
 var _data := PackedByteArray()
 var _noise := FastNoiseLite.new()
 var detail_amp := 0.0        ## game metres of procedural detail
+var has_ocean := false       ## negative heights are sea: the surface is clamped to 0
 var flat_spots: Array = []   ## [[fixed_normal: DVec3, radius_m: float]] forced to height 0 (pads)
 
 
-static func load_for(id: String, detail_m: float, seed_v: int) -> Terrain:
+static func load_for(id: String, detail_m: float, seed_v: int, ocean := false) -> Terrain:
 	var t := Terrain.new()
+	t.has_ocean = ocean
 	t.detail_amp = detail_m
 	t._noise.seed = seed_v
 	t._noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
@@ -63,9 +65,16 @@ func _px(x: int, y: int) -> float:
 	return float(_data.decode_s16((y * width + x) * 2))
 
 
+## Coarse height for the far globe mesh: map only (no detail, no pads).
+func globe_height(lat: float, lon: float) -> float:
+	var h := map_height(lat, lon)
+	return maxf(h, 0.0) if has_ocean else h
+
+
 ## Height above the reference radius (game metres) for a body-fixed unit vector.
-## Oceans (negative) are treated as the sea surface for bodies with atmosphere.
-func height_at(n: DVec3, radius: float, ocean := true) -> float:
+## On bodies with oceans negative heights are the sea surface (0).
+func height_at(n: DVec3, radius: float) -> float:
+	var ocean := has_ocean
 	var r := n.length()
 	var lat := rad_to_deg(asin(clampf(n.y / r, -1.0, 1.0)))
 	var lon := rad_to_deg(atan2(-n.z, n.x))

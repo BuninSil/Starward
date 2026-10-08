@@ -671,14 +671,37 @@ func _start_surface_eva() -> void:
 var _ground: StaticBody3D = null
 
 
-## Ground plane under the landed vessel (the vessel origin is on the surface).
+## Ground plane under the astronaut: tangent to the terrain (height and slope
+## from the body's relief map), so walking follows hills and crater walls.
 func _update_ground() -> void:
 	if _ground == null:
 		return
-	var up := vessel.pos.normalized().to_v3()
-	var x := up.cross(Vector3.FORWARD if absf(up.z) < 0.9 else Vector3.RIGHT).normalized()
-	var z := x.cross(up)
-	_ground.global_transform = Transform3D(Basis(x, up, z), -up * maxf(vessel.altitude() - vessel.height_offset, 0.0))
+	var at := astronaut.global_position if astronaut != null and is_instance_valid(astronaut) else Vector3.ZERO
+	var c := _terrain_point(vessel.pos.add(DVec3.from_v3(at)))
+	# Slope from two neighbours ~2 m away along the local horizon.
+	var up := vessel.pos.add(DVec3.from_v3(at)).normalized().to_v3()
+	var e := Vector3.UP.cross(up)
+	e = e.normalized() if e.length() > 1e-3 else Vector3.RIGHT
+	var nrt := up.cross(e)
+	var pe := _terrain_point(vessel.pos.add(DVec3.from_v3(at + e * 2.0)))
+	var pn := _terrain_point(vessel.pos.add(DVec3.from_v3(at + nrt * 2.0)))
+	var n := (pe - c).cross(pn - c).normalized()
+	if n.dot(up) < 0.0:
+		n = -n
+	if n.dot(up) < 0.5:   # steeper than 60 deg: treat as a wall-ish slope, keep it walkable
+		n = (n + up).normalized()
+	var x := n.cross(Vector3.FORWARD if absf(n.z) < 0.9 else Vector3.RIGHT).normalized()
+	var z := x.cross(n)
+	_ground.global_transform = Transform3D(Basis(x, n, z), c)
+
+
+## Terrain surface point (scene coordinates, relative to the vessel) under an
+## inertial body-centred position.
+func _terrain_point(p: DVec3) -> Vector3:
+	var b := vessel.body
+	var nf := b.inertial_to_fixed(p, sim_time).normalized()
+	var r := b.radius + b.surface_height(nf)
+	return p.normalized().mul(r).sub(vessel.pos).to_v3()
 
 
 func is_surface_eva() -> bool:

@@ -34,16 +34,10 @@ func setup(b: CelestialBody, with_site: bool, lat: float, lon: float, sun_dir: V
 	_spin = Node3D.new()
 	add_child(_spin)
 
-	var mesh := SphereMesh.new()
-	mesh.radius = b.radius
-	mesh.height = b.radius * 2.0
-	mesh.radial_segments = SPHERE_SEGMENTS if b.has_atmosphere() else 256
-	mesh.rings = mesh.radial_segments / 2
-	mesh.material = _make_surface_material()
 	_surface = MeshInstance3D.new()
-	_surface.mesh = mesh
+	_surface.mesh = _build_globe(SPHERE_SEGMENTS if b.has_atmosphere() else 256)
+	_surface.material_override = _make_surface_material()
 	_surface.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	# SphereMesh puts u=0 at -X; rotate so texture longitude roughly matches.
 	_spin.add_child(_surface)
 
 	if b.has_atmosphere():
@@ -84,6 +78,7 @@ func update_view(origin_rel: DVec3, t: float, view_scale := 1.0) -> void:
 	position = origin_rel.mul(view_scale).to_v3()
 	scale = Vector3.ONE * view_scale
 	_spin.basis = Basis(Vector3.UP, body.rotation_angle(t))
+	_poll_patch_task()
 	if _site == null or not _patch_built:
 		return
 	_site.visible = view_scale >= 0.999
@@ -102,7 +97,88 @@ func update_view(origin_rel: DVec3, t: float, view_scale := 1.0) -> void:
 	_site.global_transform = Transform3D(site_basis, site_rel.to_v3())
 
 
+## Body id used for asset file names.
+func _asset_id() -> String:
+	return "earth" if body.has_atmosphere() else "moon"
+
+
+## UV sphere in the body-fixed frame with u/v = longitude/latitude (matches the
+## NASA maps), vertices displaced by the map height. Built from packed arrays
+## (analytic normals/tangents): SurfaceTool is too slow for ~75k vertices on phones.
+func _build_globe(segs: int) -> ArrayMesh:
+	var rings := segs / 2
+	var nv := (rings + 1) * (segs + 1)
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var tangents := PackedFloat32Array()
+	var uvs := PackedVector2Array()
+	verts.resize(nv)
+	normals.resize(nv)
+	tangents.resize(nv * 4)
+	uvs.resize(nv)
+	var k := 0
+	for i in rings + 1:
+		var lat := 90.0 - 180.0 * i / rings
+		var la := deg_to_rad(lat)
+		var cl := cos(la)
+		var sl := sin(la)
+		for j in segs + 1:
+			var lon := -180.0 + 360.0 * j / segs
+			var lo := deg_to_rad(lon)
+			var n := Vector3(cl * cos(lo), sl, -cl * sin(lo))
+			var r := body.radius + (body.terrain.globe_height(lat, lon) if body.terrain != null else 0.0)
+			verts[k] = n * r
+			normals[k] = n
+			# Tangent = east (direction of increasing u), binormal sign +1.
+			tangents[k * 4] = -sin(lo)
+			tangents[k * 4 + 1] = 0.0
+			tangents[k * 4 + 2] = -cos(lo)
+			tangents[k * 4 + 3] = 1.0
+			uvs[k] = Vector2(float(j) / segs, float(i) / rings)
+			k += 1
+	var idx := PackedInt32Array()
+	idx.resize(rings * segs * 6)
+	k = 0
+	for i in rings:
+		for j in segs:
+			var a := i * (segs + 1) + j
+			var b2 := a + segs + 1
+			idx[k] = a
+			idx[k + 1] = a + 1
+			idx[k + 2] = b2
+			idx[k + 3] = a + 1
+			idx[k + 4] = b2 + 1
+			idx[k + 5] = b2
+			k += 6
+	var arr := []
+	arr.resize(Mesh.ARRAY_MAX)
+	arr[Mesh.ARRAY_VERTEX] = verts
+	arr[Mesh.ARRAY_NORMAL] = normals
+	arr[Mesh.ARRAY_TANGENT] = tangents
+	arr[Mesh.ARRAY_TEX_UV] = uvs
+	arr[Mesh.ARRAY_INDEX] = idx
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+	return mesh
+
+
 func _make_surface_material() -> StandardMaterial3D:
+	var id := _asset_id()
+	var color_path := "res://assets/planets/%s_color.jpg" % id
+	if ResourceLoader.exists(color_path):
+		var m := StandardMaterial3D.new()
+		m.albedo_texture = load(color_path)
+		var np := "res://assets/planets/%s_normal.png" % id
+		if ResourceLoader.exists(np):
+			m.normal_enabled = true
+			m.normal_texture = load(np)
+			m.normal_scale = 1.0
+		m.roughness = 0.9 if not body.has_atmosphere() else 0.75
+		return m
+	return _make_noise_material()
+
+
+func _make_noise_material() -> StandardMaterial3D:
 	var noise := FastNoiseLite.new()
 	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	noise.seed = 3
@@ -135,81 +211,147 @@ func _make_surface_material() -> StandardMaterial3D:
 	return mat
 
 
-## Spherical cap around the launch site with real curvature, plus the pad.
+## Spherical cap around the launch site with real curvature and map relief, plus the pad.
 ## Makes sure the detailed ground patch covers `fixed_normal` (body-fixed unit
-## vector); rebuilds it there if it is more than a few km away. Returns true if rebuilt.
+## vector). Rebuilds it in a worker thread when the vessel moved away from its
+## centre; the old patch stays until the new one is ready. Returns true if started.
 func ensure_patch(fixed_normal: DVec3) -> bool:
-	if _patch_built and _site_normal_fixed.dot(fixed_normal) > cos(CAP_RADIUS * 0.4 / body.radius):
+	_poll_patch_task()
+	if _patch_task >= 0:
 		return false
-	for c in _site.get_children():
-		c.queue_free()
-	var near_pad := _has_launch_pad and _launch_normal_fixed.dot(fixed_normal) > cos(CAP_RADIUS * 0.4 / body.radius)
-	_site_normal_fixed = _launch_normal_fixed if near_pad else fixed_normal
-	_build_site(near_pad)
-	_patch_built = true
+	if _patch_built and _site_normal_fixed.dot(fixed_normal) > cos(CAP_RADIUS * 0.15 / body.radius):
+		return false
+	var near_pad := _has_launch_pad and _launch_normal_fixed.dot(fixed_normal) > cos(CAP_RADIUS * 0.15 / body.radius)
+	var centre := _launch_normal_fixed if near_pad else fixed_normal.normalized()
+	_patch_result = {}
+	_patch_task = WorkerThreadPool.add_task(func() -> void: _patch_result = _compute_patch(centre, near_pad))
 	return true
 
 
+var _patch_task := -1
+var _patch_result: Dictionary = {}
+
+
+func _poll_patch_task() -> void:
+	if _patch_task < 0 or not WorkerThreadPool.is_task_completed(_patch_task):
+		return
+	WorkerThreadPool.wait_for_task_completion(_patch_task)
+	_patch_task = -1
+	if not _patch_result.is_empty():
+		_apply_patch(_patch_result)
+		_patch_result = {}
+
+
+func _exit_tree() -> void:
+	if _patch_task >= 0:
+		WorkerThreadPool.wait_for_task_completion(_patch_task)
+		_patch_task = -1
+
+
 func _build_site(with_pad := true) -> void:
+	_apply_patch(_compute_patch(_site_normal_fixed, with_pad))
+
+
+## Pure data (safe on a worker thread): patch vertices in the site frame
+## (x east, y up, z south; origin on the reference sphere under the centre).
+func _compute_patch(centre: DVec3, with_pad: bool) -> Dictionary:
 	var r := body.radius
-	var rings := 48
-	var segs := 64
+	var rings := 72
+	var segs := 80
 	var max_a := CAP_RADIUS / r
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var noise := FastNoiseLite.new()
-	noise.seed = 11
-	noise.frequency = 0.0008
-	var verts: Array[Vector3] = []
-	var cols: Array[Color] = []
+	var up_f := centre.normalized()
+	var east_f := DVec3.new(0, 1, 0).cross(up_f).normalized()
+	var south_f := east_f.cross(up_f)
+	var lon0 := CelestialBody.lat_lon(up_f).y
+	var nv := 1 + rings * segs
+	var verts := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	var uv2s := PackedVector2Array()
+	verts.resize(nv)
+	uvs.resize(nv)
+	uv2s.resize(nv)
+	var k := 0
 	# Ring 0 = centre point.
 	for i in rings + 1:
 		var f := float(i) / rings
-		var a := max_a * f * f          # denser near the pad
-		var dist := a * r
+		var a := max_a * f * f          # denser near the centre
 		var count := 1 if i == 0 else segs
 		for j in count:
 			var phi := TAU * j / segs
-			var p := Vector3(r * sin(a) * cos(phi), r * cos(a) - r, r * sin(a) * sin(phi))
-			verts.append(p)
-			var c: Color
-			var n := noise.get_noise_2d(p.x, p.z) * 0.5 + 0.5
-			if with_pad and dist < PAD_RADIUS:
-				c = Color(0.55, 0.55, 0.55)
-			elif body.has_atmosphere():
-				c = Color(0.34, 0.33, 0.2).lerp(Color(0.22, 0.36, 0.14), n)
-				# fade into the sphere texture tint at the edge
-				c = c.lerp(Color(0.2, 0.38, 0.16), clampf((f - 0.7) / 0.3, 0.0, 1.0))
-			else:
-				var fine := noise.get_noise_2d(p.x * 9.0, p.z * 9.0) * 0.5 + 0.5
-				c = Color(0.36, 0.36, 0.37).lerp(Color(0.58, 0.57, 0.55), n * 0.7 + fine * 0.3)
-			cols.append(c)
-	var idx := func(i: int, j: int) -> int:
-		return 0 if i == 0 else 1 + (i - 1) * segs + (j % segs)
+			var d := east_f.mul(sin(a) * cos(phi)).add(up_f.mul(cos(a))).add(south_f.mul(sin(a) * sin(phi)))
+			var rr := r + body.surface_height(d)
+			var p := Vector3(rr * sin(a) * cos(phi), rr * cos(a) - r, rr * sin(a) * sin(phi))
+			verts[k] = p
+			var g := CelestialBody.lat_lon(d)
+			var lon := lon0 + wrapf(g.y - lon0, -180.0, 180.0)   # continuous across the date line
+			uvs[k] = Vector2((lon + 180.0) / 360.0, (90.0 - g.x) / 180.0)
+			uv2s[k] = Vector2(p.x, p.z) / 120.0
+			k += 1
+	var idx := PackedInt32Array()
 	for i in rings:
 		for j in segs:
 			if i == 0:
-				_tri(st, verts, cols, 0, idx.call(1, j), idx.call(1, j + 1))
+				idx.append_array([0, 1 + j, 1 + (j + 1) % segs])
 			else:
-				var a0: int = idx.call(i, j)
-				var a1: int = idx.call(i, j + 1)
-				var b0: int = idx.call(i + 1, j)
-				var b1: int = idx.call(i + 1, j + 1)
-				_tri(st, verts, cols, a0, b1, a1)
-				_tri(st, verts, cols, a0, b0, b1)
-	st.generate_normals()
-	var mesh := st.commit()
-	var mat := StandardMaterial3D.new()
-	mat.vertex_color_use_as_albedo = true
-	mat.vertex_color_is_srgb = true
-	mat.roughness = 0.95
+				var a0 := 1 + (i - 1) * segs + j
+				var a1 := 1 + (i - 1) * segs + (j + 1) % segs
+				var b0 := a0 + segs
+				var b1 := a1 + segs
+				idx.append_array([a0, b1, a1, a0, b0, b1])
+	# Smooth normals: area-weighted face normals (winding: front faces are clockwise).
+	var normals := PackedVector3Array()
+	normals.resize(nv)
+	for t in range(0, idx.size(), 3):
+		var v0 := verts[idx[t]]
+		var fn := (verts[idx[t + 2]] - v0).cross(verts[idx[t + 1]] - v0)
+		normals[idx[t]] += fn
+		normals[idx[t + 1]] += fn
+		normals[idx[t + 2]] += fn
+	for n in nv:
+		normals[n] = normals[n].normalized()
+	return {"centre": up_f, "with_pad": with_pad, "h0": body.surface_height(up_f),
+		"verts": verts, "normals": normals, "uvs": uvs, "uv2s": uv2s, "idx": idx}
+
+
+func _apply_patch(res: Dictionary) -> void:
+	for c in _site.get_children():
+		c.queue_free()
+	_site_normal_fixed = res.centre
+	_patch_built = true
+	var arr := []
+	arr.resize(Mesh.ARRAY_MAX)
+	arr[Mesh.ARRAY_VERTEX] = res.verts
+	arr[Mesh.ARRAY_NORMAL] = res.normals
+	arr[Mesh.ARRAY_TEX_UV] = res.uvs
+	arr[Mesh.ARRAY_TEX_UV2] = res.uv2s
+	arr[Mesh.ARRAY_INDEX] = res.idx
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
-	mi.material_override = mat
+	if _patch_material == null:
+		_patch_material = _make_patch_material()
+	mi.material_override = _patch_material
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_site.add_child(mi)
-	if not with_pad:
+	if not res.with_pad:
 		return
+	var h0: float = res.h0
+
+	# Concrete pad, sitting on the flattened terrain.
+	var pad := MeshInstance3D.new()
+	var pm := CylinderMesh.new()
+	pm.top_radius = PAD_RADIUS
+	pm.bottom_radius = PAD_RADIUS + 1.0
+	pm.height = 1.0
+	pm.radial_segments = 48
+	pad.mesh = pm
+	var pmat := StandardMaterial3D.new()
+	pmat.albedo_color = Color(0.55, 0.55, 0.55)
+	pmat.roughness = 0.95
+	pad.material_override = pmat
+	pad.position = Vector3(0.0, h0 - 0.5, 0.0)
+	_site.add_child(pad)
 
 	# Launch tower next to the rocket.
 	var tower := MeshInstance3D.new()
@@ -220,11 +362,34 @@ func _build_site(with_pad := true) -> void:
 	tmat.albedo_color = Color(0.7, 0.25, 0.15)
 	tmat.roughness = 0.7
 	tower.material_override = tmat
-	tower.position = Vector3(5.0, 10.0, 0.0)
+	tower.position = Vector3(5.0, h0 + 10.0, 0.0)
 	_site.add_child(tower)
 
 
-func _tri(st: SurfaceTool, v: Array[Vector3], c: Array[Color], a: int, b: int, d: int) -> void:
-	for k in [a, b, d]:
-		st.set_color(c[k])
-		st.add_vertex(v[k])
+var _patch_material: StandardMaterial3D = null
+
+
+## Patch material: the planet colour map (same as the globe, so the edge blends)
+## multiplied by a fine noise detail on UV2 so the ground is not a blur up close.
+func _make_patch_material() -> StandardMaterial3D:
+	var m := _make_surface_material()
+	m.normal_enabled = false     # real geometry here, the normal map would double it
+	var noise := FastNoiseLite.new()
+	noise.seed = 11
+	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	noise.frequency = 0.02
+	noise.fractal_octaves = 4
+	var ramp := Gradient.new()
+	ramp.offsets = PackedFloat32Array([0.0, 1.0])
+	ramp.colors = PackedColorArray([Color(0.72, 0.72, 0.72), Color(1.0, 1.0, 1.0)])
+	var tex := NoiseTexture2D.new()
+	tex.width = 512
+	tex.height = 512
+	tex.seamless = true
+	tex.noise = noise
+	tex.color_ramp = ramp
+	m.detail_enabled = true
+	m.detail_blend_mode = BaseMaterial3D.BLEND_MODE_MUL
+	m.detail_uv_layer = BaseMaterial3D.DETAIL_UV_2
+	m.detail_albedo = tex
+	return m

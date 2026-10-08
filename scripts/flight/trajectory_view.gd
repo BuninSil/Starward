@@ -66,11 +66,11 @@ func update_view(body_pos: Callable, now: float, cam: Camera3D, ship_nose: Vecto
 	for s in _segments + _preview:
 		var p: Vector3 = body_pos.call(s.body, s.anchor_t)
 		s.node.position = p
-		_rebuild_ribbon(s.mesh, s.points, s.normal, cam.global_position.distance_to(p) * 0.0035, s.color)
+		_rebuild_ribbon(s.mesh, s.points, s.normal, cam.global_position - p, 0.0035, s.color)
 	for o in _body_orbits:
 		var p: Vector3 = body_pos.call(o.parent, now)
 		o.node.position = p
-		_rebuild_ribbon(o.mesh, o.points, o.normal, cam.global_position.distance_to(p) * 0.002, BODY_ORBIT_COLOR)
+		_rebuild_ribbon(o.mesh, o.points, o.normal, cam.global_position - p, 0.002, BODY_ORBIT_COLOR)
 	for b in _body_labels:
 		var l: Label3D = _body_labels[b]
 		l.position = body_pos.call(b, now) + Vector3(0, b.radius * 1.25, 0)
@@ -167,7 +167,10 @@ func _ribbon_instance(mesh: ImmediateMesh, col: Color) -> MeshInstance3D:
 	return mi
 
 
-func _rebuild_ribbon(mesh: ImmediateMesh, pts: PackedVector3Array, normal: Vector3, width: float, _col: Color) -> void:
+## Width per point = its distance to the camera * width_k (constant on screen),
+## so a long orbit line does not turn into a wide band near the camera.
+func _rebuild_ribbon(mesh: ImmediateMesh, pts: PackedVector3Array, normal: Vector3, cam_local: Vector3,
+		width_k: float, _col: Color) -> void:
 	mesh.clear_surfaces()
 	if pts.size() < 2:
 		return
@@ -176,7 +179,7 @@ func _rebuild_ribbon(mesh: ImmediateMesh, pts: PackedVector3Array, normal: Vecto
 		var nxt := pts[mini(i + 1, pts.size() - 1)]
 		var prv := pts[maxi(i - 1, 0)]
 		var tangent := (nxt - prv).normalized()
-		var side := normal.cross(tangent) * width
+		var side := normal.cross(tangent) * maxf(cam_local.distance_to(pts[i]) * width_k, 1.0)
 		mesh.surface_add_vertex(pts[i] - side)
 		mesh.surface_add_vertex(pts[i] + side)
 	mesh.surface_end()
