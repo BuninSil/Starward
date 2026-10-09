@@ -157,6 +157,8 @@ def load_geotiff(path, max_width=8192):
         tie = page.tags.get("ModelTiepointTag")
         scale = page.tags.get("ModelPixelScaleTag")
         a = page.asarray(out="memmap") if page.is_memmappable else page.asarray()
+        if a.ndim == 3 and a.shape[0] in (3, 4) and a.shape[0] < a.shape[1]:
+            a = np.moveaxis(a, 0, -1)   # band-sequential (planar) -> H, W, C
         h, w = a.shape[:2]
         step = max(1, w // max_width)
         a = np.array(a[::step, ::step])
@@ -182,7 +184,6 @@ def clean_nodata(h):
 def fill_gaps(img, valid):
     """Fills invalid pixels of a float image (H, W[, C]) with a blurred average of
     the valid ones around them (normalized convolution, several radii)."""
-    from PIL import ImageFilter
     out = img.copy()
     m = valid.astype(np.float32)
     chans = [img] if img.ndim == 2 else [img[..., k] for k in range(img.shape[2])]
@@ -193,8 +194,8 @@ def fill_gaps(img, valid):
         for radius in (4, 16, 64, 256):
             if not todo.any():
                 break
-            num = np.asarray(Image.fromarray((ch * m).astype(np.float32), mode="F").filter(ImageFilter.BoxBlur(radius)))
-            den = np.asarray(Image.fromarray(m, mode="F").filter(ImageFilter.BoxBlur(radius)))
+            num = _box_blur(ch * m, radius)
+            den = _box_blur(m, radius)
             ok = todo & (den > 0.05)
             res[ok] = num[ok] / den[ok]
             todo = todo & ~ok
@@ -204,6 +205,20 @@ def fill_gaps(img, valid):
     out = filled[0] if img.ndim == 2 else np.stack(filled, axis=-1)
     print("  gaps filled:", int((~valid).sum()), flush=True)
     return out
+
+
+def _box_blur(a, r):
+    """Separable box filter with wrap in longitude, clamp in latitude (float)."""
+    a = a.astype(np.float64)
+    k = 2 * r + 1
+    # Rows (longitude): wrap.
+    p = np.concatenate([a[:, -r:], a, a[:, :r]], axis=1)
+    c = np.cumsum(np.pad(p, ((0, 0), (1, 0))), axis=1)
+    a = (c[:, k:] - c[:, :-k]) / k
+    # Columns (latitude): edge clamp.
+    p = np.concatenate([np.repeat(a[:1], r, axis=0), a, np.repeat(a[-1:], r, axis=0)], axis=0)
+    c = np.cumsum(np.pad(p, ((1, 0), (0, 0))), axis=0)
+    return ((c[k:] - c[:-k]) / k).astype(np.float32)
 
 
 def calm_poles(img, start_deg=72.0):
