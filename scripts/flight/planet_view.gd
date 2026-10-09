@@ -162,20 +162,30 @@ func _build_globe(segs: int) -> ArrayMesh:
 	return mesh
 
 
-func _make_surface_material() -> StandardMaterial3D:
+const SURFACE_SHADER := preload("res://shaders/planet_surface.gdshader")
+
+
+## Globe material: NASA maps through the planet shader (water on Earth), or the
+## old procedural noise texture when the maps are missing.
+func _make_surface_material() -> Material:
 	var id := _asset_id()
 	var color_path := "res://assets/planets/%s_color.jpg" % id
-	if ResourceLoader.exists(color_path):
-		var m := StandardMaterial3D.new()
-		m.albedo_texture = load(color_path)
-		var np := "res://assets/planets/%s_normal.png" % id
-		if ResourceLoader.exists(np):
-			m.normal_enabled = true
-			m.normal_texture = load(np)
-			m.normal_scale = 1.0
-		m.roughness = 0.9 if not body.has_atmosphere() else 0.75
-		return m
-	return _make_noise_material()
+	if not ResourceLoader.exists(color_path):
+		return _make_noise_material()
+	var m := ShaderMaterial.new()
+	m.shader = SURFACE_SHADER
+	m.set_shader_parameter("albedo_tex", load(color_path))
+	var np := "res://assets/planets/%s_normal.png" % id
+	m.set_shader_parameter("use_normal_tex", ResourceLoader.exists(np))
+	if ResourceLoader.exists(np):
+		m.set_shader_parameter("normal_tex", load(np))
+	m.set_shader_parameter("normal_strength", 0.8 if body.has_atmosphere() else 0.55)
+	var wp := "res://assets/planets/%s_water.png" % id
+	m.set_shader_parameter("has_water", ResourceLoader.exists(wp))
+	if ResourceLoader.exists(wp):
+		m.set_shader_parameter("water_tex", load(wp))
+	m.set_shader_parameter("land_roughness", 0.85 if body.has_atmosphere() else 0.95)
+	return m
 
 
 func _make_noise_material() -> StandardMaterial3D:
@@ -215,13 +225,15 @@ func _make_noise_material() -> StandardMaterial3D:
 ## Makes sure the detailed ground patch covers `fixed_normal` (body-fixed unit
 ## vector). Rebuilds it in a worker thread when the vessel moved away from its
 ## centre; the old patch stays until the new one is ready. Returns true if started.
-func ensure_patch(fixed_normal: DVec3) -> bool:
+func ensure_patch(fixed_normal: DVec3, height := 0.0) -> bool:
 	_poll_patch_task()
 	if _patch_task >= 0:
 		return false
-	if _patch_built and _site_normal_fixed.dot(fixed_normal) > cos(CAP_RADIUS * 0.15 / body.radius):
+	# Low over the ground the fine centre of the patch must stay under the vessel.
+	var keep := clampf(height * 0.5, 150.0, CAP_RADIUS * 0.15)
+	if _patch_built and _site_normal_fixed.dot(fixed_normal) > cos(keep / body.radius):
 		return false
-	var near_pad := _has_launch_pad and _launch_normal_fixed.dot(fixed_normal) > cos(CAP_RADIUS * 0.15 / body.radius)
+	var near_pad := _has_launch_pad and _launch_normal_fixed.dot(fixed_normal) > cos(maxf(keep, 300.0) / body.radius)
 	var centre := _launch_normal_fixed if near_pad else fixed_normal.normalized()
 	_patch_result = {}
 	_patch_task = WorkerThreadPool.add_task(func() -> void: _patch_result = _compute_patch(centre, near_pad))
@@ -256,8 +268,8 @@ func _build_site(with_pad := true) -> void:
 ## (x east, y up, z south; origin on the reference sphere under the centre).
 func _compute_patch(centre: DVec3, with_pad: bool) -> Dictionary:
 	var r := body.radius
-	var rings := 72
-	var segs := 80
+	var rings := 120
+	var segs := 96
 	var max_a := CAP_RADIUS / r
 	var up_f := centre.normalized()
 	var east_f := DVec3.new(0, 1, 0).cross(up_f).normalized()
@@ -274,7 +286,7 @@ func _compute_patch(centre: DVec3, with_pad: bool) -> Dictionary:
 	# Ring 0 = centre point.
 	for i in rings + 1:
 		var f := float(i) / rings
-		var a := max_a * f * f          # denser near the centre
+		var a := max_a * f * f * f      # dense near the centre: ~4 m at 10 m, ~20 m at 100 m
 		var count := 1 if i == 0 else segs
 		for j in count:
 			var phi := TAU * j / segs
@@ -285,7 +297,7 @@ func _compute_patch(centre: DVec3, with_pad: bool) -> Dictionary:
 			var g := CelestialBody.lat_lon(d)
 			var lon := lon0 + wrapf(g.y - lon0, -180.0, 180.0)   # continuous across the date line
 			uvs[k] = Vector2((lon + 180.0) / 360.0, (90.0 - g.x) / 180.0)
-			uv2s[k] = Vector2(p.x, p.z) / 120.0
+			uv2s[k] = Vector2(p.x, p.z)   # metres, the shader scales the detail
 			k += 1
 	var idx := PackedInt32Array()
 	for i in rings:
@@ -307,10 +319,19 @@ func _compute_patch(centre: DVec3, with_pad: bool) -> Dictionary:
 		normals[idx[t]] += fn
 		normals[idx[t + 1]] += fn
 		normals[idx[t + 2]] += fn
+	# Tangents along +x (east, = increasing u), same convention as the globe.
+	var tangents := PackedFloat32Array()
+	tangents.resize(nv * 4)
 	for n in nv:
-		normals[n] = normals[n].normalized()
+		var nn := normals[n].normalized()
+		normals[n] = nn
+		var tg := (Vector3.RIGHT - nn * nn.x).normalized()
+		tangents[n * 4] = tg.x
+		tangents[n * 4 + 1] = tg.y
+		tangents[n * 4 + 2] = tg.z
+		tangents[n * 4 + 3] = 1.0
 	return {"centre": up_f, "with_pad": with_pad, "h0": body.surface_height(up_f),
-		"verts": verts, "normals": normals, "uvs": uvs, "uv2s": uv2s, "idx": idx}
+		"verts": verts, "normals": normals, "tangents": tangents, "uvs": uvs, "uv2s": uv2s, "idx": idx}
 
 
 func _apply_patch(res: Dictionary) -> void:
@@ -322,6 +343,7 @@ func _apply_patch(res: Dictionary) -> void:
 	arr.resize(Mesh.ARRAY_MAX)
 	arr[Mesh.ARRAY_VERTEX] = res.verts
 	arr[Mesh.ARRAY_NORMAL] = res.normals
+	arr[Mesh.ARRAY_TANGENT] = res.tangents
 	arr[Mesh.ARRAY_TEX_UV] = res.uvs
 	arr[Mesh.ARRAY_TEX_UV2] = res.uv2s
 	arr[Mesh.ARRAY_INDEX] = res.idx
@@ -366,30 +388,42 @@ func _apply_patch(res: Dictionary) -> void:
 	_site.add_child(tower)
 
 
-var _patch_material: StandardMaterial3D = null
+var _patch_material: Material = null
 
 
-## Patch material: the planet colour map (same as the globe, so the edge blends)
-## multiplied by a fine noise detail on UV2 so the ground is not a blur up close.
-func _make_patch_material() -> StandardMaterial3D:
+## Patch material: same maps as the globe (so the edge blends) plus close-up
+## detail on UV2 (metres): grey noise at two scales, bump normals, water waves.
+func _make_patch_material() -> Material:
 	var m := _make_surface_material()
-	m.normal_enabled = false     # real geometry here, the normal map would double it
+	if not m is ShaderMaterial:
+		return m
+	var sm := m as ShaderMaterial
+	sm.set_shader_parameter("use_normal_tex", false)   # real geometry here
+	sm.set_shader_parameter("normal_strength", 1.0)
+	sm.set_shader_parameter("use_detail", true)
 	var noise := FastNoiseLite.new()
 	noise.seed = 11
 	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	noise.frequency = 0.02
-	noise.fractal_octaves = 4
-	var ramp := Gradient.new()
-	ramp.offsets = PackedFloat32Array([0.0, 1.0])
-	ramp.colors = PackedColorArray([Color(0.72, 0.72, 0.72), Color(1.0, 1.0, 1.0)])
+	noise.frequency = 0.012
+	noise.fractal_octaves = 5
 	var tex := NoiseTexture2D.new()
 	tex.width = 512
 	tex.height = 512
 	tex.seamless = true
 	tex.noise = noise
-	tex.color_ramp = ramp
-	m.detail_enabled = true
-	m.detail_blend_mode = BaseMaterial3D.BLEND_MODE_MUL
-	m.detail_uv_layer = BaseMaterial3D.DETAIL_UV_2
-	m.detail_albedo = tex
-	return m
+	sm.set_shader_parameter("detail_tex", tex)
+	var bump_noise := FastNoiseLite.new()
+	bump_noise.seed = 5
+	bump_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	bump_noise.frequency = 0.02
+	bump_noise.fractal_octaves = 4
+	var bump := NoiseTexture2D.new()
+	bump.width = 512
+	bump.height = 512
+	bump.seamless = true
+	bump.as_normal_map = true
+	bump.bump_strength = 6.0
+	bump.noise = bump_noise
+	sm.set_shader_parameter("detail_normal", bump)
+	sm.set_shader_parameter("detail_strength", 0.5 if body.has_atmosphere() else 0.6)
+	return sm

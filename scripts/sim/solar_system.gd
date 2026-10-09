@@ -48,6 +48,8 @@ static func build() -> CelestialBody:
 	e.add_child_body(m)
 	e.terrain = Terrain.load_for("earth", 15.0, 3, true)
 	m.terrain = Terrain.load_for("moon", 25.0, 21)
+	m.terrain.add_crater_layer(900.0, 0.09, 31)
+	m.terrain.add_crater_layer(220.0, 0.1, 47)
 	# Baikonur pad: flat 1.5 km around the launch site.
 	e.terrain.add_flat_spot(CelestialBody.surface_normal(LAUNCH_LAT, LAUNCH_LON), 1500.0, e.radius)
 	# Tidally locked: one rotation per orbit, near side facing Earth at t = 0.

@@ -34,7 +34,8 @@ var walk_input := Vector2.ZERO      ## x right, y forward (relative to `cam_forw
 var cam_forward := Vector3.FORWARD
 var jump_requested := false
 var on_ground := false
-const WALK_SPEED := 1.6
+const WALK_SPEED := 4.0           ## m/s on Earth (brisk jog)
+const WALK_SPEED_LOW_G := 3.2     ## m/s in low gravity (bounding gait)
 const JUMP_SPEED := 2.2
 var _puffs: Array[MeshInstance3D] = []
 
@@ -205,8 +206,8 @@ func _walk_tick(dt: float) -> void:
 	var v_h := linear_velocity - up_dir * v_up
 	if on_ground:
 		# Snappy on the ground, but low gravity means slow stops (feels lunar).
-		var target := move * WALK_SPEED
-		var accel := 6.0 if gravity > 3.0 else 2.5
+		var target := move * (WALK_SPEED if gravity > 3.0 else WALK_SPEED_LOW_G)
+		var accel := 14.0 if gravity > 3.0 else 7.0
 		v_h = v_h.move_toward(target, accel * dt)
 		if jump_requested:
 			v_up = JUMP_SPEED if gravity < 3.0 else JUMP_SPEED * 1.3
@@ -215,7 +216,7 @@ func _walk_tick(dt: float) -> void:
 	else:
 		jump_requested = false
 		# A little air control.
-		linear_velocity += move * 0.4 * dt
+		linear_velocity += move * 1.0 * dt
 	# Stand upright, face the walking direction (or the camera heading).
 	var face := move if move.length() > 0.1 else (fwd if not on_ground else -global_transform.basis.z)
 	face = face - up_dir * face.dot(up_dir)

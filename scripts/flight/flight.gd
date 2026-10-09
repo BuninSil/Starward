@@ -491,7 +491,7 @@ func _process(delta: float) -> void:
 	# Detailed ground patch under a low vessel (any body).
 	if vessel.altitude() < 30_000.0:
 		var fixed_n := vessel.body.inertial_to_fixed(vessel.pos, sim_time).normalized()
-		(planets[vessel.body] as Node3D).call("ensure_patch", fixed_n)
+		(planets[vessel.body] as Node3D).call("ensure_patch", fixed_n, vessel.altitude_above_ground(sim_time))
 	for b in bodies:
 		var rel := b.absolute_position(sim_time).sub(vabs)
 		(planets[b] as Node3D).call("update_view", rel, sim_time, 1.0 if map_mode else _view_scale(rel.length(), b.radius))
@@ -923,7 +923,13 @@ func _update_sky() -> void:
 		day = 0.0
 	sky_mat.set_shader_parameter("day_amount", day)
 	sky_mat.set_shader_parameter("local_up", up)
-	env.ambient_light_color = Color(0.06, 0.07, 0.1).lerp(Color(0.35, 0.42, 0.55), day)
+	var amb := Color(0.06, 0.07, 0.1).lerp(Color(0.35, 0.42, 0.55), day)
+	if not body.has_atmosphere() and not map_mode:
+		# Airless surface: light bounced off the sunlit ground fills the shadows a bit
+		# (otherwise every shadow is pitch black and the terrain reads as noise).
+		var near := 1.0 - smoothstep(2000.0, 40_000.0, vessel.altitude_above_ground(sim_time))
+		amb = amb.lerp(Color(0.2, 0.2, 0.21), near * daylight)
+	env.ambient_light_color = amb
 
 
 func _update_flight_camera() -> void:

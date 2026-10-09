@@ -40,8 +40,11 @@ func build(v: Vessel) -> void:
 func _material(color: Color, metallic := 0.3, rough := 0.5) -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
 	m.albedo_color = color
-	m.metallic = metallic
-	m.roughness = rough
+	# Environment reflections are off (mobile): real metals would render black,
+	# so keep them mostly dielectric and let roughness/specular do the shine.
+	m.metallic = minf(metallic, 0.3)
+	m.metallic_specular = 0.6
+	m.roughness = maxf(rough, 0.35)
 	return m
 
 
@@ -74,7 +77,7 @@ func _build_tank_stage(node: Node3D, s: Dictionary, bottom: bool) -> void:
 	tm.radial_segments = 32 if not s.get("legs", false) else 8
 	tank.mesh = tm
 	var gold: bool = s.get("legs", false) or s.name == "Взлётная ступень"
-	tank.material_override = _material(Color(0.85, 0.68, 0.3), 0.7, 0.35) if gold else _material(Color(0.92, 0.92, 0.9), 0.1, 0.6)
+	tank.material_override = _material(Color(0.86, 0.68, 0.3), 0.25, 0.45) if gold else _material(Color(0.92, 0.92, 0.9), 0.1, 0.6)
 	tank.position.y = base + engine_len + tm.height * 0.5
 	node.add_child(tank)
 	# Dark band = decoupler at the top of the stage
