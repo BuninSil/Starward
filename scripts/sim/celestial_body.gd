@@ -3,6 +3,7 @@ extends RefCounted
 ## Physical data of one body. Distances in metres (already scaled 1:10), time in seconds.
 
 var name: String
+var id := ""                        ## ascii id for asset files (earth, mars, ...)
 var radius: float
 var mu: float                       ## gravitational parameter G*M, m^3/s^2
 var rotation_period: float          ## sidereal, seconds; spin axis is +Y
@@ -24,6 +25,10 @@ var orbit_inc := 0.0        ## rad, to the parent's equator (XZ plane)
 var orbit_lan := 0.0        ## longitude of ascending node, rad
 var orbit_argp := 0.0       ## argument of periapsis, rad
 var orbit_m0 := 0.0         ## mean anomaly at t = 0, rad
+var orbit_tilt := 0.0       ## rad about +X from the elements' reference plane to the
+                            ## inertial frame (ecliptic -> Earth equator = 23.44°)
+var is_star := false
+var min_soi := 0.0          ## floor for tiny moons (Laplace SOI smaller than the body)
 
 var terrain: Terrain = null   ## surface relief (null = smooth sphere)
 
@@ -35,7 +40,7 @@ func add_child_body(c: CelestialBody) -> void:
 	c.parent = self
 	children.append(c)
 	# Laplace SOI radius.
-	c.soi_radius = c.orbit_a * pow(c.mu / mu, 0.4)
+	c.soi_radius = maxf(c.orbit_a * pow(c.mu / mu, 0.4), c.min_soi)
 
 
 func orbital_period() -> float:
@@ -49,11 +54,14 @@ func state_at(t: float) -> Array:
 	if parent == null:
 		return [DVec3.new(), DVec3.new()]
 	var n := TAU / orbital_period()
-	return OrbitMath.state_from_elements(orbit_a, orbit_e, orbit_inc, orbit_lan, orbit_argp,
+	var st := OrbitMath.state_from_elements(orbit_a, orbit_e, orbit_inc, orbit_lan, orbit_argp,
 		orbit_m0 + n * t, parent.mu)
+	if orbit_tilt != 0.0:
+		st = [(st[0] as DVec3).rotated_x(orbit_tilt), (st[1] as DVec3).rotated_x(orbit_tilt)]
+	return st
 
 
-## Position relative to the root body (Earth for now) at time t.
+## Position relative to the root body (the Sun) at time t.
 func absolute_position(t: float) -> DVec3:
 	if parent == null:
 		return DVec3.new()
@@ -92,7 +100,7 @@ func pressure_at(altitude: float) -> float:
 
 
 func angular_velocity() -> float:
-	return TAU / rotation_period
+	return TAU / rotation_period   # negative period = retrograde spin (Venus, Uranus)
 
 
 ## Spin angle at time t.

@@ -121,7 +121,7 @@ func _initialize() -> void:
 	check(fe.periapsis - earth.radius > earth.atmosphere_height, "autopilot periapsis above atmosphere")
 
 	# 6. Moon: elements round trip, SOI size, period
-	var root := SolarSystem.build()
+	var root := SolarSystem.find(SolarSystem.build(), "earth")
 	var moon := SolarSystem.find(root, "Луна")
 	var mst: Array = moon.state_at(12345.0)
 	var mel := OrbitMath.elements(mst[0], mst[1], root.mu)

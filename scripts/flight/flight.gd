@@ -12,13 +12,13 @@ const TetherScript := preload("res://scripts/eva/tether.gd")
 const EvaHudScript := preload("res://scripts/eva/eva_hud.gd")
 
 const DT := 1.0 / 60.0
-const WARPS: Array[int] = [1, 2, 4, 10, 50, 100, 1000, 10000]
+const WARPS: Array[int] = [1, 2, 4, 10, 50, 100, 1000, 10000, 100000, 1000000]
 const PHYSICS_WARP_MAX := 4
-const SUN_DIR := SolarSystem.SUN_DIR
 
 signal message(text: String)
 
-var root_body: CelestialBody
+var root_body: CelestialBody   ## the Sun
+var home: CelestialBody        ## Earth (launch site)
 var bodies: Array[CelestialBody] = []
 ## Current reference body (the vessel's SOI).
 var body: CelestialBody:
@@ -70,20 +70,21 @@ var _pinch_dist0 := 0.0
 
 func _ready() -> void:
 	root_body = SolarSystem.build()
+	home = SolarSystem.find(root_body, "earth")
 	_collect_bodies(root_body)
 	_set_morning_at_site()
 	_build_environment()
 	for b in bodies:
 		var pv := PlanetView.new()
 		add_child(pv)
-		pv.setup(b, b == root_body, SolarSystem.LAUNCH_LAT, SolarSystem.LAUNCH_LON, SUN_DIR.normalized())
+		pv.setup(b, b == home, SolarSystem.LAUNCH_LAT, SolarSystem.LAUNCH_LON, SolarSystem.sun_dir(b, 0.0))
 		planets[b] = pv
 	rocket = RocketView.new()
 	add_child(rocket)
 	traj_view = TrajectoryView.new()
 	add_child(traj_view)
 	traj_view.setup(root_body)
-	map_focus = root_body
+	map_focus = home
 	camera = Camera3D.new()
 	camera.near = 0.3
 	camera.far = 3.0e7
@@ -108,7 +109,7 @@ func _collect_bodies(b: CelestialBody) -> void:
 ## Picks the planet spin offset so the launch site has the sun ~35° high, rising, at t = 0.
 func _set_morning_at_site() -> void:
 	var n := CelestialBody.surface_normal(SolarSystem.LAUNCH_LAT, SolarSystem.LAUNCH_LON)
-	var sdir := DVec3.from_v3(SUN_DIR.normalized())
+	var sdir := DVec3.from_v3(SolarSystem.sun_dir(home, 0.0))
 	var best := 0.0
 	var best_err := INF
 	for i in 720:
@@ -119,7 +120,7 @@ func _set_morning_at_site() -> void:
 		if e1 > e0 and err < best_err:
 			best_err = err
 			best = a
-	root_body.rotation_offset = best
+	home.rotation_offset = best
 
 
 func _build_environment() -> void:
@@ -144,7 +145,18 @@ func _build_environment() -> void:
 	sun.light_energy = 1.5
 	sun.shadow_enabled = false
 	add_child(sun)
-	sun.look_at_from_position(Vector3.ZERO, -SUN_DIR, Vector3.UP if absf(SUN_DIR.normalized().y) < 0.99 else Vector3.RIGHT)
+	_update_sun_light()
+
+
+## Direction from the vessel towards the Sun (inertial == scene axes).
+func sun_dir() -> Vector3:
+	var p := vessel_absolute() if vessel != null else home.absolute_position(sim_time)
+	return p.mul(-1.0).normalized().to_v3() if p.length() > 1.0 else Vector3(0.62, 0.35, 0.7).normalized()
+
+
+func _update_sun_light() -> void:
+	var d := sun_dir()
+	sun.look_at_from_position(Vector3.ZERO, -d, Vector3.UP if absf(d.y) < 0.99 else Vector3.RIGHT)
 
 
 # --- Vessel lifecycle -------------------------------------------------------------
@@ -157,7 +169,7 @@ func reset_to_pad() -> void:
 	if vessel:
 		autopilot.disengage(vessel)
 	var inf_fuel := vessel.infinite_fuel if vessel else false
-	_set_vessel(Vessel.make(Vessel.design, root_body))
+	_set_vessel(Vessel.make(Vessel.design, home))
 	vessel.infinite_fuel = inf_fuel
 	vessel.place_on_surface(SolarSystem.LAUNCH_LAT, SolarSystem.LAUNCH_LON, sim_time)
 	# Roll so local +X points east and +Z south: joystick right = nose east.
@@ -226,17 +238,31 @@ func teleport_to_body_orbit(target: CelestialBody, altitude: float) -> void:
 	_after_teleport("орбита %s %.0f км" % [target.name, altitude / 1000.0])
 
 
+## Reasonable low orbit for a debug teleport: above the atmosphere, inside the SOI.
+func default_orbit_altitude(b: CelestialBody) -> float:
+	if b.has_atmosphere():
+		return b.atmosphere_height * 1.5 + b.radius * 0.1
+	if b.radius < 20_000.0:
+		return b.radius * 0.6   # tiny moons: their SOI is only a few radii
+	return b.radius * 0.15
+
+
+## Bodies you can stand on (not the Sun, not gas giants).
+func has_solid_surface(b: CelestialBody) -> bool:
+	return not b.is_star and not (b.id in ["jupiter", "saturn", "uranus", "neptune"])
+
+
 ## Debug: on a Hohmann transfer from a 20 km orbit that hits the Moon's SOI.
 func teleport_to_moon_transfer() -> void:
 	autopilot.disengage(vessel)
 	var moon := SolarSystem.find(root_body, "Луна")
-	var r1 := root_body.radius + 20_000.0
+	var r1 := home.radius + 20_000.0
 	var r_m := moon.orbit_a
 	var tof := 0.0
 	var m_hat := DVec3.new()
 	for _k in 5:
 		var a_t := (r1 + r_m) * 0.5
-		tof = PI * sqrt(a_t * a_t * a_t / root_body.mu)
+		tof = PI * sqrt(a_t * a_t * a_t / home.mu)
 		var mp: DVec3 = moon.state_at(sim_time + tof)[0]
 		m_hat = mp.normalized()
 		r_m = mp.length()
@@ -246,15 +272,15 @@ func teleport_to_moon_transfer() -> void:
 	var p_ship := m_hat.mul(-r1)
 	var v_dir := h_m.cross(p_ship.normalized())
 	var a_tr := (r1 + r_m - 2.0 * moon.radius) * 0.5
-	vessel.body = root_body
+	vessel.body = home
 	vessel.pos = p_ship
-	vessel.vel = v_dir.mul(sqrt(root_body.mu * (2.0 / r1 - 1.0 / a_tr)))
+	vessel.vel = v_dir.mul(sqrt(home.mu * (2.0 / r1 - 1.0 / a_tr)))
 	_after_teleport("перелёт к Луне")
 
 
 ## Longitude on the equator of `b` where the sun is ~40° high right now.
 func sunlit_longitude(b: CelestialBody) -> float:
-	var sdir := DVec3.from_v3(SUN_DIR.normalized())
+	var sdir := DVec3.from_v3(SolarSystem.sun_dir(b, sim_time))
 	var best := 0.0
 	var best_err := INF
 	for i in 360:
@@ -488,6 +514,7 @@ func _step_debris(dt: float) -> void:
 func _process(delta: float) -> void:
 	# Floating origin: vessel at 0; everything else relative to it in doubles.
 	var vabs := vessel_absolute()
+	_update_sun_light()
 	# Detailed ground patch under a low vessel (any body).
 	if vessel.altitude() < 30_000.0:
 		var fixed_n := vessel.body.inertial_to_fixed(vessel.pos, sim_time).normalized()
@@ -522,6 +549,7 @@ func _process(delta: float) -> void:
 		if shown != null and shown.body == vessel.body and shown.t > sim_time:
 			var st := shown.state_before(vessel.pos, vessel.vel, sim_time)
 			node_pos = body_render_pos(vessel.body) + (st[0] as DVec3).to_v3()
+		traj_view.focus = map_focus if map_mode else vessel.body
 		traj_view.update_view(_body_pos_at, sim_time, camera, vessel.up_world(), vessel.vel.to_v3(), node_pos)
 
 
@@ -916,7 +944,7 @@ func _update_sky() -> void:
 	var alt := vessel.altitude()
 	var up := vessel.pos.normalized().to_v3()
 	var dens := body.density_at(alt) / body.sea_level_density if body.has_atmosphere() else 0.0
-	var sun_elev := up.dot(SUN_DIR.normalized())
+	var sun_elev := up.dot(sun_dir())
 	var daylight := smoothstep(-0.15, 0.2, sun_elev)
 	var day := clampf(pow(dens, 0.35), 0.0, 1.0) * daylight
 	if map_mode:
@@ -973,16 +1001,15 @@ func _update_map_camera() -> void:
 		sin(map_yaw) * cos(map_pitch),
 		sin(map_pitch),
 		cos(map_yaw) * cos(map_pitch)) * map_dist
-	var far := map_dist * 3.0
-	for b in bodies:
-		far = maxf(far, (center + offset).distance_to(body_render_pos(b)) + b.radius)
-	camera.far = far * 1.5
+	# Depth range follows the zoom (a far plane out to Neptune breaks the depth
+	# buffer); what lies beyond ~200 zoom distances is too small to see anyway.
+	camera.far = map_dist * 200.0
 	camera.near = maxf(map_dist * 0.001, 10.0)
 	camera.global_transform = Transform3D(Basis(), center + offset).looking_at(center, Vector3.UP)
 
 
 func _map_zoom_limits() -> Vector2:
-	return Vector2(map_focus.radius * 1.2, maxf(map_focus.radius * 200.0, 1.0e8 if map_focus.parent == null else map_focus.soi_radius * 3.0))
+	return Vector2(map_focus.radius * 1.2, maxf(map_focus.radius * 200.0, 1.0e13 if map_focus.parent == null else map_focus.soi_radius * 3.0))
 
 
 func toggle_map() -> void:

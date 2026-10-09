@@ -66,6 +66,13 @@ func normalized() -> DVec3:
 	return DVec3.new(x / l, y / l, z / l) if l > 0.0 else DVec3.new()
 
 
+## Rotation about the +X axis by angle a (same sense as Basis(Vector3.RIGHT, a)).
+func rotated_x(a: float) -> DVec3:
+	var c := cos(a)
+	var s := sin(a)
+	return DVec3.new(x, c * y - s * z, s * y + c * z)
+
+
 ## Rotation about the +Y axis (planet spin axis) by angle a.
 func rotated_y(a: float) -> DVec3:
 	var c := cos(a)

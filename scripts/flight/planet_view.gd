@@ -16,6 +16,7 @@ var site_lon := 0.0
 var _spin: Node3D          ## rotates with the planet, centred on it
 var _surface: MeshInstance3D
 var _atmosphere: MeshInstance3D
+var _atmo_mat: ShaderMaterial
 var _site: Node3D          ## ground patch, positioned in double precision
 var _site_normal_fixed: DVec3
 var _launch_normal_fixed: DVec3
@@ -35,10 +36,13 @@ func setup(b: CelestialBody, with_site: bool, lat: float, lon: float, sun_dir: V
 	add_child(_spin)
 
 	_surface = MeshInstance3D.new()
-	_surface.mesh = _build_globe(SPHERE_SEGMENTS if b.has_atmosphere() else 256)
-	_surface.material_override = _make_surface_material()
+	_surface.mesh = _build_globe(_globe_segments())
+	_surface.material_override = _make_star_material() if b.is_star else (
+		_make_gas_material() if _is_gas_giant() else _make_surface_material())
 	_surface.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_spin.add_child(_surface)
+	if b.id == "saturn":
+		_build_rings(1.24, 2.27)
 
 	if b.has_atmosphere():
 		var am := SphereMesh.new()
@@ -54,6 +58,7 @@ func setup(b: CelestialBody, with_site: bool, lat: float, lon: float, sun_dir: V
 		mat.set_shader_parameter("power", 5.0)
 		mat.set_shader_parameter("intensity", 1.6)
 		am.material = mat
+		_atmo_mat = mat
 		_atmosphere = MeshInstance3D.new()
 		_atmosphere.mesh = am
 		_atmosphere.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -71,6 +76,111 @@ func setup(b: CelestialBody, with_site: bool, lat: float, lon: float, sun_dir: V
 		_patch_built = false
 
 
+## Globe resolution: detailed for bodies you land on, light for the rest.
+func _globe_segments() -> int:
+	match body.id:
+		"earth":
+			return SPHERE_SEGMENTS
+		"moon", "mars", "mercury", "venus":
+			return 256
+		"phobos", "deimos":
+			return 96
+	return 128
+
+
+func _is_gas_giant() -> bool:
+	return body.id in ["jupiter", "saturn", "uranus", "neptune"]
+
+
+func _make_star_material() -> Material:
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.albedo_color = Color(1.0, 0.93, 0.78)
+	return m
+
+
+const GAS_SHADER := preload("res://shaders/planet_gas.gdshader")
+const RINGS_SHADER := preload("res://shaders/planet_rings.gdshader")
+
+
+func _make_gas_material() -> Material:
+	var m := ShaderMaterial.new()
+	m.shader = GAS_SHADER
+	var noise := FastNoiseLite.new()
+	noise.seed = hash(body.id) % 1000
+	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	noise.frequency = 0.01
+	noise.fractal_octaves = 5
+	var tex := NoiseTexture2D.new()
+	tex.width = 512
+	tex.height = 256
+	tex.seamless = true
+	tex.noise = noise
+	m.set_shader_parameter("turbulence", tex)
+	match body.id:
+		"jupiter":
+			m.set_shader_parameter("color_a", Color(0.88, 0.8, 0.68))
+			m.set_shader_parameter("color_b", Color(0.66, 0.47, 0.33))
+			m.set_shader_parameter("color_c", Color(0.97, 0.94, 0.88))
+			m.set_shader_parameter("bands", 16.0)
+		"saturn":
+			m.set_shader_parameter("color_a", Color(0.9, 0.84, 0.66))
+			m.set_shader_parameter("color_b", Color(0.78, 0.68, 0.5))
+			m.set_shader_parameter("color_c", Color(0.95, 0.9, 0.78))
+			m.set_shader_parameter("bands", 18.0)
+			m.set_shader_parameter("contrast", 0.6)
+		"uranus":
+			m.set_shader_parameter("color_a", Color(0.66, 0.87, 0.9))
+			m.set_shader_parameter("color_b", Color(0.58, 0.8, 0.86))
+			m.set_shader_parameter("color_c", Color(0.75, 0.92, 0.94))
+			m.set_shader_parameter("bands", 8.0)
+			m.set_shader_parameter("contrast", 0.25)
+		"neptune":
+			m.set_shader_parameter("color_a", Color(0.3, 0.47, 0.92))
+			m.set_shader_parameter("color_b", Color(0.22, 0.36, 0.8))
+			m.set_shader_parameter("color_c", Color(0.6, 0.72, 0.98))
+			m.set_shader_parameter("bands", 10.0)
+			m.set_shader_parameter("contrast", 0.45)
+	return m
+
+
+## Flat ring annulus in the equatorial plane, radii in planet radii.
+func _build_rings(inner: float, outer: float) -> void:
+	var segs := 128
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var r0 := body.radius * inner
+	var r1 := body.radius * outer
+	for j in segs:
+		var a0 := TAU * j / segs
+		var a1 := TAU * (j + 1) / segs
+		var p00 := Vector3(cos(a0), 0, sin(a0)) * r0
+		var p01 := Vector3(cos(a0), 0, sin(a0)) * r1
+		var p10 := Vector3(cos(a1), 0, sin(a1)) * r0
+		var p11 := Vector3(cos(a1), 0, sin(a1)) * r1
+		for v in [[p00, 0.0], [p01, 1.0], [p11, 1.0], [p00, 0.0], [p11, 1.0], [p10, 0.0]]:
+			st.set_normal(Vector3.UP)
+			st.set_uv(Vector2(v[1], 0.5))
+			st.add_vertex(v[0])
+	var mi := MeshInstance3D.new()
+	mi.mesh = st.commit()
+	var m := ShaderMaterial.new()
+	m.shader = RINGS_SHADER
+	var noise := FastNoiseLite.new()
+	noise.seed = 7
+	noise.noise_type = FastNoiseLite.TYPE_CELLULAR
+	noise.frequency = 0.05
+	var tex := NoiseTexture2D.new()
+	tex.width = 512
+	tex.height = 4
+	tex.seamless = true
+	tex.noise = noise
+	m.set_shader_parameter("bands_tex", tex)
+	mi.material_override = m
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_spin.add_child(mi)
+
+
 ## origin_rel: planet centre relative to the vessel (inertial axes), double precision.
 ## view_scale < 1: far body drawn closer and smaller with the same angular size
 ## (keeps the camera depth range small).
@@ -78,6 +188,8 @@ func update_view(origin_rel: DVec3, t: float, view_scale := 1.0) -> void:
 	position = origin_rel.mul(view_scale).to_v3()
 	scale = Vector3.ONE * view_scale
 	_spin.basis = Basis(Vector3.UP, body.rotation_angle(t))
+	if _atmo_mat:
+		_atmo_mat.set_shader_parameter("sun_dir_world", SolarSystem.sun_dir(body, t))
 	_poll_patch_task()
 	if _site == null or not _patch_built:
 		return
@@ -99,7 +211,7 @@ func update_view(origin_rel: DVec3, t: float, view_scale := 1.0) -> void:
 
 ## Body id used for asset file names.
 func _asset_id() -> String:
-	return "earth" if body.has_atmosphere() else "moon"
+	return body.id
 
 
 ## UV sphere in the body-fixed frame with u/v = longitude/latitude (matches the
@@ -195,7 +307,13 @@ func _make_noise_material() -> StandardMaterial3D:
 	noise.frequency = 0.0035
 	noise.fractal_octaves = 7
 	var ramp := Gradient.new()
-	if body.has_atmosphere():
+	if body.id != "earth" and body.id != "moon":
+		# Generic rocky body: darker and lighter shades of its colour.
+		noise.seed = hash(body.id) % 1000
+		var c := body.color
+		ramp.offsets = PackedFloat32Array([0.0, 0.4, 0.6, 1.0])
+		ramp.colors = PackedColorArray([c.darkened(0.45), c.darkened(0.15), c, c.lightened(0.25)])
+	elif body.has_atmosphere():
 		ramp.offsets = PackedFloat32Array([0.0, 0.46, 0.5, 0.52, 0.62, 0.74, 0.84])
 		ramp.colors = PackedColorArray([
 			Color(0.02, 0.07, 0.22), Color(0.05, 0.2, 0.45), Color(0.76, 0.7, 0.5),
@@ -226,6 +344,8 @@ func _make_noise_material() -> StandardMaterial3D:
 ## vector). Rebuilds it in a worker thread when the vessel moved away from its
 ## centre; the old patch stays until the new one is ready. Returns true if started.
 func ensure_patch(fixed_normal: DVec3, height := 0.0) -> bool:
+	if body.is_star or _is_gas_giant():
+		return false   # nothing to stand on
 	_poll_patch_task()
 	if _patch_task >= 0:
 		return false

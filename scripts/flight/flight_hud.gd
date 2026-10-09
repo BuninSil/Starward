@@ -389,6 +389,9 @@ func _build_debug_menu() -> void:
 		_debug_menu.hide()
 		var moon := SolarSystem.find(flight.root_body, "Луна")
 		flight.teleport_to_surface(moon, 0.0, flight.sunlit_longitude(moon))))
+	grid.add_child(_button("Телепорт к телу…", func() -> void:
+		_debug_menu.hide()
+		_show_teleport_menu()))
 	grid.add_child(_button("Время ×1000", func() -> void: flight.set_warp(flight.WARPS.find(1000))))
 	grid.add_child(_button("Консоль", func() -> void: _console.visible = not _console.visible))
 	grid.add_child(_button("Скопировать лог", Log.copy_to_clipboard))
@@ -401,6 +404,56 @@ func _build_debug_menu() -> void:
 	Updater.check_finished.connect(func(_h: bool, msg: String) -> void:
 		if _debug_menu.visible:
 			toast(msg))
+
+
+var _teleport_menu: PanelContainer = null
+
+
+## Debug: every body with "orbit" and (if solid) "surface" buttons.
+func _show_teleport_menu() -> void:
+	if _teleport_menu == null:
+		_teleport_menu = PanelContainer.new()
+		_teleport_menu.set_anchors_and_offsets_preset(Control.PRESET_CENTER, Control.PRESET_MODE_MINSIZE)
+		_teleport_menu.grow_horizontal = Control.GROW_DIRECTION_BOTH
+		_teleport_menu.grow_vertical = Control.GROW_DIRECTION_BOTH
+		_root.add_child(_teleport_menu)
+		var box := VBoxContainer.new()
+		box.add_theme_constant_override("separation", 8)
+		_teleport_menu.add_child(box)
+		var head := HBoxContainer.new()
+		box.add_child(head)
+		var title := Label.new()
+		title.text = "Телепорт"
+		title.add_theme_font_size_override("font_size", 28)
+		title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		head.add_child(title)
+		head.add_child(_button("Закрыть", _teleport_menu.hide))
+		var scroll := ScrollContainer.new()
+		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+		scroll.custom_minimum_size = Vector2(620, 420)
+		box.add_child(scroll)
+		var grid := GridContainer.new()
+		grid.columns = 3
+		grid.add_theme_constant_override("h_separation", 10)
+		grid.add_theme_constant_override("v_separation", 8)
+		scroll.add_child(grid)
+		for b in flight.bodies:
+			var bd: CelestialBody = b
+			var l := Label.new()
+			l.text = bd.name
+			l.custom_minimum_size = Vector2(200, 0)
+			l.add_theme_font_size_override("font_size", 22)
+			grid.add_child(l)
+			grid.add_child(_button("Орбита", func() -> void:
+				_teleport_menu.hide()
+				flight.teleport_to_body_orbit(bd, flight.default_orbit_altitude(bd))))
+			if flight.has_solid_surface(bd):
+				grid.add_child(_button("Поверхность", func() -> void:
+					_teleport_menu.hide()
+					flight.teleport_to_surface(bd, 0.0, flight.sunlit_longitude(bd))))
+			else:
+				grid.add_child(Control.new())
+	_teleport_menu.show()
 
 
 func _build_destroyed() -> void:

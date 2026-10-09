@@ -19,6 +19,9 @@ var _vel_arrow: MeshInstance3D
 var _node_marker: Label3D
 
 
+var focus: CelestialBody = null   ## map focus, set by the flight scene
+
+
 func setup(root: CelestialBody) -> void:
 	root_body = root
 	_ship_label = _label(Color(1, 1, 1), "ракета")
@@ -70,9 +73,19 @@ func update_view(body_pos: Callable, now: float, cam: Camera3D, ship_nose: Vecto
 	for o in _body_orbits:
 		var p: Vector3 = body_pos.call(o.parent, now)
 		o.node.position = p
+		# Near a body its own orbit line is a few sparse vertices passing through the
+		# camera: it would draw as a wide band. Hide it inside its SOI neighbourhood.
+		var cb: CelestialBody = o.body
+		var near: bool = cam.global_position.distance_to(body_pos.call(cb, now)) < cb.soi_radius * 2.0
+		(o.node as Node3D).visible = not near
+		if near:
+			continue
 		_rebuild_ribbon(o.mesh, o.points, o.normal, cam.global_position - p, 0.002, BODY_ORBIT_COLOR)
 	for b in _body_labels:
 		var l: Label3D = _body_labels[b]
+		# Moons are labelled only when their planet (or they) are in focus.
+		var bb: CelestialBody = b
+		l.visible = bb.parent == null or bb.parent.parent == null or focus == bb or focus == bb.parent
 		l.position = body_pos.call(b, now) + Vector3(0, b.radius * 1.25, 0)
 	_ship_label.position = Vector3.ZERO
 	var size := cam.global_position.length() * 0.12

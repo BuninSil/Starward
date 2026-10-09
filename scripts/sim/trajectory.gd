@@ -9,6 +9,7 @@ extends RefCounted
 const SAMPLES := 360
 const MAX_SEGMENTS := 4
 const MAX_HORIZON := 40.0 * 86400.0
+const MAX_HELIO_HORIZON := 2000.0 * 86400.0
 
 
 static func predict(r: DVec3, v: DVec3, body: CelestialBody, t0: float, max_segments := MAX_SEGMENTS) -> Array[Dictionary]:
@@ -47,7 +48,8 @@ static func _segment(r: DVec3, v: DVec3, b: CelestialBody, t0: float) -> Diction
 	var bound: bool = el.e < 1.0 and (b.parent == null or el.apoapsis < b.soi_radius)
 	var horizon := MAX_HORIZON
 	if bound:
-		horizon = minf(el.period, MAX_HORIZON)
+		# Around the Sun orbits take months: show one full revolution (capped).
+		horizon = minf(el.period, MAX_HORIZON if b.parent != null else MAX_HELIO_HORIZON)
 	else:
 		horizon = _time_to_radius(r, v, b, minf(b.soi_radius, b.radius * 400.0))
 	var seg := {
@@ -64,6 +66,16 @@ static func _segment(r: DVec3, v: DVec3, b: CelestialBody, t0: float) -> Diction
 		var t_min := _golden_min_radius(r, v, b, 0.0, search_hi)
 		if (OrbitMath.propagate(r, v, b.mu, t_min)[0] as DVec3).length() < b.radius:
 			impact_limit = t_min
+	# Only children whose orbit band overlaps our radius range can be entered.
+	var r_lo: float = el.periapsis
+	var r_hi: float = el.apoapsis if bound else INF
+	r_lo = minf(r_lo, r.length())
+	var reachable: Array[CelestialBody] = []
+	for c in b.children:
+		var c_lo := c.orbit_a * (1.0 - c.orbit_e) - c.soi_radius
+		var c_hi := c.orbit_a * (1.0 + c.orbit_e) + c.soi_radius
+		if c_hi >= r_lo and c_lo <= r_hi:
+			reachable.append(c)
 	var prev_t := 0.0
 	var pts := PackedVector3Array()
 	pts.append(r.to_v3())
@@ -80,7 +92,7 @@ static func _segment(r: DVec3, v: DVec3, b: CelestialBody, t0: float) -> Diction
 			break
 		# Child SOI entry
 		var entered: CelestialBody = null
-		for c in b.children:
+		for c in reachable:
 			if p.sub(c.state_at(t0 + tt)[0]).length() < c.soi_radius:
 				entered = c
 				break

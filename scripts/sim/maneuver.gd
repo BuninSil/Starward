@@ -44,10 +44,10 @@ func dv_world(r_now: DVec3, v_now: DVec3, t_now: float) -> DVec3:
 
 
 ## Predicted trajectory after the burn.
-func predict_after(r_now: DVec3, v_now: DVec3, t_now: float) -> Array[Dictionary]:
+func predict_after(r_now: DVec3, v_now: DVec3, t_now: float, max_segments := Trajectory.MAX_SEGMENTS) -> Array[Dictionary]:
 	var st := state_before(r_now, v_now, t_now)
 	var dv := dv_vector(st[0], st[1], prograde, normal, radial)
-	return Trajectory.predict(st[0], (st[1] as DVec3).add(dv), body, t)
+	return Trajectory.predict(st[0], (st[1] as DVec3).add(dv), body, t, max_segments)
 
 
 ## Burn duration estimate with the current engine (Tsiolkovsky), seconds.

@@ -51,7 +51,8 @@ func _process(_d: float) -> bool:
 		var moon := SolarSystem.find(f.root_body, "Луна")
 		_check(ok and v.landed and v.body == moon and not v.destroyed_flag, "landed on the Moon (touchdown %.1f m/s)" % v.touchdown_speed)
 		var n: DVec3 = v.pos.normalized()
-		_check(n.to_v3().dot(SolarSystem.SUN_DIR.normalized()) > 0.15, "landing site in daylight (sun elev %.0f°)" % rad_to_deg(asin(n.to_v3().dot(SolarSystem.SUN_DIR.normalized()))))
+		var sd := SolarSystem.sun_dir(moon, f.sim_time)
+		_check(n.to_v3().dot(sd) > 0.15, "landing site in daylight (sun elev %.0f°)" % rad_to_deg(asin(n.to_v3().dot(sd))))
 		print("dV left %.0f m/s, stages %d" % [v.total_delta_v(), v.stages.size()])
 		if fails > 0:
 			quit(1)
@@ -62,7 +63,7 @@ func _process(_d: float) -> bool:
 		f.start_mission(Autopilot.tasks_moon_ascent(20_000.0) + Autopilot.tasks_home())
 		t0 = Time.get_ticks_msec()
 		return false
-	_check(ok and v.landed and v.body == f.root_body and not v.destroyed_flag, "back on Earth (touchdown %.1f m/s)" % v.touchdown_speed)
+	_check(ok and v.landed and v.body == f.home and not v.destroyed_flag, "back on Earth (touchdown %.1f m/s)" % v.touchdown_speed)
 	print("MOON LANDING %s: t=%.2f d" % ["PASS" if fails == 0 else "FAIL", f.sim_time / 86400.0])
 	quit(0 if fails == 0 else 1)
 	return true

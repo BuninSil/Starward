@@ -136,7 +136,9 @@ static func _refine_transfer(r: DVec3, v: DVec3, t_now: float, node: ManeuverNod
 
 
 static func _transfer_score(r: DVec3, v: DVec3, t_now: float, node: ManeuverNode, target: CelestialBody, target_alt: float) -> Dictionary:
-	var segs := node.predict_after(r, v, t_now)
+	# Two segments are enough: ours, then the target's SOI (a miss would go on
+	# around the Sun, which is expensive to sample and useless here).
+	var segs := node.predict_after(r, v, t_now, 2)
 	for i in segs.size():
 		var s: Dictionary = segs[i]
 		if s.body == target:
@@ -231,7 +233,7 @@ static func deorbit(r: DVec3, v: DVec3, b: CelestialBody, t_now: float, target_a
 static func deorbit_sunlit(r: DVec3, v: DVec3, b: CelestialBody, t_now: float, target_alt: float) -> ManeuverNode:
 	var el := OrbitMath.elements(r, v, b.mu)
 	var period: float = TAU * sqrt(pow(el.a, 3) / b.mu) if el.e < 1.0 else 3600.0
-	var sun := DVec3.from_v3(SolarSystem.SUN_DIR.normalized())
+	var sun := DVec3.from_v3(SolarSystem.sun_dir(b, t_now + period * 0.75))
 	var best_delay := 60.0
 	var best := INF
 	for i in 96:

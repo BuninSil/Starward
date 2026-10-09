@@ -426,7 +426,7 @@ func rails_step(dt: float, t: float) -> void:
 	last_accel_ng = Vector3.ZERO
 	var done := 0.0
 	var guard := 0
-	while done < dt and guard < 200:
+	while done < dt and guard < 400:
 		guard += 1
 		var h := minf(dt - done, _rails_substep(t + done))
 		var rv := OrbitMath.propagate(pos, vel, body.mu, h)
@@ -437,6 +437,13 @@ func rails_step(dt: float, t: float) -> void:
 		_check_ground(t + done)
 		if landed or destroyed_flag:
 			return
+	if done < dt:
+		# Out of sub-steps (huge warp right at an SOI edge): finish in one go so the
+		# vessel never lags behind the clock.
+		var rest := OrbitMath.propagate(pos, vel, body.mu, dt - done)
+		pos = rest[0]
+		vel = rest[1]
+		check_soi(t + dt)
 
 
 ## Largest safe rails step: limits the distance travelled to a fraction of the

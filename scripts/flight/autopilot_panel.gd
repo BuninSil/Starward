@@ -141,7 +141,7 @@ func _at_moon() -> bool:
 ## Ascent to Earth orbit if the vessel is on the ground / suborbital at Earth.
 func _to_orbit_items() -> Array:
 	var v: Vessel = flight.vessel
-	if v.body != flight.root_body:
+	if v.body != flight.home:
 		return []
 	if v.landed or v.body.has_atmosphere() and OrbitMath.elements(v.pos, v.vel, v.body.mu).periapsis - v.body.radius < v.body.atmosphere_height:
 		return [["orbit", _values["orbit"]]]

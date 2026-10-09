@@ -45,7 +45,7 @@ func _process(_d: float) -> bool:
 			done = true
 	if done or Time.get_ticks_msec() - t0 > 600000:
 		var v = f.vessel
-		var landed_ok: bool = ok and moon_reported and v.landed and v.body == f.root_body and not v.destroyed_flag
+		var landed_ok: bool = ok and moon_reported and v.landed and v.body == f.home and not v.destroyed_flag
 		print("MISSION %s: t=%.2f d, landed=%s, touchdown %.1f m/s, wall %d s" % [
 			"PASS" if landed_ok else "FAIL", f.sim_time / 86400.0, v.landed, v.touchdown_speed,
 			(Time.get_ticks_msec() - t0) / 1000])
