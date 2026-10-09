@@ -1,0 +1,17 @@
+{
+ "width": 2048,
+ "height": 1024,
+ "unit_m": 1.0,
+ "scale_div": 10.0,
+ "format": "int16le",
+ "rows": "north_to_south",
+ "cols": "lon_-180_to_180",
+ "color": "mars_color.jpg",
+ "normal": "mars_normal.png",
+ "sources": [
+  "mars_viking_mdim21_clrmosaic_1km.jpg",
+  "https://pds-geosciences.wustl.edu/mgs/urn-nasa-pds-mgs_mola_topography_derived/meg004/megt90n000cb.img"
+ ],
+ "min_m": -8068.0,
+ "max_m": 21134.0
+}
