@@ -419,7 +419,7 @@ static func plan_return(r: DVec3, v: DVec3, b: CelestialBody, t_now: float, pare
 
 
 static func _return_score(r: DVec3, v: DVec3, t_now: float, node: ManeuverNode, parent: CelestialBody, target_alt: float) -> Dictionary:
-	var segs := node.predict_after(r, v, t_now)
+	var segs := node.predict_after(r, v, t_now, 2)   # the moon, then the parent
 	for s in segs:
 		if s.body == parent:
 			var pa: float = s.el.periapsis - parent.radius

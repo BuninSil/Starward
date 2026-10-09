@@ -26,7 +26,7 @@ func _process(_d: float) -> bool:
 	frames += 1
 	if frames == 3:
 		var tasks: Array = Autopilot.tasks_orbit(20000.0) + Autopilot.tasks_moon(f.root_body, 30000.0) \
-			+ Autopilot.tasks_moon_land() + Autopilot.tasks_moon_ascent(20000.0) + Autopilot.tasks_home()
+			+ Autopilot.tasks_moon_land() + Autopilot.tasks_moon_ascent(20000.0, SolarSystem.find(f.root_body, "moon")) + Autopilot.tasks_home()
 		f.start_mission(tasks)
 		t0 = Time.get_ticks_msec()
 	if frames < 3:

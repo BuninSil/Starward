@@ -274,7 +274,7 @@ func _run(items: Array) -> void:
 				else:
 					tasks += Autopilot.tasks_planet(tgt, flight.default_orbit_altitude(tgt))
 			"moon_land": tasks += Autopilot.tasks_moon_land()
-			"moon_up": tasks += Autopilot.tasks_moon_ascent(it[1] * 1000.0)
+			"moon_up": tasks += Autopilot.tasks_moon_ascent(it[1] * 1000.0, SolarSystem.find(flight.root_body, "moon"), flight.sim_time)
 			"deorbit": tasks += Autopilot.tasks_deorbit()
 			"circ_apo": tasks += Autopilot.tasks_circularize("apo")
 			"circ_peri": tasks += Autopilot.tasks_circularize("peri")

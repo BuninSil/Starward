@@ -54,5 +54,6 @@ jobs:
             echo "No changes"
           else
             git commit -m "Update planet maps from NASA sources (fetch-planet-maps workflow)"
+            git pull --rebase origin "${GITHUB_REF_NAME}"
             git push
           fi

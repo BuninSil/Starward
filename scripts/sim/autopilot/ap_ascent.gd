@@ -16,6 +16,8 @@ var target_altitude := 20_000.0
 var phase := Phase.VERTICAL
 var turn_end_fraction := 0.75   ## turn ends at this fraction of the target altitude
 var vertical_until := 400.0
+## Optional orbit plane (inertial normal) to launch into instead of due east.
+var plane_normal := Vector3.ZERO
 
 
 func _init(alt := 20_000.0) -> void:
@@ -40,6 +42,11 @@ func update(ap: Autopilot, v: Vessel, _t: float) -> int:
 	var up := v.pos.normalized().to_v3()
 	var east := Vector3.UP.cross(up)
 	east = east.normalized() if east.length() > 1e-6 else Vector3.RIGHT
+	if plane_normal != Vector3.ZERO:
+		# Heading along the wanted plane (prograde in it) from this site.
+		var hd := plane_normal.cross(up)
+		if hd.length() > 1e-3:
+			east = hd.normalized()
 	var el := OrbitMath.elements(v.pos, v.vel, b.mu)
 	var apo_alt: float = el.apoapsis - b.radius
 	var peri_alt: float = el.periapsis - b.radius

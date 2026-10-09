@@ -185,9 +185,14 @@ static func tasks_moon_land(peri_alt := 6000.0) -> Array:
 
 
 ## Liftoff from an airless body to a circular orbit (drops the descent stage).
-static func tasks_moon_ascent(alt := 20_000.0) -> Array:
+static func tasks_moon_ascent(alt := 20_000.0, body: CelestialBody = null, t := 0.0) -> Array:
 	var asc := ApAscent.new(alt)
 	asc.title = "Взлёт на орбиту %d км" % int(alt / 1000.0)
+	if body != null and body.parent != null:
+		# Launch into the plane of the moon's own orbit: the way home is in that
+		# plane, so the return burn stays cheap.
+		var st: Array = body.state_at(t)
+		asc.plane_normal = (st[0] as DVec3).cross(st[1]).normalized().to_v3()
 	return [ApLiftoff.new(), asc]
 
 

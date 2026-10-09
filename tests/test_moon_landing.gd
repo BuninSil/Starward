@@ -60,7 +60,7 @@ func _process(_d: float) -> bool:
 		stage = 1
 		done = false
 		ok = false
-		f.start_mission(Autopilot.tasks_moon_ascent(20_000.0) + Autopilot.tasks_home())
+		f.start_mission(Autopilot.tasks_moon_ascent(20_000.0, SolarSystem.find(f.root_body, "moon"), f.sim_time) + Autopilot.tasks_home())
 		t0 = Time.get_ticks_msec()
 		return false
 	_check(ok and v.landed and v.body == f.home and not v.destroyed_flag, "back on Earth (touchdown %.1f m/s)" % v.touchdown_speed)
