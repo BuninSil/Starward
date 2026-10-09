@@ -26,11 +26,25 @@ uniform float pebble_strength = 0.0;
 uniform vec3 detail_tint : source_color = vec3(1.0);   // e.g. greener land on Earth
 
 uniform float land_roughness = 0.9;
+// High-resolution colour block (downloaded tiles) over a UV rectangle of the map.
+uniform sampler2D hd_tex : source_color, filter_linear_mipmap_anisotropic, repeat_disable;
+uniform vec4 hd_rect = vec4(0.0, 0.0, 0.0, 0.0);   // u0, v0, du, dv (du = 0: none)
 uniform bool use_slope = false;                         // patch: COLOR.r = slope 0..1
 uniform vec3 slope_tint : source_color = vec3(0.75);
 
 void fragment() {
 	vec3 col = texture(albedo_tex, UV).rgb;
+	if (hd_rect.z > 0.0) {
+		float du = UV.x - hd_rect.x;
+		du -= floor(du);                       // wrap across the date line
+		vec2 hu = vec2(du / hd_rect.z, (UV.y - hd_rect.y) / hd_rect.w);
+		if (hu.x >= 0.0 && hu.x <= 1.0 && hu.y >= 0.0 && hu.y <= 1.0) {
+			// Fade in from the block edges so the seam to the global map is soft.
+			vec2 e = min(hu, 1.0 - hu);
+			float edge = smoothstep(0.0, 0.08, min(e.x, e.y));
+			col = mix(col, texture(hd_tex, hu).rgb, edge);
+		}
+	}
 	float water = has_water ? smoothstep(0.35, 0.65, texture(water_tex, UV).r) : 0.0;
 	vec3 nm = use_normal_tex ? texture(normal_tex, UV).rgb : vec3(0.5, 0.5, 1.0);
 	float dist = length(VERTEX);

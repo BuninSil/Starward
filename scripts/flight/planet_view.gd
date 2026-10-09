@@ -629,6 +629,15 @@ func _apply_patch(res: Dictionary) -> void:
 
 
 var _patch_material: Material = null
+
+
+## High-resolution colour block for the ground patch (from HdTiles).
+func set_hd(tex: Texture2D, rect: Rect2) -> void:
+	if _patch_material == null:
+		_patch_material = _make_patch_material()
+	if _patch_material is ShaderMaterial:
+		(_patch_material as ShaderMaterial).set_shader_parameter("hd_tex", tex)
+		(_patch_material as ShaderMaterial).set_shader_parameter("hd_rect", Vector4(rect.position.x, rect.position.y, rect.size.x, rect.size.y))
 static var _rock: ArrayMesh = null
 
 

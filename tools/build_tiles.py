@@ -44,8 +44,27 @@ def _scrape(urls, pattern):
     return list(dict.fromkeys(found))
 
 
+EARTH_REC = "https://eoimages.gsfc.nasa.gov/images/imagerecords/73000/73751/"
+
+
 def earth(work, width):
     # Blue Marble July, 8 tiles of 21600² (A1 = 90N..0, 180W..90W; A2 = 0..90S; B.. east).
+    q = width // 4
+    out = Image.new("RGB", (width, width // 2))
+    try:
+        for col, letter in enumerate("ABCD"):
+            for row in (1, 2):
+                name = "world.topo.bathy.200407.3x21600x21600.%s%d.jpg" % (letter, row)
+                path = fpm.fetch([EARTH_REC + name], work)
+                im = Image.open(path)
+                im.draft("RGB", (q * 2, q * 2))   # fast JPEG downscale on decode
+                im = im.convert("RGB").resize((q, q), Image.LANCZOS)
+                out.paste(im, (col * q, (row - 1) * q))
+                os.remove(path)
+                print("  placed", letter, row, flush=True)
+        return out
+    except SystemExit:
+        print("  direct record failed, scraping", flush=True)
     pages = []
     for p in EARTH_PAGES:
         try:
@@ -79,11 +98,8 @@ def earth(work, width):
 
 
 def moon(work, width):
-    listing = fpm._get_text(MOON_DIR)
-    sizes = sorted({int(k) for k in re.findall(r"lroc_color_poles_(\d+)k\.tif", listing)})
-    print("  LROC colour sizes:", sizes, flush=True)
-    pick = max([s for s in sizes if s <= 16] or sizes)
-    path = fpm.fetch([MOON_DIR + "lroc_color_poles_%dk.tif" % pick], work)
+    path = fpm.fetch([MOON_DIR + "lroc_color_poles_%dk.tif" % k for k in (16, 8, 4)], work)
+    print("  moon colour:", os.path.basename(path), flush=True)
     a = fpm.load_geotiff(path, 32768)
     if a.dtype != np.uint8:
         a = (a.astype(np.float32) / (65535.0 if a.max() > 255 else 255.0) * 255.0).clip(0, 255).astype(np.uint8)

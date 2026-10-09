@@ -10,6 +10,7 @@ const SKY_SHADER := preload("res://shaders/starfield.gdshader")
 const AstronautScript := preload("res://scripts/eva/astronaut.gd")
 const TetherScript := preload("res://scripts/eva/tether.gd")
 const EvaHudScript := preload("res://scripts/eva/eva_hud.gd")
+const HdTilesScript := preload("res://scripts/flight/hd_tiles.gd")
 
 const DT := 1.0 / 60.0
 const WARPS: Array[int] = [1, 2, 4, 10, 50, 100, 1000, 10000, 100000, 1000000]
@@ -62,6 +63,7 @@ var map_pitch := 0.5
 var map_dist := 2_500_000.0
 
 var autopilot := Autopilot.new()
+var hd_tiles: Node = null
 # EVA
 var eva_mode := false
 var astronaut: RigidBody3D = null
@@ -90,6 +92,10 @@ func _ready() -> void:
 		add_child(pv)
 		pv.setup(b, b == home, SolarSystem.LAUNCH_LAT, SolarSystem.LAUNCH_LON, SolarSystem.sun_dir(b, 0.0))
 		planets[b] = pv
+	hd_tiles = HdTilesScript.new()
+	add_child(hd_tiles)
+	hd_tiles.tiles_ready.connect(func(b: CelestialBody, tex: Texture2D, rect: Rect2) -> void:
+		(planets[b] as Node3D).call("set_hd", tex, rect))
 	rocket = RocketView.new()
 	add_child(rocket)
 	traj_view = TrajectoryView.new()
@@ -531,6 +537,7 @@ func _process(delta: float) -> void:
 	if vessel.altitude() < 30_000.0:
 		var fixed_n := vessel.body.inertial_to_fixed(vessel.pos, sim_time).normalized()
 		(planets[vessel.body] as Node3D).call("ensure_patch", fixed_n, vessel.altitude_above_ground(sim_time))
+		hd_tiles.call("want", vessel.body, fixed_n)
 	for b in bodies:
 		var rel := b.absolute_position(sim_time).sub(vabs)
 		(planets[b] as Node3D).call("update_view", rel, sim_time, 1.0 if map_mode else _view_scale(rel.length(), b.radius))
