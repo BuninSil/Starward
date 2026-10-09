@@ -92,6 +92,8 @@ func update(ap: Autopilot, v: Vessel, t: float) -> int:
 
 static func _fmt(s: float) -> String:
 	var i := int(s)
+	if i >= 2 * 86400:
+		return "%d сут %dч" % [i / 86400, (i / 3600) % 24]
 	if i >= 3600:
 		return "%dч %02dм" % [i / 3600, (i / 60) % 60]
 	if i >= 60:

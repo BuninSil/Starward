@@ -13,7 +13,7 @@ func _init(u: String, p: Dictionary) -> void:
 	params = p
 	match u:
 		"soi": title = "Полёт до сферы влияния: %s" % (p.body as CelestialBody).name
-		"soi_parent": title = "Полёт домой до сферы влияния Земли"
+		"soi_parent": title = "Выход из сферы влияния"
 		"atmosphere": title = "Полёт до атмосферы"
 		"altitude": title = "Полёт до высоты %d км" % int(p.alt / 1000.0)
 

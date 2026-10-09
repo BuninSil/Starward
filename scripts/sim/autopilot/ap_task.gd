@@ -38,6 +38,8 @@ static func auto_stage(v: Vessel) -> void:
 
 ## Warp factor to coast toward an event `dt` seconds away.
 static func warp_for(dt: float) -> int:
+	if dt > 20.0 * 86400.0:
+		return 100000
 	if dt > 4.0 * 3600.0:
 		return 10000
 	if dt > 1200.0:

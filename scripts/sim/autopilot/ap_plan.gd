@@ -21,6 +21,7 @@ func _init(k: String, p: Dictionary) -> void:
 		"deorbit": title = "Сход с орбиты"
 		"moon_deorbit": title = "Сход с орбиты к освещённому месту"
 		"peri_correction": title = "Коррекция перицентра (%d км)" % int(p.alt / 1000.0)
+		"interplanetary": title = "Отлёт к планете %s" % (p.target as CelestialBody).name
 		_: title = "Расчёт манёвра"
 
 
@@ -82,8 +83,25 @@ func _compute(r: DVec3, vel: DVec3, b: CelestialBody, t: float) -> Dictionary:
 			if plan.is_empty():
 				return {"msg": "окно перелёта не найдено в ближайшие 12 суток"}
 			return {"node": plan.node, "msg": "окно через %s, у Луны %.0f км" % [ApExecute._fmt(plan.node.t - t), plan.peri_alt / 1000.0]}
+		"interplanetary":
+			var tgt: CelestialBody = params.target
+			if b.parent == null or tgt.parent != b.parent:
+				return {"msg": "сначала нужна орбита вокруг планеты"}
+			var ip := Planner.plan_interplanetary(r, vel, b, t, tgt, params.alt)
+			if ip.is_empty():
+				return {"msg": "окно перелёта не найдено"}
+			return {"node": ip.node, "msg": "окно через %s, в пути ~%d сут" % [ApExecute._fmt(ip.node.t - t), int((float(ip.t_arrive) - float(ip.t_window)) / 86400.0)]}
 		"correction":
 			var target2: CelestialBody = params.target
+			if b.is_star:
+				var segs_h := Trajectory.predict(r, vel, b, t, 2)
+				var enc_h := Trajectory.find_encounter(segs_h, target2)
+				if not enc_h.is_empty() and absf(enc_h.el.periapsis - target2.radius - params.alt) < maxf(5000.0, params.alt * 0.1):
+					return {"skip": true, "msg": "коррекция не нужна"}
+				var hc := Planner.plan_helio_correction(r, vel, b, t, target2, params.alt, 0.0)
+				if hc == null:
+					return {"msg": "коррекция не нашлась"}
+				return {"node": hc}
 			var segs := Trajectory.predict(r, vel, b, t)
 			var enc := Trajectory.find_encounter(segs, target2)
 			if not enc.is_empty() and absf(enc.el.periapsis - target2.radius - params.alt) < 3000.0:

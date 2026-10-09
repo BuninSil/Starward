@@ -995,8 +995,13 @@ func _keep_above_ground(p: Vector3, clearance: float) -> Vector3:
 	return p + up * (clearance - h) if h < clearance else p
 
 
+var map_focus_ship := true          ## map centred on the rocket (else on map_focus)
+var map_pan := Vector3.ZERO         ## two-finger pan offset from the focus point
+var _pan_mid := Vector2.ZERO
+
+
 func _update_map_camera() -> void:
-	var center := body_render_pos(map_focus)
+	var center := (Vector3.ZERO if map_focus_ship else body_render_pos(map_focus)) + map_pan
 	var offset := Vector3(
 		sin(map_yaw) * cos(map_pitch),
 		sin(map_pitch),
@@ -1009,6 +1014,8 @@ func _update_map_camera() -> void:
 
 
 func _map_zoom_limits() -> Vector2:
+	if map_focus_ship:
+		return Vector2(2000.0, 1.0e13)
 	return Vector2(map_focus.radius * 1.2, maxf(map_focus.radius * 200.0, 1.0e13 if map_focus.parent == null else map_focus.soi_radius * 3.0))
 
 
@@ -1017,6 +1024,8 @@ func toggle_map() -> void:
 	rocket.visible = not map_mode and not vessel.destroyed_flag
 	if map_mode:
 		map_focus = vessel.body
+		map_focus_ship = true
+		map_pan = Vector3.ZERO
 		_traj_timer = 0.0
 		map_dist = maxf(vessel.pos.length() * 3.2, body.radius * 3.2)
 		# Look from above the orbit plane, offset toward the vessel: orbit reads as an ellipse.
@@ -1030,11 +1039,24 @@ func toggle_map() -> void:
 
 
 ## Cycle the map focus through all bodies.
-func cycle_map_focus() -> void:
+func cycle_map_focus(dir := 1) -> void:
 	var i := bodies.find(map_focus)
-	map_focus = bodies[(i + 1) % bodies.size()]
+	if map_focus_ship:
+		i = bodies.find(vessel.body) - dir   # first press: the body we are at
+	map_focus = bodies[posmod(i + dir, bodies.size())]
+	map_focus_ship = false
+	map_pan = Vector3.ZERO
 	map_dist = map_focus.radius * (12.0 if map_focus.parent != null else 80.0)
-	message.emit("Карта: %s" % map_focus.name)
+	if map_focus.parent == root_body:
+		map_dist = maxf(map_dist, map_focus.radius * 6.0)
+
+
+## Map: back to following the rocket.
+func focus_map_on_ship() -> void:
+	map_focus_ship = true
+	map_pan = Vector3.ZERO
+	map_focus = vessel.body
+	map_dist = maxf(vessel.pos.length() * 3.2, vessel.body.radius * 3.2)
 
 
 # --- Camera input (touches not taken by the HUD) --------------------------------------
@@ -1048,6 +1070,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		if _touches.size() == 2:
 			var ps: Array = _touches.values()
 			_pinch_dist0 = (ps[0] as Vector2).distance_to(ps[1])
+			_pan_mid = ((ps[0] as Vector2) + (ps[1] as Vector2)) * 0.5
 			_pinch_start = map_dist if map_mode else (eva_cam_dist if eva_mode else cam_dist)
 	elif event is InputEventScreenDrag:
 		_touches[event.index] = event.position
@@ -1066,6 +1089,13 @@ func _unhandled_input(event: InputEvent) -> void:
 			if map_mode:
 				var lim := _map_zoom_limits()
 				map_dist = clampf(_pinch_start * k, lim.x, lim.y)
+				# Two fingers moving together pan the map (in the screen plane).
+				var mid := ((ps[0] as Vector2) + (ps[1] as Vector2)) * 0.5
+				var d := mid - _pan_mid
+				_pan_mid = mid
+				var px := map_dist * 2.0 * tan(deg_to_rad(camera.fov) * 0.5) / maxf(get_viewport().get_visible_rect().size.y, 1.0)
+				var b := camera.global_transform.basis
+				map_pan += (-b.x * d.x + b.y * d.y) * px
 			elif eva_mode:
 				eva_cam_dist = clampf(_pinch_start * k, 2.0, 40.0)
 			else:

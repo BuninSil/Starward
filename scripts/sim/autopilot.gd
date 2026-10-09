@@ -129,6 +129,33 @@ static func tasks_moon(root: CelestialBody, moon_alt: float) -> Array:
 	]
 
 
+## From an orbit around a planet to an orbit around another planet (same Sun).
+static func tasks_planet(target: CelestialBody, alt: float) -> Array:
+	return [
+		ApPlan.new("interplanetary", {"target": target, "alt": alt}),
+		ApCoast.new("soi_parent", {}),
+		ApPlan.new("correction", {"target": target, "alt": alt}),
+		ApCoast.new("soi", {"body": target}),
+		# Months of cruise turn a 0.05 m/s burn error into hundreds of km:
+		# trim the periapsis right after entering the SOI, then capture.
+		ApPlan.new("peri_correction", {"alt": alt}),
+		ApPlan.new("circularize", {"where": "peri"}),
+	]
+
+
+## Back to Earth from another planet's orbit: transfer, aim into the atmosphere, chute.
+static func tasks_planet_home(earth: CelestialBody, earth_peri_alt := 3000.0) -> Array:
+	return [
+		ApPlan.new("interplanetary", {"target": earth, "alt": earth_peri_alt}),
+		ApCoast.new("soi_parent", {}),
+		ApPlan.new("correction", {"target": earth, "alt": earth_peri_alt}),
+		ApCoast.new("soi", {"body": earth}),
+		ApPlan.new("peri_correction", {"alt": earth_peri_alt}),
+		ApCoast.new("atmosphere", {}),
+		ApLand.new(),
+	]
+
+
 static func tasks_home(earth_peri_alt := 3000.0) -> Array:
 	return [
 		ApPlan.new("return", {"alt": earth_peri_alt}),

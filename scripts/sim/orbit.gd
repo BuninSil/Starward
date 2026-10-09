@@ -166,3 +166,55 @@ static func orbit_points(el: Dictionary, count: int, max_radius: float) -> Packe
 		var pt := u.mul(rr * cos(nu)).add(vdir.mul(rr * sin(nu)))
 		pts.append(pt.to_v3())
 	return pts
+
+
+# --- Lambert's problem -------------------------------------------------------------
+
+## Velocities [v1, v2] of the conic from r1 to r2 in time tof (single revolution,
+## universal variables, Curtis alg. 5.2). `normal`: reference orbit normal that
+## picks the prograde direction. Returns [] if it does not converge.
+static func lambert(r1: DVec3, r2: DVec3, tof: float, mu: float, normal: DVec3) -> Array:
+	var r1n := r1.length()
+	var r2n := r2.length()
+	var cos_dt := clampf(r1.dot(r2) / (r1n * r2n), -1.0, 1.0)
+	var dtheta := acos(cos_dt)
+	if r1.cross(r2).dot(normal) < 0.0:
+		dtheta = TAU - dtheta
+	var a := sin(dtheta) * sqrt(r1n * r2n / (1.0 - cos_dt))
+	if absf(a) < 1e-9:
+		return []
+	var sq_mu := sqrt(mu)
+	# F(z) increases with z; bracket the root and bisect (robust), then Newton polish.
+	var y_of := func(z: float) -> float:
+		return r1n + r2n + a * (z * _stumpff_s(z) - 1.0) / sqrt(_stumpff_c(z))
+	var f_of := func(z: float) -> float:
+		var y: float = y_of.call(z)
+		if y < 0.0:
+			return -INF
+		return pow(y / _stumpff_c(z), 1.5) * _stumpff_s(z) + a * sqrt(y) - sq_mu * tof
+	var lo := -4.0 * PI * PI
+	var hi := 4.0 * PI * PI - 1e-6
+	# Move lo up until y > 0 there.
+	var guard := 0
+	while float(y_of.call(lo)) < 0.0 and guard < 200:
+		lo = lerpf(lo, hi, 0.05)
+		guard += 1
+	if float(f_of.call(lo)) > 0.0 or float(f_of.call(hi)) < 0.0:
+		return []
+	for _i in 200:
+		var mid := (lo + hi) * 0.5
+		if float(f_of.call(mid)) > 0.0:
+			hi = mid
+		else:
+			lo = mid
+		if hi - lo < 1e-12:
+			break
+	var z := (lo + hi) * 0.5
+	var yv: float = y_of.call(z)
+	var f := 1.0 - yv / r1n
+	var g := a * sqrt(yv / mu)
+	var gdot := 1.0 - yv / r2n
+	var v1 := r2.sub(r1.mul(f)).mul(1.0 / g)
+	var v2 := r2.mul(gdot).sub(r1).mul(1.0 / g)
+	return [v1, v2]
+

@@ -8,6 +8,7 @@ var flight: Node3D
 const TASKS := [
 	["orbit", "Выход на орбиту Земли", "высота", "км", 15, 100, 5, 20],
 	["moon", "Перелёт к Луне и выход на орбиту", "высота у Луны", "км", 10, 200, 10, 30],
+	["planet", "Перелёт к планете (выход на орбиту)", "цель", "", 0, 7, 1, 3],
 	["moon_land", "Посадка на Луну (с орбиты Луны)", "", "", 0, 0, 0, 0],
 	["moon_up", "Взлёт с Луны на орбиту", "высота", "км", 15, 60, 5, 20],
 	["home", "Возврат на Землю и посадка", "перицентр у Земли", "км", 1, 8, 1, 3],
@@ -21,6 +22,7 @@ var _values := {}
 var _value_labels := {}
 var _chain: Array = []     ## [[kind, value], ...]
 var _chain_label: Label
+var _window_label: Label
 
 
 func _ready() -> void:
@@ -76,6 +78,13 @@ func _ready() -> void:
 		row.add_child(_btn("+ в цепочку", func() -> void: _add(kind)))
 		_refresh_value(kind)
 
+	_window_label = Label.new()
+	_window_label.add_theme_font_size_override("font_size", 19)
+	_window_label.add_theme_color_override("font_color", Color(0.75, 0.9, 1.0))
+	box.add_child(_window_label)
+	visibility_changed.connect(func() -> void:
+		if visible:
+			_refresh_window())
 	var presets := HBoxContainer.new()
 	presets.add_theme_constant_override("separation", 10)
 	box.add_child(presets)
@@ -116,12 +125,48 @@ func _btn(text: String, cb: Callable) -> Button:
 func _step(kind: String, dir: int) -> void:
 	for t in TASKS:
 		if t[0] == kind:
-			_values[kind] = clampi(_values[kind] + dir * t[6], t[4], t[5])
+			if kind == "planet":
+				_values[kind] = posmod(_values[kind] + dir, _planets().size())
+			else:
+				_values[kind] = clampi(_values[kind] + dir * t[6], t[4], t[5])
 	_refresh_value(kind)
+	if kind == "planet":
+		_refresh_window()
+
+
+func _planets() -> Array[CelestialBody]:
+	return flight.root_body.children
+
+
+func _target_planet() -> CelestialBody:
+	return _planets()[_values["planet"]]
+
+
+## Window hint for the selected planet from the vessel's current planet.
+func _refresh_window() -> void:
+	if _window_label == null or flight == null or flight.vessel == null:
+		return
+	var tgt := _target_planet()
+	var from: CelestialBody = flight.vessel.body
+	while from.parent != null and from.parent != flight.root_body:
+		from = from.parent   # from the Moon: count from Earth
+	if from == tgt or from.parent == null:
+		_window_label.text = ""
+		return
+	var w := Planner.transfer_window(from, tgt, flight.sim_time)
+	if w.is_empty():
+		_window_label.text = ""
+		return
+	_window_label.text = "Окно %s → %s через %d сут, в пути ~%d сут, Δv отлёта ≈ %d м/с" % [
+		from.name, tgt.name, int((float(w.t_depart) - flight.sim_time) / 86400.0),
+		int(float(w.tof) / 86400.0), int(w.dv_hint)]
 
 
 func _refresh_value(kind: String) -> void:
 	if not _value_labels.has(kind):
+		return
+	if kind == "planet":
+		(_value_labels[kind] as Label).text = "→ " + _target_planet().name
 		return
 	for t in TASKS:
 		if t[0] == kind:
@@ -183,6 +228,8 @@ func _moon_home_mission() -> void:
 
 
 func _title_of(item: Array) -> String:
+	if item[0] == "planet":
+		return "Перелёт к планете " + _planets()[item[1]].name
 	for t in TASKS:
 		if t[0] == item[0]:
 			return t[1] + ("" if t[2] == "" else " (%d %s)" % [item[1], t[3]])
@@ -205,7 +252,27 @@ func _run(items: Array) -> void:
 		match it[0]:
 			"orbit": tasks += Autopilot.tasks_orbit(it[1] * 1000.0)
 			"moon": tasks += Autopilot.tasks_moon(flight.root_body, it[1] * 1000.0)
-			"home": tasks += Autopilot.tasks_home(it[1] * 1000.0)
+			"home":
+				var vb: CelestialBody = flight.vessel.body
+				if vb.parent == flight.root_body and vb != flight.home:
+					tasks += Autopilot.tasks_planet_home(flight.home, it[1] * 1000.0)
+				else:
+					tasks += Autopilot.tasks_home(it[1] * 1000.0)
+			"planet":
+				var tgt: CelestialBody = _planets()[it[1]]
+				var cur: CelestialBody = flight.vessel.body
+				if cur == tgt:
+					flight.message.emit("Уже у %s" % tgt.name)
+					return
+				if cur.parent != flight.root_body:
+					flight.message.emit("Сначала выйди на орбиту планеты (не спутника)")
+					return
+				if flight.vessel.landed and cur == flight.home:
+					tasks += Autopilot.tasks_orbit(_values["orbit"] * 1000.0)
+				if tgt == flight.home:
+					tasks += Autopilot.tasks_planet_home(flight.home, _values["home"] * 1000.0)
+				else:
+					tasks += Autopilot.tasks_planet(tgt, flight.default_orbit_altitude(tgt))
 			"moon_land": tasks += Autopilot.tasks_moon_land()
 			"moon_up": tasks += Autopilot.tasks_moon_ascent(it[1] * 1000.0)
 			"deorbit": tasks += Autopilot.tasks_deorbit()

@@ -119,8 +119,10 @@ static func _refine_transfer(r: DVec3, v: DVec3, t_now: float, node: ManeuverNod
 		while improved and guard < 12:
 			improved = false
 			guard += 1
-			for delta in [[st[0], 0, 0], [-st[0], 0, 0], [0, st[1], 0], [0, -st[1], 0], [0, 0, st[2]], [0, 0, -st[2]]]:
-				var cand := ManeuverNode.new(node.t + delta[0], node.body, node.prograde + delta[1], node.normal + delta[2])
+			for delta in [[st[0], 0, 0, 0], [-st[0], 0, 0, 0], [0, st[1], 0, 0], [0, -st[1], 0, 0],
+					[0, 0, st[2], 0], [0, 0, -st[2], 0], [0, 0, 0, st[2]], [0, 0, 0, -st[2]]]:
+				var cand := ManeuverNode.new(node.t + delta[0], node.body, node.prograde + delta[1],
+					node.normal + delta[2], node.radial + delta[3])
 				if cand.t < t_now + 60.0:
 					continue
 				var sc := _transfer_score(r, v, t_now, cand, target, target_alt)
@@ -136,24 +138,233 @@ static func _refine_transfer(r: DVec3, v: DVec3, t_now: float, node: ManeuverNod
 
 
 static func _transfer_score(r: DVec3, v: DVec3, t_now: float, node: ManeuverNode, target: CelestialBody, target_alt: float) -> Dictionary:
-	# Two segments are enough: ours, then the target's SOI (a miss would go on
-	# around the Sun, which is expensive to sample and useless here).
-	var segs := node.predict_after(r, v, t_now, 2)
+	# Segments up to the target's SOI only: a miss would go on around the Sun,
+	# which is expensive to sample and useless here. Moon: ours + target (2);
+	# planet from a planet's orbit: ours + the Sun + target (3).
+	var max_segs := 2 if node.body == target.parent else 3
+	var segs := node.predict_after(r, v, t_now, max_segs)
 	for i in segs.size():
 		var s: Dictionary = segs[i]
 		if s.body == target:
 			var pa: float = s.el.periapsis - target.radius
 			return {"score": absf(pa - target_alt), "encounter": true, "peri_alt": pa, "t_arrive": s.t0}
-	# No encounter: distance of closest approach on the first segment.
+	# No encounter: closest approach on the segment around the target's parent.
 	var s0: Dictionary = segs[0]
+	for s in segs:
+		if s.body == target.parent:
+			s0 = s
 	var dmin := INF
 	var pts: PackedVector3Array = s0.points
 	var n := pts.size()
-	for i in range(0, n, 4):
+	for i in range(0, n, 2):
 		var tt: float = lerpf(s0.t0, s0.t1, float(i) / maxf(n - 1, 1))
 		var d := DVec3.from_v3(pts[i]).sub(target.state_at(tt)[0]).length()
 		dmin = minf(dmin, d)
-	return {"score": 1.0e9 + dmin, "encounter": false, "peri_alt": INF, "t_arrive": 0.0}
+	return {"score": 1.0e12 + dmin, "encounter": false, "peri_alt": INF, "t_arrive": 0.0}
+
+
+# --- Interplanetary transfer -----------------------------------------------------------
+
+## From a closed orbit around planet `b` to `target` (another planet, same parent).
+## The departure date and excess velocity come from a small Lambert search around
+## the Hohmann window. The ejection burn is prograde in the parking orbit's plane
+## at the point where the escape asymptote matches the excess velocity's in-plane
+## direction; the out-of-plane part (parking orbit vs. transfer plane) is left to
+## the mid-course correction, which is far cheaper than a plane change here.
+## Returns {node, miss, t_window, t_arrive, v_inf} (node may not reach the SOI yet).
+static func plan_interplanetary(r: DVec3, v: DVec3, b: CelestialBody, t_now: float, target: CelestialBody,
+		_target_alt: float) -> Dictionary:
+	var sun := b.parent
+	if sun == null or target.parent != sun:
+		return {}
+	var el := OrbitMath.elements(r, v, b.mu)
+	if el.e >= 1.0:
+		return {}
+	var win := transfer_window(b, target, t_now + 3600.0)
+	if win.is_empty() or not win.has("v_inf"):
+		return {}
+	var t_d: float = win.t_depart
+	var v_inf: DVec3 = win.v_inf
+	var vinf := v_inf.length()
+	var h: DVec3 = (el.h as DVec3).normalized()
+	var s_p := v_inf.sub(h.mul(v_inf.dot(h))).normalized()
+	var period: float = el.period
+	# Burn point: periapsis of the escape hyperbola, θ∞ behind the asymptote.
+	var rp: float = el.a
+	var theta := acos(-1.0 / (1.0 + rp * vinf * vinf / b.mu))
+	var burn_dir := _rotate_about(s_p, h, -theta)
+	var best_t := t_now + 600.0
+	var best_dot := -2.0
+	for k in 360:
+		var tt := t_d - period + period * k / 360.0
+		if tt < t_now + 300.0:
+			continue
+		var pp: DVec3 = OrbitMath.propagate(r, v, b.mu, tt - t_now)[0]
+		var dd := pp.normalized().dot(burn_dir)
+		if dd > best_dot:
+			best_dot = dd
+			best_t = tt
+	var st := OrbitMath.propagate(r, v, b.mu, best_t - t_now)
+	var rb := (st[0] as DVec3).length()
+	var dv := sqrt(vinf * vinf + 2.0 * b.mu / rb) - (st[1] as DVec3).length()
+	var node := ManeuverNode.new(best_t, b, dv)
+	# Refine time and prograde Δv on the real trajectory (closest approach).
+	var best := _transfer_score(r, v, t_now, node, target, 0.0)
+	for step in [[period / 60.0, 10.0], [period / 240.0, 2.0], [period / 960.0, 0.5]]:
+		var improved := true
+		var guard := 0
+		while improved and guard < 16:
+			improved = false
+			guard += 1
+			for d in [[step[0], 0.0], [-step[0], 0.0], [0.0, step[1]], [0.0, -step[1]]]:
+				var cand := ManeuverNode.new(node.t + d[0], b, node.prograde + d[1])
+				if cand.t < t_now + 300.0:
+					continue
+				var sc := _transfer_score(r, v, t_now, cand, target, 0.0)
+				if sc.score < best.score:
+					best = sc
+					node = cand
+					improved = true
+	return {"node": node, "encounter": best.encounter, "peri_alt": best.peri_alt,
+		"miss": best.score - 1.0e12 if not best.encounter else 0.0,
+		"t_window": t_d, "t_arrive": t_d + float(win.tof), "v_inf": vinf}
+
+
+## Mid-course correction around the Sun towards `target`: Lambert to the target's
+## position at the planned arrival, then a fine search for the periapsis altitude.
+static func plan_helio_correction(r: DVec3, v: DVec3, b: CelestialBody, t_now: float, target: CelestialBody,
+		target_alt: float, t_arrive_hint: float) -> ManeuverNode:
+	var t_c := t_now + 300.0
+	var st := OrbitMath.propagate(r, v, b.mu, t_c - t_now)
+	var rc: DVec3 = st[0]
+	var vc: DVec3 = st[1]
+	var hn := rc.cross(vc).normalized()
+	# Arrival time: the hint, or the current closest approach.
+	var t_a := t_arrive_hint
+	if t_a <= t_c + 86400.0:
+		t_a = _closest_approach_time(rc, vc, b, t_c, target)
+	var best_node: ManeuverNode = null
+	var best_cost := INF
+	# Small scan of arrival times: cheapest Lambert correction wins.
+	for f in [0.9, 0.95, 1.0, 1.05, 1.1]:
+		var ta: float = t_c + (t_a - t_c) * f
+		var tp: DVec3 = target.state_at(ta)[0]
+		var sol := OrbitMath.lambert(rc, tp, ta - t_c, b.mu, hn)
+		if sol.is_empty():
+			continue
+		var dvv := (sol[0] as DVec3).sub(vc)
+		if dvv.length() < best_cost:
+			best_cost = dvv.length()
+			var pro_b := vc.normalized()
+			var nor_b := rc.cross(vc).normalized()
+			var rad_b := pro_b.cross(nor_b)
+			if rad_b.dot(rc) < 0.0:
+				rad_b = rad_b.mul(-1.0)
+			best_node = ManeuverNode.new(t_c, b, dvv.dot(pro_b), dvv.dot(nor_b), dvv.dot(rad_b))
+	if best_node == null:
+		return null
+	# Lambert aims at the centre: nudge the burn so the pass has the wanted periapsis.
+	var node := best_node
+	var best := _transfer_score(r, v, t_now, node, target, target_alt)
+	for stp in [2.0, 0.5, 0.1, 0.02, 0.005]:
+		var improved := true
+		var guard := 0
+		while improved and guard < 25:
+			improved = false
+			guard += 1
+			for d in [[stp, 0, 0], [-stp, 0, 0], [0, stp, 0], [0, -stp, 0], [0, 0, stp], [0, 0, -stp]]:
+				var cand := ManeuverNode.new(node.t, b, node.prograde + d[0], node.normal + d[1], node.radial + d[2])
+				var sc := _transfer_score(r, v, t_now, cand, target, target_alt)
+				if sc.score < best.score:
+					best = sc
+					node = cand
+					improved = true
+	return node if best.encounter else best_node
+
+
+static func _closest_approach_time(r: DVec3, v: DVec3, b: CelestialBody, t0: float, target: CelestialBody) -> float:
+	var el := OrbitMath.elements(r, v, b.mu)
+	var span: float = el.period if el.e < 1.0 else 400.0 * 86400.0
+	var best_t := t0 + span * 0.5
+	var best_d := INF
+	for k in 721:
+		var tt := span * k / 720.0
+		var p: DVec3 = OrbitMath.propagate(r, v, b.mu, tt)[0]
+		var d := p.sub(target.state_at(t0 + tt)[0]).length()
+		if d < best_d:
+			best_d = d
+			best_t = t0 + tt
+	return best_t
+
+
+## Next Hohmann window from planet `a` to planet `b` (same parent) after t_from:
+## departure time when `b` will be opposite to `a` after the transfer time.
+## Returns {t_depart, tof, r2, dv_hint} or {}.
+static func transfer_window(a: CelestialBody, b: CelestialBody, t_from: float) -> Dictionary:
+	var sun := a.parent
+	var pa := a.orbital_period()
+	var pb := b.orbital_period()
+	var synodic := absf(1.0 / (1.0 / pa - 1.0 / pb)) if absf(pa - pb) > 1.0 else pa
+	var t_end := t_from + synodic * 1.05
+	var steps := 720
+	var best := {}
+	var best_err := INF
+	for k in steps + 1:
+		var t_d := lerpf(t_from, t_end, float(k) / steps)
+		var r1v: DVec3 = a.state_at(t_d)[0]
+		var r1 := r1v.length()
+		var r2 := b.orbit_a
+		var tof := 0.0
+		var bp := DVec3.new()
+		for _i in 3:
+			var at := (r1 + r2) * 0.5
+			tof = PI * sqrt(at * at * at / sun.mu)
+			bp = b.state_at(t_d + tof)[0]
+			r2 = bp.length()
+		var err := acos(clampf(r1v.mul(-1.0).normalized().dot(bp.normalized()), -1.0, 1.0))
+		if err < best_err:
+			best_err = err
+			best = {"t_depart": t_d, "tof": tof, "r2": r2}
+	if best.is_empty():
+		return {}
+	# Lambert around the Hohmann guess: cheapest departure + arrival excess speed.
+	var h_ref: DVec3 = (a.state_at(best.t_depart)[0] as DVec3).cross(a.state_at(best.t_depart)[1]).normalized()
+	var day := 86400.0
+	var t0d: float = best.t_depart
+	var tof0: float = best.tof
+	var best_cost := INF
+	for dd in range(-12, 13, 2):
+		for ff in [0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15]:
+			var td: float = t0d + dd * day * maxf(tof0 / (100.0 * day), 0.5)
+			if td < t_from:
+				continue
+			var tf: float = tof0 * ff
+			var sa: Array = a.state_at(td)
+			var sb: Array = b.state_at(td + tf)
+			var sol := OrbitMath.lambert(sa[0], sb[0], tf, sun.mu, h_ref)
+			if sol.is_empty():
+				continue
+			var vi1 := (sol[0] as DVec3).sub(sa[1])
+			var vi2 := (sol[1] as DVec3).sub(sb[1])
+			var cost := vi1.length() + 0.5 * vi2.length()
+			if cost < best_cost:
+				best_cost = cost
+				best["t_depart"] = td
+				best["tof"] = tf
+				best["v_inf"] = vi1
+				best["v_inf_arrive"] = vi2.length()
+	# Rough Δv from a low circular orbit (for the window hint).
+	var vinf: float = (best.v_inf as DVec3).length() if best.has("v_inf") else 0.0
+	var r_low := a.radius + maxf(a.atmosphere_height * 1.5, 20_000.0)
+	best["dv_hint"] = sqrt(vinf * vinf + 2.0 * a.mu / r_low) - sqrt(a.mu / r_low)
+	return best
+
+
+static func _rotate_about(vv: DVec3, axis: DVec3, ang: float) -> DVec3:
+	# Rodrigues' rotation formula.
+	var c := cos(ang)
+	var sn := sin(ang)
+	return vv.mul(c).add(axis.cross(vv).mul(sn)).add(axis.mul(axis.dot(vv) * (1.0 - c)))
 
 
 # --- Return to the parent body -------------------------------------------------------
@@ -280,6 +491,44 @@ static func plan_periapsis_correction(r: DVec3, v: DVec3, b: CelestialBody, t_no
 		var dv := ManeuverNode.dv_vector(st[0], st[1], n.prograde, n.normal, n.radial)
 		var el := OrbitMath.elements(st[0], (st[1] as DVec3).add(dv), b.mu)
 		return absf(el.periapsis - b.radius - target_alt)
+	# Cheapest single-axis fix first: scan radial (moves the pass sideways, very
+	# effective far out on an approach) and prograde, bisect the zero crossing.
+	var signed := func(n: ManeuverNode) -> float:
+		var st2 := n.state_before(r, v, t_now)
+		var dv2 := ManeuverNode.dv_vector(st2[0], st2[1], n.prograde, n.normal, n.radial)
+		var el2 := OrbitMath.elements(st2[0], (st2[1] as DVec3).add(dv2), b.mu)
+		return el2.periapsis - b.radius - target_alt
+	var best_axis: ManeuverNode = null
+	for axis in ["radial", "prograde"]:
+		var mk := func(x: float) -> ManeuverNode:
+			return ManeuverNode.new(t_now + 120.0, b, x if axis == "prograde" else 0.0, 0.0, x if axis == "radial" else 0.0)
+		var f0: float = signed.call(mk.call(0.0))
+		for sgn in [1.0, -1.0]:
+			var prev_x := 0.0
+			var prev_f := f0
+			var x := 0.0
+			var stp := 0.05
+			while absf(x) < 400.0:
+				x += sgn * stp
+				stp *= 1.15
+				var fx: float = signed.call(mk.call(x))
+				if signf(fx) != signf(prev_f):
+					var lo := prev_x
+					var hi := x
+					for _i in 50:
+						var mid := (lo + hi) * 0.5
+						if signf(float(signed.call(mk.call(mid)))) == signf(prev_f):
+							lo = mid
+						else:
+							hi = mid
+					var cand: ManeuverNode = mk.call(hi)
+					if best_axis == null or cand.total() < best_axis.total():
+						best_axis = cand
+					break
+				prev_x = x
+				prev_f = fx
+	if best_axis != null and absf(float(signed.call(best_axis))) < 500.0:
+		return best_axis
 	var best: float = score.call(node)
 	for stp in [20.0, 5.0, 1.0, 0.2, 0.05, 0.01]:
 		var improved := true

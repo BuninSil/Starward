@@ -90,15 +90,26 @@ static func _segment(r: DVec3, v: DVec3, b: CelestialBody, t0: float) -> Diction
 			seg.end = "impact"
 			pts.append((OrbitMath.propagate(r, v, b.mu, ti)[0] as DVec3).to_v3())
 			break
-		# Child SOI entry
+		# Child SOI entry. Samples can be farther apart than a small SOI is wide,
+		# so near a child the interval is searched finely before giving up.
 		var entered: CelestialBody = null
+		var lo_t := prev_t
+		var hi_t := tt
 		for c in reachable:
-			if p.sub(c.state_at(t0 + tt)[0]).length() < c.soi_radius:
+			var d := p.sub(c.state_at(t0 + tt)[0]).length()
+			if d < c.soi_radius:
 				entered = c
 				break
+			var step_len := (rv[1] as DVec3).length() * (tt - prev_t) * 1.5 + c.soi_radius
+			if d < step_len:
+				var hit := _fine_entry(r, v, b, c, t0, prev_t, tt)
+				if hit >= 0.0:
+					entered = c
+					hi_t = hit
+					break
 		if entered != null:
 			var cc := entered
-			var ti2 := _bisect(r, v, b, prev_t, tt, func(q: DVec3, abs_t: float) -> bool:
+			var ti2 := _bisect(r, v, b, lo_t, hi_t, func(q: DVec3, abs_t: float) -> bool:
 				return q.sub(cc.state_at(abs_t)[0]).length() < cc.soi_radius, t0)
 			seg.t1 = t0 + ti2
 			seg.end = "enter"
@@ -109,6 +120,17 @@ static func _segment(r: DVec3, v: DVec3, b: CelestialBody, t0: float) -> Diction
 		prev_t = tt
 	seg.points = pts
 	return seg
+
+
+## First sub-sample time in (lo, hi] inside child c's SOI, or -1.
+static func _fine_entry(r: DVec3, v: DVec3, b: CelestialBody, c: CelestialBody, t0: float, lo: float, hi: float) -> float:
+	var n := 40
+	for k in range(1, n + 1):
+		var tt := lerpf(lo, hi, float(k) / n)
+		var q: DVec3 = OrbitMath.propagate(r, v, b.mu, tt)[0]
+		if q.sub(c.state_at(t0 + tt)[0]).length() < c.soi_radius:
+			return tt
+	return -1.0
 
 
 ## Time of minimum radius in [lo, hi] (radius is unimodal there for an approaching orbit).

@@ -27,6 +27,8 @@ var _warp_label: Label
 var _stage_btn: Button
 var _map_btn: Button
 var _focus_btn: Button
+var _ship_focus_btn: Button
+var _prev_body_btn: Button
 var _eva_btn: Button
 var _node_btn: Button
 var _chute_btn: Button
@@ -139,7 +141,13 @@ func _build_top_right() -> void:
 	_node_btn = _button("Манёвр", _on_node_button, 140)
 	_node_btn.visible = false
 	map_row.add_child(_node_btn)
-	_focus_btn = _button("Фокус: тело", func() -> void: flight.cycle_map_focus(), 160)
+	_ship_focus_btn = _button("К ракете", func() -> void: flight.focus_map_on_ship(), 120)
+	_ship_focus_btn.visible = false
+	map_row.add_child(_ship_focus_btn)
+	_prev_body_btn = _button("◀", func() -> void: flight.cycle_map_focus(-1), 60)
+	_prev_body_btn.visible = false
+	map_row.add_child(_prev_body_btn)
+	_focus_btn = _button("Фокус: тело", func() -> void: flight.cycle_map_focus(1), 190)
 	_focus_btn.visible = false
 	map_row.add_child(_focus_btn)
 	_eva_btn = _button("Выйти наружу", func() -> void: flight.start_eva(), 190)
@@ -555,6 +563,10 @@ func _on_map() -> void:
 	flight.toggle_map()
 	_map_btn.text = "Полёт" if flight.map_mode else "Карта"
 	_focus_btn.visible = flight.map_mode
+	_ship_focus_btn.visible = flight.map_mode
+	_prev_body_btn.visible = flight.map_mode
+	if flight.map_mode:
+		_focus_btn.text = "Ракета ▶" if flight.map_focus_ship else "%s ▶" % flight.map_focus.name
 	_node_btn.visible = flight.map_mode
 	if not flight.map_mode:
 		_mn_panel.hide()
