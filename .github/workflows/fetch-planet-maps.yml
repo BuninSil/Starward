@@ -11,6 +11,9 @@ on:
       discover:
         description: "Only list download links on the product pages (yes/no)"
         default: "no"
+      bodies:
+        description: "Bodies to (re)build: all or a list like mars,venus"
+        default: "all"
 
 permissions:
   contents: write
@@ -18,7 +21,7 @@ permissions:
 jobs:
   fetch:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -35,7 +38,7 @@ jobs:
 
       - name: Download and process
         if: github.event.inputs.discover != 'yes'
-        run: python tools/fetch_planet_maps.py --out assets/planets --work "$RUNNER_TEMP/maps"
+        run: python tools/fetch_planet_maps.py --out assets/planets --work "$RUNNER_TEMP/maps" --bodies "${{ github.event.inputs.bodies }}"
 
       - name: Show result
         if: github.event.inputs.discover != 'yes'

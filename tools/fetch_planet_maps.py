@@ -53,10 +53,31 @@ MOON_DEM = [
     "https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/ldem_4.tif",
 ]
 
+USGS = "https://planetarymaps.usgs.gov/mosaic/"
+MARS_COLOR = [
+    "https://astrogeology.usgs.gov/ckan/dataset/7131d503-cdc9-45a5-8f83-5126c0fd397e/resource/5ea881c6-01b3-41fa-a7af-42d2131b54f1/download/mars_viking_mdim21_clrmosaic_1km.jpg",
+    USGS + "Mars_Viking_ClrMosaic_global_925m.tif",
+]
+MARS_DEM = [
+    "https://pds-geosciences.wustl.edu/mgs/urn-nasa-pds-mgs_mola_topography_derived/meg004/megt90n000cb.img",
+    "https://pds-geosciences.wustl.edu/mgs/mgs-m-mola-5-megdr-l3-v1/mgsl_300x/meg004/megt90n000cb.img",
+]
+MERCURY_COLOR = [USGS + "Mercury_MESSENGER_ClrMosaic_global_665m_v3.tif"]
+MERCURY_DEM = [USGS + "Mercury_Messenger_USGS_DEM_Global_665m_v2.tif"]
+VENUS_RADAR = [USGS + "Venus_Magellan_C3-MDIR_Global_Mosaic_2025m.tif"]
+VENUS_DEM = [USGS + "Venus_Magellan_Topography_Global_4641m_v02.tif", USGS + "Venus_Magellan_Topography_Global_4641m.tif"]
+PHOBOS_COLOR = [USGS + "Phobos_Viking_Mosaic_40ppd_DLRcontrol.tif"]
+PHOBOS_DEM = [USGS + "Phobos_ME_HRSC_DEM_Global_2ppd.tif"]
+
 PROBES = {
     "earth": {"Everest": (27.99, 86.93), "Mariana": (11.35, 142.2), "Baikonur": (45.97, 63.3),
               "Amazon": (-3.0, -60.0), "MidAtlantic": (0.0, -25.0), "Tibet": (32.0, 90.0),
               "DeadSea": (31.5, 35.5), "Greenland": (72.0, -40.0)},
+    "mars": {"OlympusMons": (18.65, -133.8), "Hellas": (-42.4, 70.5), "VallesMarineris": (-8.0, -75.0),
+             "NorthPole": (88.0, 0.0)},
+    "mercury": {"Caloris": (30.5, 162.7), "Equator0": (0.0, 0.0)},
+    "venus": {"MaxwellMontes": (65.2, 3.3), "AphroditeTerra": (-5.0, 105.0)},
+    "phobos": {"Stickney": (1.0, -49.0), "Equator0": (0.0, 0.0)},
     "moon": {"Tycho": (-43.3, -11.2), "Imbrium": (32.8, -15.6), "Tranquillitatis": (8.5, 31.4),
              "FarHighland": (5.0, -158.0), "SPA_basin": (-53.0, -169.0)},
 }
@@ -125,6 +146,37 @@ def load_array(path):
         a = np.asarray(Image.open(path))
     print("  loaded", os.path.basename(path), a.shape, a.dtype, "min", a.min(), "max", a.max(), flush=True)
     return a
+
+
+def load_geotiff(path, max_width=8192):
+    """Large GeoTIFF -> (array decimated to <= max_width columns, lon of the left edge
+    is -180). Planetary mosaics come either -180..180 or 0..360; the latter is rolled."""
+    import tifffile
+    with tifffile.TiffFile(path) as tf:
+        page = tf.pages[0]
+        tie = page.tags.get("ModelTiepointTag")
+        scale = page.tags.get("ModelPixelScaleTag")
+        a = page.asarray(out="memmap") if page.is_memmappable else page.asarray()
+        h, w = a.shape[:2]
+        step = max(1, w // max_width)
+        a = np.array(a[::step, ::step])
+        print("  tif", os.path.basename(path), (h, w), "->", a.shape, a.dtype,
+              "tie", tie.value if tie else None, "scale", scale.value if scale else None, flush=True)
+        if tie is not None and scale is not None:
+            x0 = tie.value[3]
+            if x0 > -1.0:   # starts at 0 E: roll so the left edge is 180 W
+                a = np.roll(a, a.shape[1] // 2, axis=1)
+                print("  rolled 0..360 -> -180..180", flush=True)
+    return a
+
+
+def clean_nodata(h):
+    h = h.astype(np.float32)
+    bad = (h < -20000) | (h > 30000) | ~np.isfinite(h)
+    if bad.any():
+        h[bad] = np.median(h[~bad])
+        print("  nodata filled:", int(bad.sum()), flush=True)
+    return h
 
 
 def probe(name, arr, points):
@@ -217,17 +269,86 @@ def moon(work, out, size):
     write_body(out, "moon", color, height, 173_740.0, 2.0, [MOON_COLOR[0], MOON_DEM[0]], size)
 
 
+def mars(work, out, size):
+    cp = fetch(MARS_COLOR, work)
+    color = Image.open(cp) if cp.lower().endswith(".jpg") else Image.fromarray(load_geotiff(cp, 8192)[..., :3])
+    print("  mars colour", color.size, flush=True)
+    raw = np.fromfile(fetch(MARS_DEM, work), dtype=">i2").reshape(720, 1440).astype(np.float32)
+    height = np.roll(raw, 720, axis=1)   # MEGDR columns start at 0 E
+    probe("height_m", height, PROBES["mars"])
+    write_body(out, "mars", color, height, 338_950.0, 2.0, [os.path.basename(cp), MARS_DEM[0]], size)
+
+
+def mercury(work, out, size):
+    c = load_geotiff(fetch(MERCURY_COLOR, work), 6144)
+    if c.ndim == 3:
+        # The MESSENGER colour mosaic is enhanced (false) colour: keep its brightness,
+        # give it Mercury's real dull grey-brown.
+        lum = c[..., :3].astype(np.float32).mean(axis=2)
+    else:
+        lum = c.astype(np.float32)
+    lum = (lum - np.percentile(lum, 1)) / max(np.percentile(lum, 99) - np.percentile(lum, 1), 1.0)
+    lum = np.clip(lum, 0.0, 1.0) * 0.75 + 0.12
+    rgb = np.stack([lum * 1.0, lum * 0.95, lum * 0.88], axis=-1)
+    color = Image.fromarray((rgb * 255).clip(0, 255).astype(np.uint8), mode="RGB")
+    height = clean_nodata(load_geotiff(fetch(MERCURY_DEM, work), 4096))
+    height -= np.median(height)
+    probe("height_m", height, PROBES["mercury"])
+    write_body(out, "mercury", color, height, 243_970.0, 2.5, [MERCURY_COLOR[0], MERCURY_DEM[0]], size)
+
+
+def venus(work, out, size):
+    r = load_geotiff(fetch(VENUS_RADAR, work), 8192).astype(np.float32)
+    if r.ndim == 3:
+        r = r[..., 0]
+    r = np.clip((r - np.percentile(r, 1)) / max(np.percentile(r, 99) - np.percentile(r, 1), 1.0), 0, 1)
+    # Radar brightness tinted like the surface under the orange-lit sky.
+    rgb = np.stack([0.30 + 0.55 * r, 0.20 + 0.40 * r, 0.10 + 0.22 * r], axis=-1)
+    color = Image.fromarray((rgb * 255).clip(0, 255).astype(np.uint8), mode="RGB")
+    height = clean_nodata(load_geotiff(fetch(VENUS_DEM, work), 4096))
+    height -= np.median(height)
+    probe("height_m", height, PROBES["venus"])
+    write_body(out, "venus", color, height, 605_180.0, 3.0, [VENUS_RADAR[0], VENUS_DEM[0]], size)
+
+
+def phobos(work, out, size):
+    c = load_geotiff(fetch(PHOBOS_COLOR, work), 4096).astype(np.float32)
+    if c.ndim == 3:
+        c = c[..., :3].mean(axis=2)
+    c = np.clip((c - np.percentile(c, 1)) / max(np.percentile(c, 99) - np.percentile(c, 1), 1.0), 0, 1)
+    c = c * 0.55 + 0.1
+    rgb = np.stack([c * 1.0, c * 0.93, c * 0.85], axis=-1)
+    color = Image.fromarray((rgb * 255).clip(0, 255).astype(np.uint8), mode="RGB")
+    d = load_geotiff(fetch(PHOBOS_DEM, work), 4096).astype(np.float32)
+    if d.ndim == 3:
+        d = d[..., 0]
+    d = clean_nodata(d)
+    med = float(np.median(d))
+    print("  phobos dem median", med, flush=True)
+    if med > 5000:          # radius in metres
+        height = d - 11_270.0
+    elif med > 5:           # radius in km
+        height = (d - 11.27) * 1000.0
+    else:                   # already relative
+        height = d - med
+    probe("height_m", height, PROBES["phobos"])
+    write_body(out, "phobos", color, height, 1_127.0, 1.0, [PHOBOS_COLOR[0], PHOBOS_DEM[0]], (size[0] // 2, size[1] // 2))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--work", required=True)
     ap.add_argument("--width", type=int, default=2048)
+    ap.add_argument("--bodies", default="all")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     os.makedirs(a.work, exist_ok=True)
     size = (a.width, a.width // 2)
     ok = True
-    for fn in (earth, moon):
+    fns = {"earth": earth, "moon": moon, "mars": mars, "mercury": mercury, "venus": venus, "phobos": phobos}
+    pick = list(fns) if a.bodies == "all" else [b.strip() for b in a.bodies.split(",")]
+    for fn in [fns[b] for b in pick]:
         try:
             fn(a.work, a.out, size)
         except BaseException as e:  # keep going so one body's failure doesn't hide the other
