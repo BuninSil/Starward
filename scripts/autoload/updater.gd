@@ -12,6 +12,7 @@ const API_LATEST := "https://api.github.com/repos/%s/releases/latest" % REPO
 const PLUGIN_SINGLETON := "StarwardUpdater"
 const TIMEOUT_SEC := 15.0
 const RETRY_DELAY_SEC := 2.0
+const DOWNLOAD_ATTEMPTS := 3
 const RESUME_RECHECK_SEC := 600.0   ## re-check on app resume if the last check is older
 
 ## Last found release: {tag, version_code, name, notes, apk_url, apk_size, html_url}
@@ -153,6 +154,9 @@ func _finish_check(has_update: bool, message: String) -> void:
 
 # --- Download & install -------------------------------------------------------
 
+var _download_attempt := 0
+
+
 func download_and_install() -> void:
 	if latest.is_empty() or is_downloading:
 		return
@@ -168,12 +172,21 @@ func download_and_install() -> void:
 	_cleanup_old_apks(dir)
 
 	is_downloading = true
-	if _download_request == null:
-		_download_request = HTTPRequest.new()
-		_download_request.use_threads = true
-		_download_request.download_chunk_size = 256 * 1024
-		_download_request.request_completed.connect(_on_download_completed)
-		add_child(_download_request)
+	_download_attempt = 0
+	_start_download()
+
+
+## A fresh HTTPRequest per attempt: after a failed connect (seen on phones as
+## result 2 right after the github.com redirect) a reused one fails instantly.
+func _start_download() -> void:
+	if _download_request != null:
+		_download_request.cancel_request()
+		_download_request.queue_free()
+	_download_request = HTTPRequest.new()
+	_download_request.use_threads = true
+	_download_request.download_chunk_size = 256 * 1024
+	_download_request.request_completed.connect(_on_download_completed)
+	add_child(_download_request)
 	_download_request.download_file = _download_path
 	Log.info("Updater: downloading %s -> %s" % [latest.apk_url, _download_path])
 	var err := _download_request.request(latest.apk_url, _headers("application/octet-stream"))
@@ -191,7 +204,13 @@ func _process(_delta: float) -> void:
 
 func _on_download_completed(result: int, code: int, _h: PackedStringArray, _b: PackedByteArray) -> void:
 	if result != HTTPRequest.RESULT_SUCCESS or code != 200:
-		_finish_download(false, "Ошибка загрузки (result %d, HTTP %d)" % [result, code])
+		_download_attempt += 1
+		if _download_attempt < DOWNLOAD_ATTEMPTS:
+			Log.warn("Updater: download failed (result %d, HTTP %d), retry %d" % [result, code, _download_attempt])
+			get_tree().create_timer(3.0).timeout.connect(_start_download)
+			return
+		_finish_download(false, "Не удалось скачать (result %d, HTTP %d). Открываю загрузку в браузере." % [result, code])
+		open_in_browser()
 		return
 	var size := _file_size(_download_path)
 	if latest.apk_size > 0 and size != latest.apk_size:
