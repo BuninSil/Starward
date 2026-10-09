@@ -252,6 +252,9 @@ func update_view(origin_rel: DVec3, t: float, view_scale := 1.0) -> void:
 	# top_level: transform is global, computed from doubles relative to the vessel,
 	# so the pad never inherits the float error of the planet centre offset.
 	_site.global_transform = Transform3D(site_basis, site_rel.to_v3())
+	if _patch_material is ShaderMaterial:
+		(_patch_material as ShaderMaterial).set_shader_parameter("sun_local",
+			(site_basis.inverse() * SolarSystem.sun_dir(body, t)).normalized())
 
 
 ## Body id used for asset file names.
@@ -341,7 +344,13 @@ func _make_surface_material() -> Material:
 	m.set_shader_parameter("has_water", ResourceLoader.exists(wp))
 	if ResourceLoader.exists(wp):
 		m.set_shader_parameter("water_tex", load(wp))
-	m.set_shader_parameter("land_roughness", 0.85 if body.has_atmosphere() else 0.95)
+	m.set_shader_parameter("land_roughness", 0.85 if body.has_atmosphere() else 1.0)
+	var st := surface_style()
+	m.set_shader_parameter("albedo_target", st.albedo)
+	m.set_shader_parameter("map_mean", st.map_mean)
+	m.set_shader_parameter("ground_color", (st.ground as Color).srgb_to_linear())
+	m.set_shader_parameter("recolor", st.recolor)
+	m.set_shader_parameter("regolith", 0.0 if body.has_atmosphere() else 1.0)
 	return m
 
 
@@ -433,9 +442,9 @@ func _build_site(with_pad := true) -> void:
 ## (x east, y up, z south; origin on the reference sphere under the centre).
 func _compute_patch(centre: DVec3, with_pad: bool) -> Dictionary:
 	var r := body.radius
-	var rings := 120
-	var segs := 96
-	var max_a := CAP_RADIUS / r
+	var rings := 128
+	var segs := 128
+	var max_a := minf(CAP_RADIUS / r, 0.5)   # small moons: a cap, not a wrap-around
 	var up_f := centre.normalized()
 	var east_f := DVec3.new(0, 1, 0).cross(up_f).normalized()
 	var south_f := east_f.cross(up_f)
@@ -451,7 +460,7 @@ func _compute_patch(centre: DVec3, with_pad: bool) -> Dictionary:
 	# Ring 0 = centre point.
 	for i in rings + 1:
 		var f := float(i) / rings
-		var a := max_a * f * f * f      # dense near the centre: ~4 m at 10 m, ~20 m at 100 m
+		var a := max_a * f * f * f      # dense near the centre: ~1 m at 10 m, ~5 m at 100 m
 		var count := 1 if i == 0 else segs
 		for j in count:
 			var phi := TAU * j / segs
@@ -498,62 +507,159 @@ func _compute_patch(centre: DVec3, with_pad: bool) -> Dictionary:
 	# Slope per vertex (0 flat .. 1 vertical) for rocky shading on steep ground.
 	var cols := PackedColorArray()
 	cols.resize(nv)
-	for n in nv:
-		var slope := 1.0 - clampf(normals[n].dot(Vector3.UP), 0.0, 1.0)
-		cols[n] = Color(slope, 0.0, 0.0)
+	# Plus crater marks: G = ejecta / rays of young craters, B = crater walls and rims.
+	var marked := body.terrain != null and body.terrain.has_crater_field()
+	k = 0
+	for i in rings + 1:
+		var f := float(i) / rings
+		var a := max_a * f * f * f
+		var count := 1 if i == 0 else segs
+		for j in count:
+			var slope := 1.0 - clampf(normals[k].dot(Vector3.UP), 0.0, 1.0)
+			var mk := Vector2.ZERO
+			if marked:
+				var phi := TAU * j / segs
+				var d := east_f.mul(sin(a) * cos(phi)).add(up_f.mul(cos(a))).add(south_f.mul(sin(a) * sin(phi)))
+				mk = body.terrain.surface_marks(d, r)
+			cols[k] = Color(slope, mk.x, mk.y)
+			k += 1
 	return {"centre": up_f, "with_pad": with_pad, "h0": body.surface_height(up_f),
 		"verts": verts, "normals": normals, "tangents": tangents, "uvs": uvs, "uv2s": uv2s, "idx": idx,
-		"colors": cols, "rocks": _compute_rocks(up_f, east_f, south_f, with_pad)}
+		"colors": cols, "scatter": _compute_rocks(up_f, east_f, south_f, with_pad)}
 
 
-## Scattered rocks around the patch centre (deterministic from its position):
-## transforms in the site frame, sitting on the exact terrain height.
-func _compute_rocks(up_f: DVec3, east_f: DVec3, south_f: DVec3, with_pad: bool) -> Array[Transform3D]:
+## Scattered rocks around the patch centre (deterministic from its position),
+## transforms in the site frame sitting on the exact terrain height:
+##   rocks:   boulders, power-law sizes (many small, few big), partly in
+##            clusters, denser on the ejecta and rims of young craters;
+##   pebbles: 1–10 cm stones within ~30 m, partly as scree around rocks;
+##   drifts:  (Mars) dust tails on the lee side of rocks.
+func _compute_rocks(up_f: DVec3, east_f: DVec3, south_f: DVec3, with_pad: bool) -> Dictionary:
 	var style := surface_style()
-	var out: Array[Transform3D] = []
+	var out := {"rocks": [] as Array[Transform3D], "pebbles": [] as Array[Transform3D], "drifts": [] as Array[Transform3D]}
 	var count: int = style.rocks
+	if Graphics.quality == Graphics.LOW:
+		count /= 2
 	if count <= 0:
 		return out
 	var rng := RandomNumberGenerator.new()
 	rng.seed = hash(Vector3i(roundi(up_f.x * 1e5), roundi(up_f.y * 1e5), roundi(up_f.z * 1e5))) + hash(body.id)
 	var r := body.radius
-	var max_d := 380.0
-	for i in count:
-		# Denser near the centre (where the player is), sparse at the edge.
-		var d := max_d * pow(rng.randf(), 0.7)
-		var phi := rng.randf() * TAU
-		if d < 7.0 or (with_pad and d < PAD_RADIUS + 6.0):
-			continue
-		var x := d * cos(phi)
-		var z := d * sin(phi)
+	var max_d := 420.0
+	var marked := body.terrain != null and body.terrain.has_crater_field()
+	var place := func(x: float, z: float) -> Array:
+		var d := sqrt(x * x + z * z)
 		var a := d / r
+		var phi := atan2(z, x)
 		var dir := east_f.mul(sin(a) * cos(phi)).add(up_f.mul(cos(a))).add(south_f.mul(sin(a) * sin(phi)))
-		var h := body.surface_height(dir)
-		var y := (r + h) * cos(a) - r
-		# Size: mostly small stones, a few boulders.
-		var size := 0.15 + pow(rng.randf(), 4.0) * float(style.rock_max)
+		return [dir, (r + body.surface_height(dir)) * cos(a) - r]
+	var clusters: Array[Vector2] = []
+	for i in 14:
+		var cd := max_d * pow(rng.randf(), 0.6)
+		var cp := rng.randf() * TAU
+		clusters.append(Vector2(cd * cos(cp), cd * sin(cp)))
+	var big: Array[Vector3] = []   # (x, z, size) of rocks near the centre, for scree
+	var attempts := 0
+	while out.rocks.size() < count and attempts < count * 5:
+		attempts += 1
+		var x: float
+		var z: float
+		if rng.randf() < 0.35:
+			var c: Vector2 = clusters[rng.randi() % clusters.size()]
+			var spread := rng.randf_range(4.0, 25.0)
+			x = c.x + rng.randfn(0.0, spread)
+			z = c.y + rng.randfn(0.0, spread)
+		else:
+			var d := max_d * pow(rng.randf(), 0.75)   # denser near the player
+			var phi := rng.randf() * TAU
+			x = d * cos(phi)
+			z = d * sin(phi)
+		var dd := sqrt(x * x + z * z)
+		if dd < 7.0 or (with_pad and dd < PAD_RADIUS + 6.0) or dd > max_d:
+			continue
+		var pl: Array = place.call(x, z)
+		if marked:
+			var mk: Vector2 = body.terrain.surface_marks(pl[0], r)
+			if rng.randf() > 0.3 + 1.6 * (mk.x + mk.y):
+				continue
+		# Power law: size = min * u^(-1/1.7), capped.
+		var size := minf(0.12 * pow(maxf(rng.randf(), 1e-4), -1.0 / 1.7), float(style.rock_max) * rng.randf_range(0.7, 1.0))
 		var sc := Vector3(size * rng.randf_range(0.8, 1.5), size * rng.randf_range(0.45, 0.9), size * rng.randf_range(0.8, 1.4))
 		var bas := Basis.from_euler(Vector3(rng.randf_range(-0.3, 0.3), rng.randf() * TAU, rng.randf_range(-0.3, 0.3))).scaled(sc)
-		out.append(Transform3D(bas, Vector3(x, y - sc.y * 0.35, z)))
+		out.rocks.append(Transform3D(bas, Vector3(x, float(pl[1]) - sc.y * 0.35, z)))
+		if dd < 45.0 and size > 0.25:
+			big.append(Vector3(x, z, size))
+		if style.kind == 1 and size > 0.25 and dd < 200.0:
+			# Dust tail downwind (+wind in the patch plane).
+			var wind := Vector3(0.8, 0.0, 0.6)
+			var len := size * rng.randf_range(1.4, 2.4)
+			var tp := Vector3(x, 0.0, z) + wind * (sc.x * 0.4 + len * 0.45)
+			var tpl: Array = place.call(tp.x, tp.z)
+			var tb := Basis.looking_at(wind, Vector3.UP).scaled(Vector3(sc.x * 0.55, sc.y * 0.35, len))
+			out.drifts.append(Transform3D(tb, Vector3(tp.x, float(tpl[1]) - sc.y * 0.08, tp.z)))
+	var pcount: int = style.pebbles if Graphics.quality == Graphics.HIGH else 0
+	for i in pcount:
+		var x: float
+		var z: float
+		if not big.is_empty() and rng.randf() < 0.4:
+			# Scree: pebbles fallen around a rock.
+			var bg: Vector3 = big[rng.randi() % big.size()]
+			var ang := rng.randf() * TAU
+			var rad := bg.z * rng.randf_range(0.7, 2.2)
+			x = bg.x + rad * cos(ang)
+			z = bg.y + rad * sin(ang)
+		else:
+			var d := 30.0 * sqrt(rng.randf())
+			var phi := rng.randf() * TAU
+			x = d * cos(phi)
+			z = d * sin(phi)
+		if with_pad and sqrt(x * x + z * z) < PAD_RADIUS + 2.0:
+			continue
+		var pl: Array = place.call(x, z)
+		var size := minf(0.01 * pow(maxf(rng.randf(), 1e-3), -1.0 / 1.4), 0.1)
+		var sc := Vector3(size * rng.randf_range(0.8, 1.4), size * rng.randf_range(0.5, 0.9), size * rng.randf_range(0.8, 1.3))
+		var bas := Basis.from_euler(Vector3(rng.randf_range(-0.4, 0.4), rng.randf() * TAU, rng.randf_range(-0.4, 0.4))).scaled(sc)
+		out.pebbles.append(Transform3D(bas, Vector3(x, float(pl[1]) - sc.y * 0.3, z)))
 	return out
 
 
 ## Per-body look of the ground up close.
 func surface_style() -> Dictionary:
+	# Colours are sRGB. albedo/map_mean: real mean albedo and the map's mean linear
+	# luminance (tools: measured on assets/planets/<id>_color.jpg); ground: the
+	# colour the map is pulled toward (luminance ~ albedo). mats: amounts of
+	# fine, smooth (Mars: ripples), gravel, rock outcrops.
+	var st := {"rocks": 0, "rock_max": 1.0, "rock_color": Color.GRAY, "dust_color": Color.GRAY,
+		"albedo": -1.0, "map_mean": 0.3, "ground": Color.GRAY, "recolor": 0.0, "kind": 0,
+		"mats": Vector4(1.0, 0.5, 0.5, 0.0), "rock_tint": Color(0.8, 0.8, 0.8), "gravel_tint": Color(0.92, 0.92, 0.92),
+		"craters": 0.0, "macro_amp": 0.3, "macro_tint": Color(1.0, 1.0, 1.0), "pebbles": 0}
 	match body.id:
 		"moon":
-			return {"rocks": 900, "rock_max": 2.2, "rock_color": Color(0.42, 0.41, 0.4), "slope_tint": Color(0.75, 0.75, 0.76)}
+			st.merge({"rocks": 1700, "rock_max": 2.4, "rock_color": Color(0.29, 0.285, 0.28), "dust_color": Color(0.39, 0.38, 0.37),
+				"albedo": 0.12, "map_mean": 0.3226, "ground": Color(0.39, 0.385, 0.378), "recolor": 0.75,
+				"mats": Vector4(1.0, 0.6, 0.55, 0.5), "rock_tint": Color(0.86, 0.86, 0.86), "gravel_tint": Color(1.0, 1.0, 1.0),
+				"craters": 1.0, "macro_amp": 0.35, "macro_tint": Color(1.03, 1.0, 0.96), "pebbles": 2600}, true)
 		"mars":
-			return {"rocks": 1100, "rock_max": 2.6, "rock_color": Color(0.42, 0.26, 0.18), "slope_tint": Color(0.72, 0.6, 0.55)}
+			st.merge({"rocks": 1600, "rock_max": 2.6, "rock_color": Color(0.36, 0.27, 0.22), "dust_color": Color(0.7, 0.48, 0.3),
+				"albedo": 0.22, "map_mean": 0.1614, "ground": Color(0.64, 0.46, 0.33), "recolor": 0.8, "kind": 1,
+				"mats": Vector4(1.0, 0.85, 0.5, 0.45), "rock_tint": Color(0.82, 0.78, 0.76), "gravel_tint": Color(0.78, 0.74, 0.74),
+				"craters": 0.25, "macro_amp": 0.3, "macro_tint": Color(1.05, 0.97, 0.9), "pebbles": 2600}, true)
 		"mercury":
-			return {"rocks": 900, "rock_max": 2.4, "rock_color": Color(0.38, 0.36, 0.34), "slope_tint": Color(0.75, 0.73, 0.72)}
+			st.merge({"rocks": 1200, "rock_max": 2.4, "rock_color": Color(0.3, 0.29, 0.28), "dust_color": Color(0.4, 0.385, 0.37),
+				"albedo": 0.12, "map_mean": 0.139, "ground": Color(0.4, 0.385, 0.365), "recolor": 0.6,
+				"mats": Vector4(1.0, 0.5, 0.5, 0.5), "craters": 1.0, "pebbles": 2000}, true)
 		"venus":
-			return {"rocks": 700, "rock_max": 2.0, "rock_color": Color(0.22, 0.17, 0.13), "slope_tint": Color(0.7, 0.62, 0.55)}
+			st.merge({"rocks": 900, "rock_max": 2.0, "rock_color": Color(0.33, 0.26, 0.2), "dust_color": Color(0.5, 0.39, 0.28),
+				"albedo": 0.18, "map_mean": 0.1346, "ground": Color(0.55, 0.42, 0.3), "recolor": 0.4,
+				"mats": Vector4(1.0, 0.5, 0.4, 0.6), "pebbles": 1500}, true)
 		"phobos", "deimos":
-			return {"rocks": 600, "rock_max": 1.6, "rock_color": Color(0.27, 0.25, 0.23), "slope_tint": Color(0.75, 0.75, 0.75)}
+			st.merge({"rocks": 700, "rock_max": 1.6, "rock_color": Color(0.24, 0.23, 0.22), "dust_color": Color(0.3, 0.29, 0.28),
+				"albedo": 0.07, "map_mean": 0.1198, "ground": Color(0.3, 0.29, 0.28), "recolor": 0.6,
+				"mats": Vector4(1.0, 0.5, 0.5, 0.4), "craters": 1.0, "pebbles": 1500}, true)
 		"earth":
-			return {"rocks": 250, "rock_max": 1.2, "rock_color": Color(0.45, 0.43, 0.4), "slope_tint": Color(0.8, 0.78, 0.74)}
-	return {"rocks": 0, "rock_max": 1.0, "rock_color": Color.GRAY, "slope_tint": Color(0.8, 0.8, 0.8)}
+			st.merge({"rocks": 250, "rock_max": 1.2, "rock_color": Color(0.46, 0.44, 0.41), "dust_color": Color(0.5, 0.48, 0.44),
+				"mats": Vector4(1.0, 0.3, 0.2, 0.0), "pebbles": 0}, true)
+	return st
 
 
 func _apply_patch(res: Dictionary) -> void:
@@ -577,25 +683,11 @@ func _apply_patch(res: Dictionary) -> void:
 	if _patch_material == null:
 		_patch_material = _make_patch_material()
 	mi.material_override = _patch_material
-	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# Ground casts sun shadows (crater walls, hills) on the high preset.
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if Graphics.quality == Graphics.HIGH \
+		else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_site.add_child(mi)
-	var rocks: Array[Transform3D] = res.rocks
-	if not rocks.is_empty():
-		var mm := MultiMesh.new()
-		mm.transform_format = MultiMesh.TRANSFORM_3D
-		mm.mesh = _rock_mesh()
-		mm.instance_count = rocks.size()
-		for i in rocks.size():
-			mm.set_instance_transform(i, rocks[i])
-		var mmi := MultiMeshInstance3D.new()
-		mmi.multimesh = mm
-		var rm := StandardMaterial3D.new()
-		rm.albedo_color = surface_style().rock_color
-		rm.roughness = 0.95
-		rm.metallic_specular = 0.3
-		mmi.material_override = rm
-		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		_site.add_child(mmi)
+	_add_scatter(res.scatter)
 	if not res.with_pad:
 		return
 	var h0: float = res.h0
@@ -638,15 +730,39 @@ func set_hd(tex: Texture2D, rect: Rect2) -> void:
 	if _patch_material is ShaderMaterial:
 		(_patch_material as ShaderMaterial).set_shader_parameter("hd_tex", tex)
 		(_patch_material as ShaderMaterial).set_shader_parameter("hd_rect", Vector4(rect.position.x, rect.position.y, rect.size.x, rect.size.y))
-static var _rock: ArrayMesh = null
+static var _rocks: Array[ArrayMesh] = []
+static var _pebble_mesh: ArrayMesh = null
+static var _drift_mesh: ArrayMesh = null
+const ROCK_VARIANTS := 7
+const ROCK_SHADER := preload("res://shaders/rock.gdshader")
 
 
-## Low-poly rock: a subdivided octahedron with jittered vertices (shared by all bodies).
-static func _rock_mesh() -> ArrayMesh:
-	if _rock != null:
-		return _rock
+## Boulder meshes: a blob cut by random planes, so each rock has a few large flat
+## fractured faces and sharp edges, plus a flat base. 7 variants (round, flat
+## slabs, tall and angular ones) shared by all bodies, ~128 triangles each.
+static func _rock_meshes() -> Array[ArrayMesh]:
+	if not _rocks.is_empty():
+		return _rocks
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 12345
+	var shapes := [Vector3(1.1, 0.8, 1.0), Vector3(1.4, 0.45, 1.1), Vector3(0.9, 1.1, 0.85), Vector3(1.2, 0.7, 0.8),
+		Vector3(1.0, 0.6, 1.3), Vector3(1.3, 0.9, 1.2), Vector3(0.8, 0.55, 0.9)]
+	for variant in ROCK_VARIANTS:
+		_rocks.append(_make_rock(2, shapes[variant], 6 + variant, rng))
+	_pebble_mesh = _make_rock(1, Vector3(1.1, 0.7, 1.0), 4, rng)
+	# Dust drift: a low smooth mound, long along local +z.
+	var sm := SphereMesh.new()
+	sm.radial_segments = 10
+	sm.rings = 5
+	sm.is_hemisphere = true
+	sm.radius = 1.0
+	sm.height = 1.0
+	_drift_mesh = ArrayMesh.new()
+	_drift_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, sm.get_mesh_arrays())
+	return _rocks
+
+
+static func _make_rock(level: int, stretch: Vector3, cuts: int, rng: RandomNumberGenerator) -> ArrayMesh:
 	var base := [Vector3.UP, Vector3.DOWN, Vector3.LEFT, Vector3.RIGHT, Vector3.FORWARD, Vector3.BACK]
 	var faces := [[0, 3, 4], [0, 4, 2], [0, 2, 5], [0, 5, 3], [1, 4, 3], [1, 2, 4], [1, 5, 2], [1, 3, 5]]
 	var verts: Array[Vector3] = []
@@ -654,7 +770,7 @@ static func _rock_mesh() -> ArrayMesh:
 		verts.append(v)
 	var tris: Array = faces.duplicate()
 	var mid_cache := {}
-	for _level in 2:
+	for _level in level:
 		var nt: Array = []
 		for t in tris:
 			var m := []
@@ -672,77 +788,205 @@ static func _rock_mesh() -> ArrayMesh:
 			nt.append([m[0], m[1], m[2]])
 		tris = nt
 	for i in verts.size():
-		verts[i] = verts[i] * rng.randf_range(0.75, 1.15)
+		verts[i] = verts[i] * stretch * rng.randf_range(0.95, 1.05)
+	# Fracture planes: pull everything beyond a plane onto it.
+	for c in cuts:
+		var n := Vector3(rng.randf_range(-1, 1), rng.randf_range(-0.4, 1), rng.randf_range(-1, 1)).normalized()
+		var d := rng.randf_range(0.45, 0.8)
+		for i in verts.size():
+			var e: float = verts[i].dot(n) - d
+			if e > 0.0:
+				verts[i] -= n * e
+	for i in verts.size():   # flat base, sunk into the ground
+		if verts[i].y < -0.4:
+			verts[i].y = -0.4
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for t in tris:
-		# Flat-shaded facets read as chipped stone.
 		for k in [0, 2, 1]:
 			st.add_vertex(verts[t[k]])
-	st.generate_normals()
-	_rock = st.commit()
-	return _rock
+	st.generate_normals()   # flat facets
+	return st.commit()
+
+
+func _add_scatter(sc: Dictionary) -> void:
+	var style := surface_style()
+	_ground_textures()
+	var meshes := _rock_meshes()
+	var vrng := RandomNumberGenerator.new()
+	vrng.seed = sc.rocks.size()
+	var mat := func(rock: Color, dust: Color, fade: float) -> ShaderMaterial:
+		var m := ShaderMaterial.new()
+		m.shader = ROCK_SHADER
+		m.set_shader_parameter("rock_color", rock.srgb_to_linear())
+		m.set_shader_parameter("dust_color", dust.srgb_to_linear())
+		m.set_shader_parameter("ground_pack", _ground_pack)
+		m.set_shader_parameter("fade_end", fade)
+		return m
+	var add := func(mesh: Mesh, xs: Array, m: Material, shadows: bool) -> void:
+		if xs.is_empty():
+			return
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.use_colors = true
+		mm.mesh = mesh
+		mm.instance_count = xs.size()
+		for i in xs.size():
+			mm.set_instance_transform(i, xs[i])
+			var k := vrng.randf_range(0.75, 1.15)
+			mm.set_instance_color(i, Color(k, k * vrng.randf_range(0.96, 1.02), k * vrng.randf_range(0.94, 1.03)))
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		mmi.material_override = m
+		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if shadows and Graphics.quality == Graphics.HIGH \
+			else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		_site.add_child(mmi)
+	var rock_m: ShaderMaterial = mat.call(style.rock_color, style.dust_color, 0.0)
+	var rocks: Array = sc.rocks
+	for v in meshes.size():
+		var mine := []
+		for i in range(v, rocks.size(), meshes.size()):
+			mine.append(rocks[i])
+		add.call(meshes[v], mine, rock_m, true)
+	add.call(_pebble_mesh, sc.pebbles, mat.call(style.rock_color, style.dust_color, 30.0), false)
+	add.call(_drift_mesh, sc.drifts, mat.call(style.dust_color, style.dust_color, 0.0), false)
 
 
 ## Patch material: same maps as the globe (so the edge blends) plus close-up
-## detail on UV2 (metres): grey noise at two scales, bump normals, water waves.
+## ground materials on UV2 (metres) from two small packed textures shared by
+## all bodies (see _ground_textures).
 func _make_patch_material() -> Material:
 	var m := _make_surface_material()
 	if not m is ShaderMaterial:
 		return m
 	var sm := m as ShaderMaterial
+	_ground_textures()
 	sm.set_shader_parameter("use_normal_tex", false)   # real geometry here
 	sm.set_shader_parameter("normal_strength", 1.0)
 	sm.set_shader_parameter("use_detail", true)
-	var noise := FastNoiseLite.new()
-	noise.seed = 11
-	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	noise.frequency = 0.012
-	noise.fractal_octaves = 5
-	noise.fractal_octaves = 6
-	var tex := NoiseTexture2D.new()
-	tex.width = 1024
-	tex.height = 1024
-	tex.seamless = true
-	tex.noise = noise
-	sm.set_shader_parameter("detail_tex", tex)
-	# Pebbles / regolith: cellular noise (stones with dark gaps) and its normals.
-	var cell := FastNoiseLite.new()
-	cell.seed = 23
-	cell.noise_type = FastNoiseLite.TYPE_CELLULAR
-	cell.frequency = 0.045
-	cell.cellular_return_type = FastNoiseLite.RETURN_DISTANCE2_SUB
-	cell.fractal_type = FastNoiseLite.FRACTAL_FBM
-	cell.fractal_octaves = 2
-	var ptex := NoiseTexture2D.new()
-	ptex.width = 512
-	ptex.height = 512
-	ptex.seamless = true
-	ptex.noise = cell
-	sm.set_shader_parameter("pebble_tex", ptex)
-	var pn := NoiseTexture2D.new()
-	pn.width = 512
-	pn.height = 512
-	pn.seamless = true
-	pn.as_normal_map = true
-	pn.bump_strength = 4.0
-	pn.noise = cell
-	sm.set_shader_parameter("pebble_normal", pn)
-	sm.set_shader_parameter("pebble_strength", 0.35 if body.id == "earth" else 0.8)
-	var bump_noise := FastNoiseLite.new()
-	bump_noise.seed = 5
-	bump_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	bump_noise.frequency = 0.02
-	bump_noise.fractal_octaves = 4
-	var bump := NoiseTexture2D.new()
-	bump.width = 1024
-	bump.height = 1024
-	bump.seamless = true
-	bump.as_normal_map = true
-	bump.bump_strength = 6.0
-	bump.noise = bump_noise
-	sm.set_shader_parameter("detail_normal", bump)
-	sm.set_shader_parameter("detail_strength", 0.5 if body.has_atmosphere() else 0.6)
+	var st := surface_style()
+	sm.set_shader_parameter("ground_pack", _ground_pack)
+	sm.set_shader_parameter("ground_pack_normal", _ground_pack_normal)
+	sm.set_shader_parameter("ground_pack_normal2", _ground_pack_normal2)
+	sm.set_shader_parameter("detail_level", Graphics.quality)
+	sm.set_shader_parameter("detail_strength", 0.85)
+	sm.set_shader_parameter("ground_kind", st.kind)
+	var rs := hash(body.id)
+	sm.set_shader_parameter("macro_seed", Vector2(float(rs % 997) / 997.0, float(rs / 997 % 991) / 991.0))
+	sm.set_shader_parameter("macro_amp", st.macro_amp)
+	sm.set_shader_parameter("macro_tint", st.macro_tint)
+	sm.set_shader_parameter("mat_amount", st.mats)
+	sm.set_shader_parameter("rock_tint", st.rock_tint)
+	sm.set_shader_parameter("gravel_tint", st.gravel_tint)
+	sm.set_shader_parameter("crater_decals", st.craters)
 	sm.set_shader_parameter("use_slope", true)
-	sm.set_shader_parameter("slope_tint", surface_style().slope_tint)
 	return sm
+
+
+static var _ground_pack: ImageTexture = null
+static var _ground_pack_normal: ImageTexture = null
+static var _ground_pack_normal2: ImageTexture = null
+
+
+## Builds (once per run) the three textures of the close-up ground:
+##   pack:    R = fine speckle, G = cracked rock (ridged), B = soft bumps,
+##            A = sparse pebbles (0 between them);
+##   normal:  RG = fine ground (bumps + speckle), BA = gravel (pebbles);
+##   normal2: RG = rock, BA = soft bumps only (compacted ground, ripples).
+## 512² RGBA8 with mipmaps each (~1.4 MB): ~4 MB of VRAM whatever the body.
+static func _ground_textures() -> void:
+	if _ground_pack != null:
+		return
+	const S := 512
+	var sand := FastNoiseLite.new()
+	sand.seed = 41
+	sand.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	sand.frequency = 0.25
+	sand.fractal_octaves = 3
+	var rn := FastNoiseLite.new()
+	rn.seed = 57
+	rn.noise_type = FastNoiseLite.TYPE_SIMPLEX
+	rn.frequency = 0.012
+	rn.fractal_type = FastNoiseLite.FRACTAL_RIDGED
+	rn.fractal_octaves = 5
+	var mn := FastNoiseLite.new()
+	mn.seed = 11
+	mn.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	mn.frequency = 0.008
+	mn.fractal_octaves = 5
+	# Pebbles: cellular cells; a stone sits in a cell when its random value is high.
+	var pd := FastNoiseLite.new()
+	pd.seed = 23
+	pd.noise_type = FastNoiseLite.TYPE_CELLULAR
+	pd.frequency = 0.04
+	pd.fractal_type = FastNoiseLite.FRACTAL_NONE
+	pd.cellular_jitter = 0.8
+	pd.cellular_return_type = FastNoiseLite.RETURN_DISTANCE
+	var pv := pd.duplicate() as FastNoiseLite
+	pv.cellular_return_type = FastNoiseLite.RETURN_CELL_VALUE
+	var g := sand.get_seamless_image(S, S)
+	var r := rn.get_seamless_image(S, S)
+	var mc := mn.get_seamless_image(S, S)
+	var di := pd.get_seamless_image(S, S)
+	var vi := pv.get_seamless_image(S, S)
+	for im: Image in [g, r, mc, di, vi]:
+		im.convert(Image.FORMAT_L8)
+	var gd := g.get_data()
+	var rd := r.get_data()
+	var md := mc.get_data()
+	var dd := di.get_data()
+	var vd := vi.get_data()
+	var pebbles := PackedByteArray()
+	pebbles.resize(S * S)
+	var h_fine := PackedByteArray()
+	h_fine.resize(S * S)
+	var h_grav := PackedByteArray()
+	h_grav.resize(S * S)
+	for i in S * S:
+		var keep := clampf((vd[i] - 150.0) / 40.0, 0.0, 1.0)            # ~35 % of cells
+		var size := 0.45 + 0.4 * float(vd[i] % 7) / 6.0
+		var dome := clampf(1.0 - float(dd[i]) / 255.0 / size * 1.6, 0.0, 1.0)
+		var peb := sqrt(dome) * keep
+		pebbles[i] = int(peb * 255.0)
+		h_fine[i] = int(md[i] * 0.6 + gd[i] * 0.4)
+		h_grav[i] = int(clampf(peb * 200.0 + md[i] * 0.2, 0.0, 255.0))
+	var nf := _normals(Image.create_from_data(S, S, false, Image.FORMAT_L8, h_fine), 5.0)
+	var ng := _normals(Image.create_from_data(S, S, false, Image.FORMAT_L8, h_grav), 7.0)
+	var nr := _normals(r, 7.0)
+	var nb := _normals(mc, 4.0)
+	var pack := PackedByteArray()
+	pack.resize(S * S * 4)
+	var n1 := PackedByteArray()
+	n1.resize(S * S * 4)
+	var n2 := PackedByteArray()
+	n2.resize(S * S * 4)
+	for i in S * S:
+		var j := i * 4
+		pack[j] = gd[i]
+		pack[j + 1] = rd[i]
+		pack[j + 2] = md[i]
+		pack[j + 3] = pebbles[i]
+		n1[j] = nf[j]
+		n1[j + 1] = nf[j + 1]
+		n1[j + 2] = ng[j]
+		n1[j + 3] = ng[j + 1]
+		n2[j] = nr[j]
+		n2[j + 1] = nr[j + 1]
+		n2[j + 2] = nb[j]
+		n2[j + 3] = nb[j + 1]
+	_ground_pack = _tex(S, pack)
+	_ground_pack_normal = _tex(S, n1)
+	_ground_pack_normal2 = _tex(S, n2)
+
+
+static func _normals(height: Image, strength: float) -> PackedByteArray:
+	var im := height.duplicate() as Image
+	im.bump_map_to_normal_map(strength)
+	im.convert(Image.FORMAT_RGBA8)
+	return im.get_data()
+
+
+static func _tex(size: int, data: PackedByteArray) -> ImageTexture:
+	var im := Image.create_from_data(size, size, false, Image.FORMAT_RGBA8, data)
+	im.generate_mipmaps()
+	return ImageTexture.create_from_image(im)

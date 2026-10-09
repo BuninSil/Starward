@@ -20,8 +20,8 @@ signal message(text: String)
 
 ## Sky per body: [zenith, horizon, haze density near the ground].
 const SKY_COLORS := {
-	"earth": [Color(0.18, 0.38, 0.78), Color(0.62, 0.76, 0.95), 0.00003],
-	"mars": [Color(0.5, 0.38, 0.3), Color(0.86, 0.66, 0.47), 0.00009],
+	"earth": [Color(0.18, 0.38, 0.78), Color(0.62, 0.76, 0.95), 0.000015],
+	"mars": [Color(0.62, 0.48, 0.36), Color(0.86, 0.68, 0.48), 0.00007],
 	"venus": [Color(0.55, 0.4, 0.18), Color(0.9, 0.68, 0.32), 0.0006],
 	"jupiter": [Color(0.55, 0.48, 0.38), Color(0.82, 0.74, 0.6), 0.0002],
 	"saturn": [Color(0.6, 0.55, 0.4), Color(0.86, 0.8, 0.62), 0.0002],
@@ -161,6 +161,10 @@ func _build_environment() -> void:
 	sun = DirectionalLight3D.new()
 	sun.light_energy = 1.5
 	sun.shadow_enabled = false
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
+	sun.directional_shadow_max_distance = 300.0
+	sun.shadow_bias = 0.05
+	sun.shadow_normal_bias = 1.5
 	add_child(sun)
 	_update_sun_light()
 
@@ -994,13 +998,28 @@ func _update_sky() -> void:
 		env.fog_light_color = (sky[1] as Color) * lerpf(0.15, 1.0, daylight)
 		env.fog_density = haze
 		env.fog_sky_affect = 0.0
-	var amb := Color(0.06, 0.07, 0.1).lerp(Color(0.35, 0.42, 0.55), day)
+	# Daytime ambient: the sky's own colour (blue on Earth, dusty on Mars).
+	var amb_day: Color = (sky[0] as Color).lerp(sky[1], 0.5) * 0.55
+	var amb := Color(0.06, 0.07, 0.1).lerp(amb_day, day)
+	var agl := vessel.altitude_above_ground(sim_time)
+	var near := 1.0 - smoothstep(2000.0, 40_000.0, agl)
+	var airless_day := 0.0
 	if not body.has_atmosphere() and not map_mode:
-		# Airless surface: light bounced off the sunlit ground fills the shadows a bit
-		# (otherwise every shadow is pitch black and the terrain reads as noise).
-		var near := 1.0 - smoothstep(2000.0, 40_000.0, vessel.altitude_above_ground(sim_time))
-		amb = amb.lerp(Color(0.2, 0.2, 0.21), near * daylight)
+		# Airless surface in sunlight: no sky light, shadows almost black (as on the
+		# Apollo photos); the eye adapts to the bright ground, the stars fade.
+		airless_day = near * daylight
+		amb = amb.lerp(Color(0.012, 0.012, 0.013), airless_day)
 	env.ambient_light_color = amb
+	sky_mat.set_shader_parameter("star_gain", lerpf(1.0, 0.4, airless_day))
+	# Camera exposure for a low sun on airless ground (no sky light to help).
+	var expo := clampf(0.6 / sqrt(maxf(sun_elev, 0.05)), 1.0, 1.6)
+	env.tonemap_exposure = lerpf(1.0, expo, airless_day)
+	# No atmosphere: full sunlight (Earth's surface gets ~1.5 after the air).
+	sun.light_energy = 2.6 if not body.has_atmosphere() and not body.is_star else 1.5
+	# Sun shadows (rocks, rocket, crater walls) only near the ground, high preset.
+	var shadows := Graphics.quality == Graphics.HIGH and agl < 3000.0 and not map_mode
+	if shadows != sun.shadow_enabled:
+		sun.shadow_enabled = shadows
 
 
 func _update_flight_camera() -> void:

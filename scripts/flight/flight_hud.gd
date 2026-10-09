@@ -400,6 +400,12 @@ func _build_debug_menu() -> void:
 	grid.add_child(_button("Телепорт к телу…", func() -> void:
 		_debug_menu.hide()
 		_show_teleport_menu()))
+	var gfx_btn := _button("Графика: " + Graphics.label(), func() -> void: pass)
+	gfx_btn.pressed.connect(func() -> void:
+		Graphics.set_quality(Graphics.LOW if Graphics.quality == Graphics.HIGH else Graphics.HIGH)
+		gfx_btn.text = "Графика: " + Graphics.label()
+		toast("Графика: %s — грунт обновится при следующем подлёте к поверхности" % Graphics.label()))
+	grid.add_child(gfx_btn)
 	grid.add_child(_button("Время ×1000", func() -> void: flight.set_warp(flight.WARPS.find(1000))))
 	grid.add_child(_button("Консоль", func() -> void: _console.visible = not _console.visible))
 	grid.add_child(_button("Скопировать лог", Log.copy_to_clipboard))
