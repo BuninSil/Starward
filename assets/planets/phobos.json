@@ -1,0 +1,17 @@
+{
+ "width": 1024,
+ "height": 512,
+ "unit_m": 1.0,
+ "scale_div": 10.0,
+ "format": "int16le",
+ "rows": "north_to_south",
+ "cols": "lon_-180_to_180",
+ "color": "phobos_color.jpg",
+ "normal": "phobos_normal.png",
+ "sources": [
+  "https://planetarymaps.usgs.gov/mosaic/Phobos_Viking_Mosaic_40ppd_DLRcontrol.tif",
+  "https://planetarymaps.usgs.gov/mosaic/Phobos_ME_HRSC_DEM_Global_2ppd.tif"
+ ],
+ "min_m": -2113.0,
+ "max_m": 3744.0
+}
