@@ -1,0 +1,48 @@
+name: Build HD map tiles (one-time per body)
+
+# Manual: cuts a high-resolution colour map of one body into 1024² tiles and
+# publishes them as the prerelease `maps-<body>-v1`. The game downloads the tiles
+# around the landing site on demand (scripts/flight/hd_tiles.gd).
+on:
+  workflow_dispatch:
+    inputs:
+      body:
+        description: "earth | moon | mars | mercury | venus"
+        default: "moon"
+      width:
+        description: "Map width in pixels (height = width / 2)"
+        default: "16384"
+
+permissions:
+  contents: write
+
+jobs:
+  tiles:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools
+        run: pip install --quiet pillow numpy tifffile imagecodecs
+
+      - name: Build tiles
+        run: python tools/build_tiles.py --body "${{ github.event.inputs.body }}" --width "${{ github.event.inputs.width }}" --out "$RUNNER_TEMP/tiles" --work "$RUNNER_TEMP/work"
+
+      - name: Show result
+        run: ls "$RUNNER_TEMP/tiles" | wc -l && du -sh "$RUNNER_TEMP/tiles" && cat "$RUNNER_TEMP/tiles/"*_tiles.json
+
+      - name: Publish prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: maps-${{ github.event.inputs.body }}-v1
+          name: "HD-тайлы: ${{ github.event.inputs.body }}"
+          body: "Тайлы цветной карты высокого разрешения для поверхности. Качаются игрой по запросу, не для установки."
+          prerelease: true
+          make_latest: false
+          target_commitish: ${{ github.sha }}
+          files: ${{ runner.temp }}/tiles/*
