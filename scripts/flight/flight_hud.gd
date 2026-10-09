@@ -565,14 +565,14 @@ func _on_map() -> void:
 	_focus_btn.visible = flight.map_mode
 	_ship_focus_btn.visible = flight.map_mode
 	_prev_body_btn.visible = flight.map_mode
-	if flight.map_mode:
-		_focus_btn.text = "Ракета ▶" if flight.map_focus_ship else "%s ▶" % flight.map_focus.name
 	_node_btn.visible = flight.map_mode
 	if not flight.map_mode:
 		_mn_panel.hide()
 
 
 func _process(delta: float) -> void:
+	if flight.map_mode and _focus_btn:
+		_focus_btn.text = ("%s ▶" % flight.vessel.body.name) if flight.map_focus_ship else ("%s ▶" % flight.map_focus.name)
 	var v: Vessel = flight.vessel
 	# Joystick: right = nose to local +X (east on the pad), up = nose to local -Z.
 	var j: Vector2 = _joystick.value

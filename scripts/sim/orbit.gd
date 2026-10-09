@@ -105,22 +105,62 @@ static func propagate(r0: DVec3, v0: DVec3, mu: float, dt: float) -> Array:
 	var vr0 := r0.dot(v0) / r0l
 	var alpha := 2.0 / r0l - v0.length_squared() / mu  # 1/a
 
-	# Initial guess
-	var chi := smu * absf(alpha) * dt
-	if absf(alpha) < 1e-12 or chi == 0.0:
-		chi = smu * dt / r0l
-	for _i in 60:
-		var z := alpha * chi * chi
+	# Universal Kepler equation F(chi) = 0; F is monotonic in chi.
+	var kep := func(x: float) -> Array:   # [F, dF/dchi] as 64-bit floats
+		var z := alpha * x * x
 		var c := _stumpff_c(z)
 		var s := _stumpff_s(z)
-		var f := r0l * vr0 / smu * chi * chi * c + (1.0 - alpha * r0l) * chi * chi * chi * s \
-			+ r0l * chi - smu * dt
-		var fp := r0l * vr0 / smu * chi * (1.0 - alpha * chi * chi * s) \
-			+ (1.0 - alpha * r0l) * chi * chi * c + r0l
+		var f := r0l * vr0 / smu * x * x * c + (1.0 - alpha * r0l) * x * x * x * s + r0l * x - smu * dt
+		var fp := r0l * vr0 / smu * x * (1.0 - alpha * x * x * s) + (1.0 - alpha * r0l) * x * x * c + r0l
+		return [f, fp]
+	# Initial guess (Vallado): elliptic / hyperbolic.
+	var chi := smu * absf(alpha) * dt
+	if alpha < -1e-12:
+		var a_h := 1.0 / alpha
+		var sg := signf(dt)
+		var arg := -2.0 * mu * alpha * dt / (r0.dot(v0) + sg * sqrt(-mu * a_h) * (1.0 - r0l * alpha))
+		chi = sg * sqrt(-a_h) * log(arg) if arg > 0.0 else smu * dt / r0l
+	elif absf(alpha) < 1e-12 or chi == 0.0:
+		chi = smu * dt / r0l
+	var ok := false
+	for _i in 60:
+		# Inline Newton step (hot path; the lambda is only for the fallback).
+		var z := alpha * chi * chi
+		var c := _stumpff_c(z)
+		var sv := _stumpff_s(z)
+		var f := r0l * vr0 / smu * chi * chi * c + (1.0 - alpha * r0l) * chi * chi * chi * sv + r0l * chi - smu * dt
+		var fp := r0l * vr0 / smu * chi * (1.0 - alpha * chi * chi * sv) + (1.0 - alpha * r0l) * chi * chi * c + r0l
 		var step := f / fp
 		chi -= step
-		if absf(step) < 1e-9:
+		if not is_finite(chi):
 			break
+		if absf(step) < 1e-9:
+			ok = true
+			break
+	if not ok:
+		# Newton wandered off (long hyperbolic arcs): bracket and bisect instead.
+		var lo := 0.0
+		var hi := smu * absf(dt) / r0l + 1.0
+		if dt < 0.0:
+			lo = -hi
+			hi = 0.0
+		var guard := 0
+		while float(kep.call(hi)[0]) < 0.0 and guard < 200:
+			hi = hi * 2.0 if hi > 0.0 else hi * 0.5
+			guard += 1
+		guard = 0
+		while float(kep.call(lo)[0]) > 0.0 and guard < 200:
+			lo = lo * 2.0 if lo < 0.0 else lo - 1.0
+			guard += 1
+		for _j in 200:
+			var mid := (lo + hi) * 0.5
+			if float(kep.call(mid)[0]) > 0.0:
+				hi = mid
+			else:
+				lo = mid
+			if hi - lo < 1e-9 * maxf(1.0, absf(mid)):
+				break
+		chi = (lo + hi) * 0.5
 
 	var z2 := alpha * chi * chi
 	var c2 := _stumpff_c(z2)

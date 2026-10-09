@@ -6,6 +6,9 @@ extends ApTask
 var until := ""
 var params := {}
 var _from: CelestialBody
+var _enc_t0 := -1.0
+var _pred_t := 0.0
+var _pred_body: CelestialBody = null
 
 
 func _init(u: String, p: Dictionary) -> void:
@@ -32,13 +35,18 @@ func update(ap: Autopilot, v: Vessel, t: float) -> int:
 			if v.body == params.body:
 				ap.wants_warp_reset = true
 				return DONE
-			var segs := Trajectory.predict(v.pos, v.vel, v.body, t, 2)
-			var enc := Trajectory.find_encounter(segs, params.body)
-			if enc.is_empty():
-				message = "траектория не ведёт в сферу влияния %s" % (params.body as CelestialBody).name
-				return FAILED
-			status = "до входа %s" % ApExecute._fmt(enc.t0 - t)
-			ap.requested_warp = warp_for(enc.t0 - t + 600.0)
+			# The prediction is costly: refresh it only every ~2% of the remaining time.
+			if _enc_t0 < 0.0 or t - _pred_t > maxf(30.0, (_enc_t0 - t) * 0.02) or v.body != _pred_body:
+				var segs := Trajectory.predict(v.pos, v.vel, v.body, t, 2)
+				var enc := Trajectory.find_encounter(segs, params.body)
+				if enc.is_empty():
+					message = "траектория не ведёт в сферу влияния %s" % (params.body as CelestialBody).name
+					return FAILED
+				_enc_t0 = enc.t0
+				_pred_t = t
+				_pred_body = v.body
+			status = "до входа %s" % ApExecute._fmt(_enc_t0 - t)
+			ap.requested_warp = warp_for(_enc_t0 - t + 600.0)
 		"soi_parent":
 			if v.body != _from:
 				ap.wants_warp_reset = true
