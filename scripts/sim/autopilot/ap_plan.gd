@@ -136,7 +136,7 @@ func _compute(r: DVec3, vel: DVec3, b: CelestialBody, t: float) -> Dictionary:
 			return {"node": dn, "msg": "тормозной импульс через %s" % ApExecute._fmt(dn.t - t)}
 		"peri_correction":
 			var el2 := OrbitMath.elements(r, vel, b.mu)
-			if absf(el2.periapsis - b.radius - params.alt) < 300.0:
+			if absf(el2.periapsis - b.radius - params.alt) < maxf(300.0, params.alt * 0.05):
 				return {"skip": true, "msg": "перицентр уже %.1f км" % ((el2.periapsis - b.radius) / 1000.0)}
 			var pc := Planner.plan_periapsis_correction(r, vel, b, t, params.alt)
 			if pc.total() < 0.05:

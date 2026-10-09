@@ -125,6 +125,9 @@ static func tasks_moon(root: CelestialBody, moon_alt: float) -> Array:
 		ApPlan.new("transfer", {"target": moon, "alt": moon_alt}),
 		ApPlan.new("correction", {"target": moon, "alt": moon_alt}),
 		ApCoast.new("soi", {"body": moon}),
+		# The correction can settle in a poor local optimum: trim the periapsis
+		# on arrival (skipped when already within 3 km).
+		ApPlan.new("peri_correction", {"alt": moon_alt}),
 		ApPlan.new("circularize", {"where": "peri"}),
 	]
 

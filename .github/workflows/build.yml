@@ -146,6 +146,9 @@ jobs:
       - name: Lunar module test (Moon orbit -> landing -> liftoff -> Earth)
         run: timeout 600 godot --headless --path . --script tests/test_moon_landing.gd
 
+      - name: Interplanetary test (Earth -> Mars orbit -> Earth, infinite fuel)
+        run: timeout 900 godot --headless --path . --script tests/test_planet.gd -- inf
+
       - name: Export APK
         run: |
           mkdir -p build
