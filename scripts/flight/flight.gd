@@ -512,8 +512,9 @@ func _step_debris(dt: float) -> void:
 
 
 func _process(delta: float) -> void:
-	# Floating origin: vessel at 0; everything else relative to it in doubles.
-	var vabs := vessel_absolute()
+	# Floating origin: the vessel at 0 (or the focused body on the map), everything
+	# else relative to it in doubles.
+	var vabs := render_origin()
 	_update_sun_light()
 	# Detailed ground patch under a low vessel (any body).
 	if vessel.altitude() < 30_000.0:
@@ -550,7 +551,7 @@ func _process(delta: float) -> void:
 			var st := shown.state_before(vessel.pos, vessel.vel, sim_time)
 			node_pos = body_render_pos(vessel.body) + (st[0] as DVec3).to_v3()
 		traj_view.focus = map_focus if map_mode else vessel.body
-		traj_view.update_view(_body_pos_at, sim_time, camera, vessel.up_world(), vessel.vel.to_v3(), node_pos)
+		traj_view.update_view(_body_pos_at, sim_time, camera, vessel.up_world(), vessel.vel.to_v3(), node_pos, ship_render_pos())
 
 
 ## Scaled-space rule for the flight view: bodies whose surface is farther than
@@ -916,15 +917,28 @@ func vessel_absolute() -> DVec3:
 	return vessel.body.absolute_position(sim_time).add(vessel.pos)
 
 
-## Render position (relative to the vessel) of a body's centre.
+## Absolute point drawn at the scene origin: the vessel, or on the map the focused
+## body (so a small moon far from the vessel keeps float precision).
+func render_origin() -> DVec3:
+	if map_mode and not map_focus_ship and map_focus != null:
+		return map_focus.absolute_position(sim_time)
+	return vessel_absolute()
+
+
+## Render position of a body's centre (relative to the render origin).
 func body_render_pos(b: CelestialBody) -> Vector3:
-	return b.absolute_position(sim_time).sub(vessel_absolute()).to_v3()
+	return b.absolute_position(sim_time).sub(render_origin()).to_v3()
 
 
-## Render position of a body at time t (t < 0 = now), relative to the vessel now.
+## Vessel position in render coordinates (zero unless the map is focused elsewhere).
+func ship_render_pos() -> Vector3:
+	return vessel_absolute().sub(render_origin()).to_v3()
+
+
+## Render position of a body at time t (t < 0 = now), relative to the render origin now.
 func _body_pos_at(b: CelestialBody, t: float) -> Vector3:
 	var tt := sim_time if t < 0.0 else t
-	return b.absolute_position(tt).sub(vessel_absolute()).to_v3()
+	return b.absolute_position(tt).sub(render_origin()).to_v3()
 
 
 func refresh_trajectory() -> void:
@@ -1001,7 +1015,7 @@ var _pan_mid := Vector2.ZERO
 
 
 func _update_map_camera() -> void:
-	var center := (Vector3.ZERO if map_focus_ship else body_render_pos(map_focus)) + map_pan
+	var center := map_pan   # the focus (ship or body) is the render origin
 	var offset := Vector3(
 		sin(map_yaw) * cos(map_pitch),
 		sin(map_pitch),

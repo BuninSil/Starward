@@ -179,6 +179,45 @@ def clean_nodata(h):
     return h
 
 
+def fill_gaps(img, valid):
+    """Fills invalid pixels of a float image (H, W[, C]) with a blurred average of
+    the valid ones around them (normalized convolution, several radii)."""
+    from PIL import ImageFilter
+    out = img.copy()
+    m = valid.astype(np.float32)
+    chans = [img] if img.ndim == 2 else [img[..., k] for k in range(img.shape[2])]
+    filled = []
+    for ch in chans:
+        res = ch.copy()
+        todo = ~valid
+        for radius in (4, 16, 64, 256):
+            if not todo.any():
+                break
+            num = np.asarray(Image.fromarray((ch * m).astype(np.float32), mode="F").filter(ImageFilter.BoxBlur(radius)))
+            den = np.asarray(Image.fromarray(m, mode="F").filter(ImageFilter.BoxBlur(radius)))
+            ok = todo & (den > 0.05)
+            res[ok] = num[ok] / den[ok]
+            todo = todo & ~ok
+        if todo.any():
+            res[todo] = np.median(ch[valid])
+        filled.append(res)
+    out = filled[0] if img.ndim == 2 else np.stack(filled, axis=-1)
+    print("  gaps filled:", int((~valid).sum()), flush=True)
+    return out
+
+
+def calm_poles(img, start_deg=72.0):
+    """Equirectangular maps smear into radial streaks at the poles: blend rows near
+    the poles toward their mean colour."""
+    h = img.shape[0]
+    lat = 90.0 - (np.arange(h) + 0.5) / h * 180.0
+    w = np.clip((np.abs(lat) - start_deg) / (89.0 - start_deg), 0.0, 1.0)
+    w = w * w * (3.0 - 2.0 * w)
+    mean = img.mean(axis=1, keepdims=True)
+    ww = w[:, None, None] if img.ndim == 3 else w[:, None]
+    return img * (1.0 - ww) + mean * ww
+
+
 def probe(name, arr, points):
     h, w = arr.shape[:2]
     for k, (lat, lon) in points.items():
@@ -287,12 +326,14 @@ def mercury(work, out, size):
         lum = c[..., :3].astype(np.float32).mean(axis=2)
     else:
         lum = c.astype(np.float32)
+    lum = calm_poles(fill_gaps(lum, lum > 2.0), 70.0)
     lum = (lum - np.percentile(lum, 1)) / max(np.percentile(lum, 99) - np.percentile(lum, 1), 1.0)
     lum = np.clip(lum, 0.0, 1.0) * 0.75 + 0.12
     rgb = np.stack([lum * 1.0, lum * 0.95, lum * 0.88], axis=-1)
     color = Image.fromarray((rgb * 255).clip(0, 255).astype(np.uint8), mode="RGB")
     height = clean_nodata(load_geotiff(fetch(MERCURY_DEM, work), 4096))
     height -= np.median(height)
+    height = calm_poles(height, 80.0)
     probe("height_m", height, PROBES["mercury"])
     write_body(out, "mercury", color, height, 243_970.0, 2.5, [MERCURY_COLOR[0], MERCURY_DEM[0]], size)
 
@@ -301,6 +342,7 @@ def venus(work, out, size):
     r = load_geotiff(fetch(VENUS_RADAR, work), 8192).astype(np.float32)
     if r.ndim == 3:
         r = r[..., 0]
+    r = calm_poles(fill_gaps(r, r > 2.0), 75.0)
     r = np.clip((r - np.percentile(r, 1)) / max(np.percentile(r, 99) - np.percentile(r, 1), 1.0), 0, 1)
     # Radar brightness tinted like the surface under the orange-lit sky.
     rgb = np.stack([0.30 + 0.55 * r, 0.20 + 0.40 * r, 0.10 + 0.22 * r], axis=-1)

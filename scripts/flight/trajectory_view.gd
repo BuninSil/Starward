@@ -65,7 +65,7 @@ func set_preview(segs: Array[Dictionary], current: CelestialBody) -> void:
 ## of the body centre at that time (segments in another body are drawn where that
 ## body will be when the vessel arrives).
 func update_view(body_pos: Callable, now: float, cam: Camera3D, ship_nose: Vector3, ship_vel: Vector3,
-		node_pos = null) -> void:
+		node_pos = null, ship_pos := Vector3.ZERO) -> void:
 	for s in _segments + _preview:
 		var p: Vector3 = body_pos.call(s.body, s.anchor_t)
 		s.node.position = p
@@ -87,12 +87,12 @@ func update_view(body_pos: Callable, now: float, cam: Camera3D, ship_nose: Vecto
 		var bb: CelestialBody = b
 		l.visible = bb.parent == null or bb.parent.parent == null or focus == bb or focus == bb.parent
 		l.position = body_pos.call(b, now) + Vector3(0, b.radius * 1.25, 0)
-	_ship_label.position = Vector3.ZERO
-	var size := cam.global_position.length() * 0.12
-	_place_arrow(_arrow, Vector3.ZERO, ship_nose, size)
+	_ship_label.position = ship_pos
+	var size := cam.global_position.distance_to(ship_pos) * 0.12
+	_place_arrow(_arrow, ship_pos, ship_nose, size)
 	_vel_arrow.visible = ship_vel.length() > 1.0
 	if _vel_arrow.visible:
-		_place_arrow(_vel_arrow, Vector3.ZERO, ship_vel.normalized(), size * 0.8)
+		_place_arrow(_vel_arrow, ship_pos, ship_vel.normalized(), size * 0.8)
 	_node_marker.visible = node_pos != null
 	if node_pos != null:
 		_node_marker.position = node_pos
