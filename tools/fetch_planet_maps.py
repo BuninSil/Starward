@@ -21,9 +21,22 @@ from PIL import Image
 
 Image.MAX_IMAGE_PIXELS = None
 
+# Blue Marble Next Generation, July 2004 (summer in the north: green land, little snow).
+# Record ids are not stable knowledge, so try known ones and fall back to scraping
+# Visible Earth for the July file names.
 EARTH_COLOR = [
-    "https://eoimages.gsfc.nasa.gov/images/imagerecords/74000/74218/world.200412.3x5400x2700.jpg",
-    "https://eoimages.gsfc.nasa.gov/images/imagerecords/73000/73909/world.topo.bathy.200412.3x5400x2700.jpg",
+    "https://eoimages.gsfc.nasa.gov/images/imagerecords/76000/76487/world.200407.3x5400x2700.jpg",
+    "https://eoimages.gsfc.nasa.gov/images/imagerecords/74000/74368/world.200407.3x5400x2700.jpg",
+    "https://eoimages.gsfc.nasa.gov/images/imagerecords/73000/73751/world.topo.bathy.200407.3x5400x2700.jpg",
+    "https://eoimages.gsfc.nasa.gov/images/imagerecords/74000/74393/world.topo.200407.3x5400x2700.jpg",
+]
+EARTH_COLOR_FILES = [r"world\.200407\.3x5400x2700\.jpg", r"world\.topo\.bathy\.200407\.3x5400x2700\.jpg",
+                     r"world\.topo\.200407\.3x5400x2700\.jpg"]
+VISIBLE_EARTH_PAGES = [
+    "https://visibleearth.nasa.gov/collection/1484/blue-marble",
+    "https://visibleearth.nasa.gov/collection/1484/blue-marble?page=2",
+    "https://visibleearth.nasa.gov/collection/1484/blue-marble?page=3",
+    "https://visibleearth.nasa.gov/collection/1484/blue-marble?page=4",
 ]
 EARTH_ELEV = [
     "https://eoimages.gsfc.nasa.gov/images/imagerecords/73000/73934/gebco_08_rev_elev_21600x10800.png",
@@ -68,6 +81,40 @@ def fetch(urls, work):
         except Exception as e:  # try the next mirror
             print("  failed:", e, flush=True)
     raise SystemExit("all sources failed: %s" % urls)
+
+
+def _get_text(u):
+    req = urllib.request.Request(u, headers={"User-Agent": "Starward-map-fetch"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return r.read().decode("utf-8", "replace")
+
+
+def scrape_july_urls():
+    """Finds July Blue Marble image URLs on Visible Earth (best effort)."""
+    import re
+    found = []
+    pages = []
+    for p in VISIBLE_EARTH_PAGES:
+        try:
+            html = _get_text(p)
+        except Exception as e:
+            print("  scrape failed", p, e, flush=True)
+            continue
+        for m in re.finditer(r'href="(/images/\d+/july[^"]*)"', html):
+            pages.append("https://visibleearth.nasa.gov" + m.group(1))
+    for p in dict.fromkeys(pages):
+        try:
+            html = _get_text(p)
+        except Exception as e:
+            print("  scrape failed", p, e, flush=True)
+            continue
+        for pat in EARTH_COLOR_FILES:
+            for m in re.finditer(r'(https://[^"\s]*' + pat + ')', html):
+                found.append(m.group(1))
+    print("  scraped July candidates:", found, flush=True)
+    # Plain colour first (no baked relief shading), then the others.
+    found.sort(key=lambda u: [i for i, pat in enumerate(EARTH_COLOR_FILES) if __import__("re").search(pat, u)][0])
+    return list(dict.fromkeys(found))
 
 
 def load_array(path):
@@ -128,7 +175,12 @@ def write_body(out, name, color_img, height_m, radius_game, exaggerate, sources,
 
 
 def earth(work, out, size):
-    color = Image.open(fetch(EARTH_COLOR, work))
+    try:
+        color_path = fetch(EARTH_COLOR, work)
+    except SystemExit:
+        color_path = fetch(scrape_july_urls(), work)
+    print("  earth colour:", os.path.basename(color_path), flush=True)
+    color = Image.open(color_path)
     elev = load_array(fetch(EARTH_ELEV, work)).astype(np.float32)
     bath = load_array(fetch(EARTH_BATH, work)).astype(np.float32)
     if elev.ndim == 3:
@@ -143,8 +195,15 @@ def earth(work, out, size):
     depth = -(255.0 - bath) / 255.0 * 8000.0
     height = np.where(elev > 0.5, land, depth)
     probe("height_m", height, PROBES["earth"])
-    write_body(out, "earth", color, height, 637_100.0, 6.0,
-               [EARTH_COLOR[0], EARTH_ELEV[0], EARTH_BATH[0]], size)
+    write_body(out, "earth", color, height, 637_100.0, 4.0,
+               [os.path.basename(color_path), EARTH_ELEV[0], EARTH_BATH[0]], size)
+    # Water mask (white = sea) for the gloss / water colour in the planet shader.
+    w, h = size
+    water = (elev <= 0.5).astype(np.float32)
+    wm = resize_float(water, w, h)
+    Image.fromarray((wm * 255.0 + 0.5).clip(0, 255).astype(np.uint8), mode="L").save(
+        os.path.join(out, "earth_water.png"), optimize=True)
+    print("earth water mask written", flush=True)
 
 
 def moon(work, out, size):
@@ -155,7 +214,7 @@ def moon(work, out, size):
     # CGI Moon Kit ldem_*: kilometres relative to 1737.4 km.
     height = dem * 1000.0 if np.abs(dem).max() < 50 else dem
     probe("height_m", height, PROBES["moon"])
-    write_body(out, "moon", color, height, 173_740.0, 3.0, [MOON_COLOR[0], MOON_DEM[0]], size)
+    write_body(out, "moon", color, height, 173_740.0, 2.0, [MOON_COLOR[0], MOON_DEM[0]], size)
 
 
 def main():
