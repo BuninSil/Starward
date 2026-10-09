@@ -16,7 +16,6 @@ PAGES = [
     "https://astrogeology.usgs.gov/search/map/phobos_viking_global_mosaic_5m",
     "https://astrogeology.usgs.gov/search/map/phobos_mars_express_hrsc_dem_global_100m",
     "https://astrogeology.usgs.gov/search/map/deimos_viking_global_mosaic_25m",
-    "https://astrogeology.usgs.gov/search/results?q=deimos",
     "https://pds-geosciences.wustl.edu/mgs/urn-nasa-pds-mgs_mola_topography_derived/meg004/",
     "https://pds-geosciences.wustl.edu/mgs/mgs-m-mola-5-megdr-l3-v1/mgsl_300x/meg004/",
 ]
@@ -38,7 +37,8 @@ for p in PAGES:
     seen = set()
     for m in LINK.finditer(html):
         u = m.group(1) or urllib.parse.urljoin(p, m.group(2))
-        if u in seen or u.lower().endswith((".xml",)) and "pds" not in p:
+        low = u.lower()
+        if u in seen or low.endswith((".xml", ".png")) or "thumb" in low or "_100.jpg" in low:
             continue
         seen.add(u)
         size = "?"
