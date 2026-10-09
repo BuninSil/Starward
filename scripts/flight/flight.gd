@@ -17,6 +17,17 @@ const PHYSICS_WARP_MAX := 4
 
 signal message(text: String)
 
+## Sky per body: [zenith, horizon, haze density near the ground].
+const SKY_COLORS := {
+	"earth": [Color(0.18, 0.38, 0.78), Color(0.62, 0.76, 0.95), 0.00003],
+	"mars": [Color(0.5, 0.38, 0.3), Color(0.86, 0.66, 0.47), 0.00009],
+	"venus": [Color(0.55, 0.4, 0.18), Color(0.9, 0.68, 0.32), 0.0006],
+	"jupiter": [Color(0.55, 0.48, 0.38), Color(0.82, 0.74, 0.6), 0.0002],
+	"saturn": [Color(0.6, 0.55, 0.4), Color(0.86, 0.8, 0.62), 0.0002],
+	"uranus": [Color(0.4, 0.62, 0.68), Color(0.68, 0.86, 0.9), 0.0002],
+	"neptune": [Color(0.18, 0.28, 0.7), Color(0.45, 0.58, 0.92), 0.0002],
+}
+
 var root_body: CelestialBody   ## the Sun
 var home: CelestialBody        ## Earth (launch site)
 var bodies: Array[CelestialBody] = []
@@ -965,6 +976,17 @@ func _update_sky() -> void:
 		day = 0.0
 	sky_mat.set_shader_parameter("day_amount", day)
 	sky_mat.set_shader_parameter("local_up", up)
+	var sky: Array = SKY_COLORS.get(body.id, SKY_COLORS["earth"])
+	sky_mat.set_shader_parameter("day_zenith", sky[0])
+	sky_mat.set_shader_parameter("day_horizon", sky[1])
+	# Aerial perspective: haze in the air near the ground, coloured like the sky.
+	var near_ground := 1.0 - smoothstep(body.scale_height * 0.5, body.scale_height * 3.0, vessel.altitude_above_ground(sim_time))
+	var haze: float = sky[2] * near_ground * clampf(dens * 4.0, 0.0, 1.0) if body.has_atmosphere() and not map_mode else 0.0
+	env.fog_enabled = haze > 0.0
+	if env.fog_enabled:
+		env.fog_light_color = (sky[1] as Color) * lerpf(0.15, 1.0, daylight)
+		env.fog_density = haze
+		env.fog_sky_affect = 0.0
 	var amb := Color(0.06, 0.07, 0.1).lerp(Color(0.35, 0.42, 0.55), day)
 	if not body.has_atmosphere() and not map_mode:
 		# Airless surface: light bounced off the sunlit ground fills the shadows a bit

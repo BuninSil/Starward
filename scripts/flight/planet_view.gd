@@ -43,6 +43,8 @@ func setup(b: CelestialBody, with_site: bool, lat: float, lon: float, sun_dir: V
 	_spin.add_child(_surface)
 	if b.id == "saturn":
 		_build_rings(1.24, 2.27)
+	if b.id == "venus":
+		_build_clouds(7000.0)
 
 	if b.has_atmosphere():
 		var am := SphereMesh.new()
@@ -144,6 +146,45 @@ func _make_gas_material() -> Material:
 	return m
 
 
+var _clouds: MeshInstance3D = null
+var _cloud_top := 0.0
+
+
+## Opaque cloud deck (Venus): hides the surface from orbit; disappears once the
+## vessel descends below it (the haze takes over).
+func _build_clouds(alt: float) -> void:
+	_cloud_top = body.radius + alt
+	var sm := SphereMesh.new()
+	sm.radius = _cloud_top
+	sm.height = _cloud_top * 2.0
+	sm.radial_segments = 96
+	sm.rings = 48
+	var m := ShaderMaterial.new()
+	m.shader = GAS_SHADER
+	var noise := FastNoiseLite.new()
+	noise.seed = 77
+	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	noise.frequency = 0.008
+	noise.fractal_octaves = 5
+	var tex := NoiseTexture2D.new()
+	tex.width = 512
+	tex.height = 256
+	tex.seamless = true
+	tex.noise = noise
+	m.set_shader_parameter("turbulence", tex)
+	m.set_shader_parameter("color_a", Color(0.93, 0.86, 0.66))
+	m.set_shader_parameter("color_b", Color(0.84, 0.74, 0.52))
+	m.set_shader_parameter("color_c", Color(0.98, 0.95, 0.85))
+	m.set_shader_parameter("bands", 6.0)
+	m.set_shader_parameter("warp", 0.09)
+	m.set_shader_parameter("contrast", 0.35)
+	sm.material = m
+	_clouds = MeshInstance3D.new()
+	_clouds.mesh = sm
+	_clouds.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_spin.add_child(_clouds)
+
+
 ## Flat ring annulus in the equatorial plane, radii in planet radii.
 func _build_rings(inner: float, outer: float) -> void:
 	var segs := 128
@@ -188,6 +229,10 @@ func update_view(origin_rel: DVec3, t: float, view_scale := 1.0) -> void:
 	position = origin_rel.mul(view_scale).to_v3()
 	scale = Vector3.ONE * view_scale
 	_spin.basis = Basis(Vector3.UP, body.rotation_angle(t))
+	if _clouds:
+		var cam := get_viewport().get_camera_3d()
+		var cam_d := cam.global_position.distance_to(position) / maxf(view_scale, 1e-12) if cam else origin_rel.length()
+		_clouds.visible = cam_d > _cloud_top
 	if _atmo_mat:
 		_atmo_mat.set_shader_parameter("sun_dir_world", SolarSystem.sun_dir(body, t))
 	_poll_patch_task()
@@ -450,8 +495,65 @@ func _compute_patch(centre: DVec3, with_pad: bool) -> Dictionary:
 		tangents[n * 4 + 1] = tg.y
 		tangents[n * 4 + 2] = tg.z
 		tangents[n * 4 + 3] = 1.0
+	# Slope per vertex (0 flat .. 1 vertical) for rocky shading on steep ground.
+	var cols := PackedColorArray()
+	cols.resize(nv)
+	for n in nv:
+		var slope := 1.0 - clampf(normals[n].dot(Vector3.UP), 0.0, 1.0)
+		cols[n] = Color(slope, 0.0, 0.0)
 	return {"centre": up_f, "with_pad": with_pad, "h0": body.surface_height(up_f),
-		"verts": verts, "normals": normals, "tangents": tangents, "uvs": uvs, "uv2s": uv2s, "idx": idx}
+		"verts": verts, "normals": normals, "tangents": tangents, "uvs": uvs, "uv2s": uv2s, "idx": idx,
+		"colors": cols, "rocks": _compute_rocks(up_f, east_f, south_f, with_pad)}
+
+
+## Scattered rocks around the patch centre (deterministic from its position):
+## transforms in the site frame, sitting on the exact terrain height.
+func _compute_rocks(up_f: DVec3, east_f: DVec3, south_f: DVec3, with_pad: bool) -> Array[Transform3D]:
+	var style := surface_style()
+	var out: Array[Transform3D] = []
+	var count: int = style.rocks
+	if count <= 0:
+		return out
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(Vector3i(roundi(up_f.x * 1e5), roundi(up_f.y * 1e5), roundi(up_f.z * 1e5))) + hash(body.id)
+	var r := body.radius
+	var max_d := 380.0
+	for i in count:
+		# Denser near the centre (where the player is), sparse at the edge.
+		var d := max_d * pow(rng.randf(), 0.7)
+		var phi := rng.randf() * TAU
+		if d < 7.0 or (with_pad and d < PAD_RADIUS + 6.0):
+			continue
+		var x := d * cos(phi)
+		var z := d * sin(phi)
+		var a := d / r
+		var dir := east_f.mul(sin(a) * cos(phi)).add(up_f.mul(cos(a))).add(south_f.mul(sin(a) * sin(phi)))
+		var h := body.surface_height(dir)
+		var y := (r + h) * cos(a) - r
+		# Size: mostly small stones, a few boulders.
+		var size := 0.15 + pow(rng.randf(), 4.0) * float(style.rock_max)
+		var sc := Vector3(size * rng.randf_range(0.8, 1.5), size * rng.randf_range(0.45, 0.9), size * rng.randf_range(0.8, 1.4))
+		var bas := Basis.from_euler(Vector3(rng.randf_range(-0.3, 0.3), rng.randf() * TAU, rng.randf_range(-0.3, 0.3))).scaled(sc)
+		out.append(Transform3D(bas, Vector3(x, y - sc.y * 0.35, z)))
+	return out
+
+
+## Per-body look of the ground up close.
+func surface_style() -> Dictionary:
+	match body.id:
+		"moon":
+			return {"rocks": 900, "rock_max": 2.2, "rock_color": Color(0.42, 0.41, 0.4), "slope_tint": Color(0.75, 0.75, 0.76)}
+		"mars":
+			return {"rocks": 1100, "rock_max": 2.6, "rock_color": Color(0.42, 0.26, 0.18), "slope_tint": Color(0.72, 0.6, 0.55)}
+		"mercury":
+			return {"rocks": 900, "rock_max": 2.4, "rock_color": Color(0.38, 0.36, 0.34), "slope_tint": Color(0.75, 0.73, 0.72)}
+		"venus":
+			return {"rocks": 700, "rock_max": 2.0, "rock_color": Color(0.22, 0.17, 0.13), "slope_tint": Color(0.7, 0.62, 0.55)}
+		"phobos", "deimos":
+			return {"rocks": 600, "rock_max": 1.6, "rock_color": Color(0.27, 0.25, 0.23), "slope_tint": Color(0.75, 0.75, 0.75)}
+		"earth":
+			return {"rocks": 250, "rock_max": 1.2, "rock_color": Color(0.45, 0.43, 0.4), "slope_tint": Color(0.8, 0.78, 0.74)}
+	return {"rocks": 0, "rock_max": 1.0, "rock_color": Color.GRAY, "slope_tint": Color(0.8, 0.8, 0.8)}
 
 
 func _apply_patch(res: Dictionary) -> void:
@@ -466,6 +568,7 @@ func _apply_patch(res: Dictionary) -> void:
 	arr[Mesh.ARRAY_TANGENT] = res.tangents
 	arr[Mesh.ARRAY_TEX_UV] = res.uvs
 	arr[Mesh.ARRAY_TEX_UV2] = res.uv2s
+	arr[Mesh.ARRAY_COLOR] = res.colors
 	arr[Mesh.ARRAY_INDEX] = res.idx
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
@@ -476,6 +579,23 @@ func _apply_patch(res: Dictionary) -> void:
 	mi.material_override = _patch_material
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_site.add_child(mi)
+	var rocks: Array[Transform3D] = res.rocks
+	if not rocks.is_empty():
+		var mm := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.mesh = _rock_mesh()
+		mm.instance_count = rocks.size()
+		for i in rocks.size():
+			mm.set_instance_transform(i, rocks[i])
+		var mmi := MultiMeshInstance3D.new()
+		mmi.multimesh = mm
+		var rm := StandardMaterial3D.new()
+		rm.albedo_color = surface_style().rock_color
+		rm.roughness = 0.95
+		rm.metallic_specular = 0.3
+		mmi.material_override = rm
+		mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		_site.add_child(mmi)
 	if not res.with_pad:
 		return
 	var h0: float = res.h0
@@ -509,6 +629,50 @@ func _apply_patch(res: Dictionary) -> void:
 
 
 var _patch_material: Material = null
+static var _rock: ArrayMesh = null
+
+
+## Low-poly rock: a subdivided octahedron with jittered vertices (shared by all bodies).
+static func _rock_mesh() -> ArrayMesh:
+	if _rock != null:
+		return _rock
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 12345
+	var base := [Vector3.UP, Vector3.DOWN, Vector3.LEFT, Vector3.RIGHT, Vector3.FORWARD, Vector3.BACK]
+	var faces := [[0, 3, 4], [0, 4, 2], [0, 2, 5], [0, 5, 3], [1, 4, 3], [1, 2, 4], [1, 5, 2], [1, 3, 5]]
+	var verts: Array[Vector3] = []
+	for v in base:
+		verts.append(v)
+	var tris: Array = faces.duplicate()
+	var mid_cache := {}
+	for _level in 2:
+		var nt: Array = []
+		for t in tris:
+			var m := []
+			for k in 3:
+				var a: int = t[k]
+				var b: int = t[(k + 1) % 3]
+				var key := Vector2i(mini(a, b), maxi(a, b))
+				if not mid_cache.has(key):
+					verts.append(((verts[a] + verts[b]) * 0.5).normalized())
+					mid_cache[key] = verts.size() - 1
+				m.append(mid_cache[key])
+			nt.append([t[0], m[0], m[2]])
+			nt.append([t[1], m[1], m[0]])
+			nt.append([t[2], m[2], m[1]])
+			nt.append([m[0], m[1], m[2]])
+		tris = nt
+	for i in verts.size():
+		verts[i] = verts[i] * rng.randf_range(0.75, 1.15)
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for t in tris:
+		# Flat-shaded facets read as chipped stone.
+		for k in [0, 2, 1]:
+			st.add_vertex(verts[t[k]])
+	st.generate_normals()
+	_rock = st.commit()
+	return _rock
 
 
 ## Patch material: same maps as the globe (so the edge blends) plus close-up
@@ -526,24 +690,50 @@ func _make_patch_material() -> Material:
 	noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	noise.frequency = 0.012
 	noise.fractal_octaves = 5
+	noise.fractal_octaves = 6
 	var tex := NoiseTexture2D.new()
-	tex.width = 512
-	tex.height = 512
+	tex.width = 1024
+	tex.height = 1024
 	tex.seamless = true
 	tex.noise = noise
 	sm.set_shader_parameter("detail_tex", tex)
+	# Pebbles / regolith: cellular noise (stones with dark gaps) and its normals.
+	var cell := FastNoiseLite.new()
+	cell.seed = 23
+	cell.noise_type = FastNoiseLite.TYPE_CELLULAR
+	cell.frequency = 0.045
+	cell.cellular_return_type = FastNoiseLite.RETURN_DISTANCE2_SUB
+	cell.fractal_type = FastNoiseLite.FRACTAL_FBM
+	cell.fractal_octaves = 2
+	var ptex := NoiseTexture2D.new()
+	ptex.width = 512
+	ptex.height = 512
+	ptex.seamless = true
+	ptex.noise = cell
+	sm.set_shader_parameter("pebble_tex", ptex)
+	var pn := NoiseTexture2D.new()
+	pn.width = 512
+	pn.height = 512
+	pn.seamless = true
+	pn.as_normal_map = true
+	pn.bump_strength = 4.0
+	pn.noise = cell
+	sm.set_shader_parameter("pebble_normal", pn)
+	sm.set_shader_parameter("pebble_strength", 0.35 if body.id == "earth" else 0.8)
 	var bump_noise := FastNoiseLite.new()
 	bump_noise.seed = 5
 	bump_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	bump_noise.frequency = 0.02
 	bump_noise.fractal_octaves = 4
 	var bump := NoiseTexture2D.new()
-	bump.width = 512
-	bump.height = 512
+	bump.width = 1024
+	bump.height = 1024
 	bump.seamless = true
 	bump.as_normal_map = true
 	bump.bump_strength = 6.0
 	bump.noise = bump_noise
 	sm.set_shader_parameter("detail_normal", bump)
 	sm.set_shader_parameter("detail_strength", 0.5 if body.has_atmosphere() else 0.6)
+	sm.set_shader_parameter("use_slope", true)
+	sm.set_shader_parameter("slope_tint", surface_style().slope_tint)
 	return sm

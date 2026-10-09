@@ -20,9 +20,14 @@ uniform sampler2D detail_tex : hint_default_white, filter_linear_mipmap, repeat_
 uniform sampler2D detail_normal : hint_normal, filter_linear_mipmap, repeat_enable;
 uniform float detail_strength = 0.45;
 uniform float detail_normal_strength = 0.6;
+uniform sampler2D pebble_tex : hint_default_white, filter_linear_mipmap, repeat_enable;
+uniform sampler2D pebble_normal : hint_normal, filter_linear_mipmap, repeat_enable;
+uniform float pebble_strength = 0.0;
 uniform vec3 detail_tint : source_color = vec3(1.0);   // e.g. greener land on Earth
 
 uniform float land_roughness = 0.9;
+uniform bool use_slope = false;                         // patch: COLOR.r = slope 0..1
+uniform vec3 slope_tint : source_color = vec3(0.75);
 
 void fragment() {
 	vec3 col = texture(albedo_tex, UV).rgb;
@@ -31,18 +36,29 @@ void fragment() {
 	float dist = length(VERTEX);
 
 	if (use_detail) {
-		// Two octaves of grey noise at ~45 m and ~6 m, fading out with distance.
-		float fade = 1.0 - smoothstep(1500.0, 9000.0, dist);
+		// Close-up detail in three scales (40 m, 6 m, 1.2 m) plus a pebble /
+		// regolith layer, each fading out as it gets too small on screen.
+		float fade_far = 1.0 - smoothstep(1500.0, 9000.0, dist);
+		float fade_mid = 1.0 - smoothstep(150.0, 900.0, dist);
+		float fade_near = 1.0 - smoothstep(25.0, 160.0, dist);
 		float d1 = texture(detail_tex, UV2 / 45.0).r;
 		float d2 = texture(detail_tex, UV2 / 6.0 + vec2(0.37, 0.71)).r;
-		float d = mix(1.0, 0.62 + 0.76 * (0.55 * d1 + 0.45 * d2), detail_strength * fade);
+		float d3 = texture(detail_tex, UV2 / 1.2 + vec2(0.13, 0.29)).r;
+		float pb = texture(pebble_tex, UV2 / 2.5).r;
+		float d = 1.0;
+		d *= mix(1.0, 0.62 + 0.76 * d1, detail_strength * fade_far);
+		d *= mix(1.0, 0.7 + 0.6 * d2, detail_strength * fade_mid);
+		d *= mix(1.0, 0.78 + 0.44 * d3, detail_strength * fade_near);
+		// Pebbles: dark gaps between lighter stones.
+		d *= mix(1.0, 0.72 + 0.4 * smoothstep(0.15, 0.6, pb), pebble_strength * fade_near);
 		col *= d * detail_tint;
-		// Close-up bumps (land) from a noise normal map.
+		// Bumps: 9 m and 1.7 m noise normals, plus pebble normals up close.
 		vec3 dn = texture(detail_normal, UV2 / 9.0).rgb * 2.0 - 1.0;
 		vec3 dn2 = texture(detail_normal, UV2 / 1.7 + vec2(0.2, 0.6)).rgb * 2.0 - 1.0;
+		vec3 dn3 = texture(pebble_normal, UV2 / 2.5).rgb * 2.0 - 1.0;
 		float near = (1.0 - smoothstep(60.0, 600.0, dist)) * detail_normal_strength;
 		vec3 b = nm * 2.0 - 1.0;
-		b.xy += (dn.xy * 0.7 + dn2.xy * 0.5) * near;
+		b.xy += (dn.xy * 0.7 + dn2.xy * 0.5) * near + dn3.xy * 0.6 * pebble_strength * fade_near;
 		nm = normalize(b) * 0.5 + 0.5;
 		// Waves on water: two scrolling layers.
 		if (water > 0.0) {
@@ -53,6 +69,12 @@ void fragment() {
 		}
 	} else {
 		nm = mix(nm, vec3(0.5, 0.5, 1.0), water);   // calm water seen from orbit
+	}
+
+	if (use_slope) {
+		// Steep ground: bare, darker rock (crater walls, cliffs).
+		float sl = smoothstep(0.18, 0.5, COLOR.r);
+		col = mix(col, col * slope_tint, sl * (1.0 - water));
 	}
 
 	// The Blue Marble ocean is very dark: brighten it, keeping the bathymetry
