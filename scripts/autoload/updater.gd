@@ -57,8 +57,11 @@ func _notification(what: int) -> void:
 	# re-check if the last check is old enough.
 	if what == NOTIFICATION_APPLICATION_RESUMED and _startup_checked and current_version_code() > 0:
 		if _last_check_msec < 0 or Time.get_ticks_msec() - _last_check_msec > RESUME_RECHECK_SEC * 1000.0:
-			Log.info("Updater: app resumed, re-checking")
-			check_now()
+			Log.info("Updater: app resumed, re-checking in a moment")
+			# Not from inside the notification: the tree may be busy (add_child fails),
+			# and the network needs a moment to come back after the app wakes up.
+			_last_check_msec = Time.get_ticks_msec()
+			get_tree().create_timer(2.0).timeout.connect(check_now)
 
 
 func check_now() -> void:

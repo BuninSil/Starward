@@ -84,8 +84,8 @@ func _ready() -> void:
 	pl.add_theme_font_size_override("font_size", 20)
 	presets.add_child(pl)
 	presets.add_child(_btn("Орбита → Луна → домой", _full_mission))
-	presets.add_child(_btn("На Луну с посадкой", func() -> void: _run(_to_orbit_items() + [["moon", _values["moon"]], ["moon_land", 0]])))
-	presets.add_child(_btn("Взлёт с Луны и домой", func() -> void: _run([["moon_up", _values["moon_up"]], ["home", _values["home"]]])))
+	presets.add_child(_btn("На Луну с посадкой", _moon_landing_mission))
+	presets.add_child(_btn("Взлёт с Луны и домой", _moon_home_mission))
 	var sep := HSeparator.new()
 	box.add_child(sep)
 	_chain_label = Label.new()
@@ -133,19 +133,53 @@ func _add(kind: String) -> void:
 	_refresh_chain()
 
 
+## Presets start from where the vessel is now (pad, Earth orbit, Moon orbit, Moon surface).
+func _at_moon() -> bool:
+	return flight.vessel.body.name == "Луна"
+
+
 ## Ascent to Earth orbit if the vessel is on the ground / suborbital at Earth.
 func _to_orbit_items() -> Array:
 	var v: Vessel = flight.vessel
+	if v.body != flight.root_body:
+		return []
 	if v.landed or v.body.has_atmosphere() and OrbitMath.elements(v.pos, v.vel, v.body.mu).periapsis - v.body.radius < v.body.atmosphere_height:
 		return [["orbit", _values["orbit"]]]
 	return []
 
 
-func _full_mission() -> void:
-	var items: Array = _to_orbit_items()
-	items.append(["moon", _values["moon"]])
+## Pad / Earth orbit -> Moon orbit; nothing if already at the Moon.
+func _to_moon_items() -> Array:
+	if _at_moon():
+		return []
+	return _to_orbit_items() + [["moon", _values["moon"]]]
+
+
+## Home from wherever we are at the Moon (lifting off first if landed).
+func _home_items() -> Array:
+	var items: Array = []
+	if _at_moon() and flight.vessel.landed:
+		items.append(["moon_up", _values["moon_up"]])
 	items.append(["home", _values["home"]])
-	_run(items)
+	return items
+
+
+func _full_mission() -> void:
+	_run(_to_moon_items() + _home_items())
+
+
+func _moon_landing_mission() -> void:
+	if _at_moon() and flight.vessel.landed:
+		flight.message.emit("Уже на Луне")
+		return
+	_run(_to_moon_items() + [["moon_land", 0]])
+
+
+func _moon_home_mission() -> void:
+	if not _at_moon():
+		flight.message.emit("Сначала долети до Луны")
+		return
+	_run(_home_items())
 
 
 func _title_of(item: Array) -> String:

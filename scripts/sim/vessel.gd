@@ -137,7 +137,8 @@ func stage() -> bool:
 	var dropped: Dictionary = stages.pop_back()
 	if landed:
 		# The dropped stage stays on the ground; the rest now stands on top of it.
-		_surface_fixed = _surface_fixed.add(_surface_fixed.normalized().mul(float(dropped.length)))
+		var up_f := DVec3.from_v3(_surface_att_fixed * Vector3.UP)
+		_surface_fixed = _surface_fixed.add(up_f.mul(float(dropped.length)))
 		staged.emit(dropped)
 		return true
 	# Small separation kick along the nose.
@@ -286,6 +287,8 @@ func hold_direction() -> Vector3:
 # --- Surface ------------------------------------------------------------------
 
 var _surface_fixed := DVec3.new()   ## body-fixed position while landed
+var _surface_att_fixed := Quaternion.IDENTITY   ## body-fixed attitude while landed
+const MAX_REST_TILT := deg_to_rad(25.0)
 
 
 func place_on_surface(lat_deg: float, lon_deg: float, t: float) -> void:
@@ -293,17 +296,72 @@ func place_on_surface(lat_deg: float, lon_deg: float, t: float) -> void:
 	_surface_fixed = n.mul(body.radius + body.surface_height(n) + height_offset)
 	_set_landed(true)
 	destroyed_flag = false
-	_stick_to_surface(t)
-	# Nose along local vertical.
+	# Nose along local vertical, then rest on the ground under the feet.
 	var up := body.fixed_to_inertial(n, t).to_v3()
 	attitude = Quaternion(Vector3.UP, up).normalized()
 	ang_vel = Vector3.ZERO
+	_settle(t)
+
+
+## Sets the attitude while landed (e.g. roll on the pad) and re-settles on the ground.
+func set_landed_attitude(q: Quaternion, t: float) -> void:
+	attitude = q.normalized()
+	if landed:
+		_settle(t)
+
+
+## Radius of the ring the vessel stands on: landing-leg feet or the bottom stage rim.
+func _foot_radius() -> float:
+	if stages.is_empty():
+		return 1.0
+	var s: Dictionary = stages[stages.size() - 1]
+	return float(s.diameter) * 0.5 + (1.1 if s.get("legs", false) else 0.0)
+
+
+## Rests the vessel on the terrain: fits a plane through the ground under four
+## feet, tilts the vessel to it (keeping its heading, up to MAX_REST_TILT) and
+## puts the origin on that plane, so no foot sinks in and none hangs in the air.
+func _settle(t: float) -> void:
+	var rot := Quaternion(Vector3.UP, body.rotation_angle(t))
+	var att_f := (rot.inverse() * attitude).normalized()
+	var n := _surface_fixed.normalized().to_v3()
+	var x := att_f * Vector3.RIGHT
+	x = x - n * x.dot(n)
+	x = x.normalized() if x.length() > 1e-3 else n.cross(Vector3.FORWARD).normalized()
+	var z := x.cross(n)
+	var rf := _foot_radius()
+	var centre := _surface_fixed.normalized().mul(body.radius)
+	var feet: Array[Vector3] = []
+	var sum := Vector3.ZERO
+	for k in 4:
+		var off := (x * cos(k * PI * 0.5) + z * sin(k * PI * 0.5)) * rf
+		var dir := centre.add(DVec3.from_v3(off)).normalized()
+		var fp := dir.mul(body.radius + body.surface_height(dir))
+		# Relative to the reference centre point (small numbers -> float is fine).
+		var rel := fp.sub(centre).to_v3()
+		feet.append(rel)
+		sum += rel
+	var pn := (feet[3] - feet[1]).cross(feet[2] - feet[0]).normalized()
+	if pn.dot(n) < 0.0:
+		pn = -pn
+	var tilt := n.angle_to(pn)
+	if tilt > MAX_REST_TILT:
+		pn = n.slerp(pn, MAX_REST_TILT / tilt).normalized()
+	var mid := sum / 4.0
+	_surface_fixed = centre.add(DVec3.from_v3(mid + pn * height_offset))
+	var bx := x - pn * x.dot(pn)
+	bx = bx.normalized()
+	_surface_att_fixed = Basis(bx, pn, bx.cross(pn)).get_rotation_quaternion()
+	_stick_to_surface(t)
 
 
 func _stick_to_surface(t: float) -> void:
 	pos = body.fixed_to_inertial(_surface_fixed, t)
 	var omega := DVec3.new(0, body.angular_velocity(), 0)
 	vel = omega.cross(pos)
+	if landed and not destroyed_flag:
+		# Stands on the rotating surface: attitude turns with the body.
+		attitude = (Quaternion(Vector3.UP, body.rotation_angle(t)) * _surface_att_fixed).normalized()
 
 
 func _check_ground(t: float) -> void:
@@ -335,7 +393,7 @@ func _check_ground(t: float) -> void:
 		return
 	_surface_fixed = body.inertial_to_fixed(pos.normalized().mul(ground_r), t)
 	_set_landed(true)
-	_stick_to_surface(t)
+	_settle(t)
 
 
 func _max_relief() -> float:

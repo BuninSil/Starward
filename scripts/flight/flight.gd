@@ -164,7 +164,7 @@ func reset_to_pad() -> void:
 	var up := vessel.pos.normalized().to_v3()
 	var east := Vector3.UP.cross(up).normalized()
 	var south := east.cross(up)
-	vessel.attitude = Basis(east, up, south).get_rotation_quaternion()
+	vessel.set_landed_attitude(Basis(east, up, south).get_rotation_quaternion(), sim_time)
 	rocket.build(vessel)
 	set_warp(0)
 	cam_yaw = 0.35
@@ -864,7 +864,7 @@ func _update_eva_camera() -> void:
 		var horiz := ref2 * cos(cam_yaw) + ref * sin(cam_yaw)
 		var pitch := clampf(cam_pitch, -0.2, 1.2)
 		target = astronaut.global_position + up * 0.6
-		cam_pos = target + (horiz * cos(pitch) + up * sin(pitch)) * eva_cam_dist
+		cam_pos = _keep_above_ground(target + (horiz * cos(pitch) + up * sin(pitch)) * eva_cam_dist, 0.6)
 		b = Basis(ref, up, ref2)
 	camera.near = 0.1
 	var far := 1000.0
@@ -952,7 +952,19 @@ func _update_flight_camera() -> void:
 	var horiz := south * cos(cam_yaw) + east * sin(cam_yaw)
 	var center := Basis(vessel.attitude) * Vector3(0, 6.0, 0)
 	var offset := (horiz * cos(cam_pitch) + up * sin(cam_pitch)) * cam_dist
-	camera.global_transform = Transform3D(Basis(), center + offset).looking_at(center, up)
+	var cam_pos := _keep_above_ground(center + offset, 2.0)
+	camera.global_transform = Transform3D(Basis(), cam_pos).looking_at(center, up)
+
+
+## Lifts a camera position (scene coordinates) so it stays `clearance` metres above
+## the terrain — otherwise the ground is seen from below (it is invisible from there).
+func _keep_above_ground(p: Vector3, clearance: float) -> Vector3:
+	if map_mode or vessel.altitude_above_ground(sim_time) > 5000.0:
+		return p
+	var up := vessel.pos.add(DVec3.from_v3(p)).normalized().to_v3()
+	var ground := _terrain_point(vessel.pos.add(DVec3.from_v3(p)))
+	var h := (p - ground).dot(up)
+	return p + up * (clearance - h) if h < clearance else p
 
 
 func _update_map_camera() -> void:
