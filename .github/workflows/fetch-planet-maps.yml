@@ -8,6 +8,9 @@ on:
       commit:
         description: "Commit the result (no = dry run, only logs)"
         default: "yes"
+      discover:
+        description: "Only list download links on the product pages (yes/no)"
+        default: "no"
 
 permissions:
   contents: write
@@ -26,14 +29,20 @@ jobs:
       - name: Install tools
         run: pip install --quiet pillow numpy tifffile imagecodecs
 
+      - name: Discover sources
+        if: github.event.inputs.discover == 'yes'
+        run: python tools/discover_maps.py
+
       - name: Download and process
+        if: github.event.inputs.discover != 'yes'
         run: python tools/fetch_planet_maps.py --out assets/planets --work "$RUNNER_TEMP/maps"
 
       - name: Show result
+        if: github.event.inputs.discover != 'yes'
         run: ls -la assets/planets && cat assets/planets/*.json
 
       - name: Commit
-        if: github.event.inputs.commit == 'yes'
+        if: github.event.inputs.commit == 'yes' && github.event.inputs.discover != 'yes'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
