@@ -46,6 +46,8 @@ func build(v: Vessel) -> void:
 	_flames.clear()
 	_bell_mats.clear()
 	_chute_lines.clear()
+	_nav.clear()
+	_floods.clear()
 	_chute_collapse = 0.0
 	hatch_pivot = null
 	var y := 0.0
@@ -62,6 +64,7 @@ func build(v: Vessel) -> void:
 		y += s.length
 	_build_flames()
 	_build_chute()
+	_build_lights()
 	_build_collider()
 	_update_legs()
 
@@ -777,6 +780,122 @@ func _update_chute(delta: float, attach_y: float) -> void:
 		line.transform = Transform3D(basis, skirt * 0.5)
 
 
+# --- Ship lights (night) ---------------------------------------------------------
+
+var night := 0.0   ## 0 in daylight .. 1 in the dark; set by the flight scene
+var _nav: Array = []   ## {bulb: MeshInstance3D, light: OmniLight3D, strobe: bool, energy: float}
+var _floods: Array[SpotLight3D] = []
+var _blink := 0.0
+
+
+## Navigation lights on the capsule (red port / green starboard, steady; white
+## double-flash strobe aft) and two warm floodlights at its base that wash the
+## hull below. Small and dim, as on real spacecraft.
+func _build_lights() -> void:
+	if _stage_nodes.is_empty():
+		return
+	var s: Dictionary = vessel.stages[0]
+	var node: Node3D = _stage_nodes[0]
+	var r: float = float(s.diameter) * 0.5
+	var L: float = s.length
+	var top_r: float = float(s.diameter) * 0.17
+	var y := 0.3
+	var rr := _capsule_radius(r, top_r, L, 0.08, y) + 0.03
+	var specs := [
+		[Vector3(-rr, y, 0), Color(1.0, 0.08, 0.05), false, 0.1],   # port (-X)
+		[Vector3(rr, y, 0), Color(0.1, 1.0, 0.25), false, 0.1],     # starboard (+X)
+		[Vector3(0, L * 0.82, -_capsule_radius(r, top_r, L, 0.08, L * 0.82) - 0.03), Color(1, 1, 1), true, 1.6],
+	]
+	for sp in specs:
+		var bulb := MeshInstance3D.new()
+		var sm := SphereMesh.new()
+		sm.radius = 0.045
+		sm.height = 0.09
+		sm.radial_segments = 8
+		sm.rings = 4
+		bulb.mesh = sm
+		var m := StandardMaterial3D.new()
+		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		m.albedo_color = sp[1]
+		bulb.material_override = m
+		bulb.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		bulb.position = sp[0]
+		node.add_child(bulb)
+		# Soft halo around the lamp, always facing the camera.
+		var halo := MeshInstance3D.new()
+		var qm := QuadMesh.new()
+		qm.size = Vector2(0.5, 0.5)
+		halo.mesh = qm
+		var hm := ShaderMaterial.new()
+		hm.shader = _halo_shader()
+		hm.set_shader_parameter("tint", Color(sp[1]))
+		halo.material_override = hm
+		halo.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		bulb.add_child(halo)
+		var l := OmniLight3D.new()
+		l.light_color = sp[1]
+		l.omni_range = 1.4
+		l.omni_attenuation = 1.6
+		l.light_energy = 0.0
+		l.position = (sp[0] as Vector3) * 1.08
+		node.add_child(l)
+		_nav.append({"bulb": bulb, "light": l, "strobe": sp[2], "energy": sp[3]})
+	# Floodlights: just outside the base ring, aimed down along the hull.
+	for a in [deg_to_rad(-40.0), deg_to_rad(220.0)]:
+		var f := SpotLight3D.new()
+		f.light_color = Color(1.0, 0.9, 0.76)
+		f.spot_range = 45.0
+		f.spot_angle = 24.0
+		f.spot_attenuation = 0.8
+		f.spot_angle_attenuation = 2.0
+		f.light_energy = 0.0
+		f.shadow_enabled = false
+		var dir := Vector3(cos(a), 0, sin(a))
+		f.position = dir * (r + 0.35) + Vector3(0, 0.12, 0)
+		# -Z of the light looks straight down, tilted a hair towards the hull.
+		f.basis = Basis.looking_at(Vector3.DOWN - dir * 0.12, dir)
+		node.add_child(f)
+		_floods.append(f)
+
+
+static var _halo: Shader
+
+
+static func _halo_shader() -> Shader:
+	if _halo == null:
+		_halo = Shader.new()
+		_halo.code = """shader_type spatial;
+render_mode unshaded, blend_add, depth_draw_never, cull_disabled, shadows_disabled;
+uniform vec4 tint : source_color;
+void vertex() {
+	// Billboard, pulled a little towards the camera so the hull does not cut it.
+	MODELVIEW_MATRIX = VIEW_MATRIX * mat4(INV_VIEW_MATRIX[0], INV_VIEW_MATRIX[1], INV_VIEW_MATRIX[2], MODEL_MATRIX[3]);
+	MODELVIEW_MATRIX[3].z += 0.3;
+}
+void fragment() {
+	float d = length(UV - 0.5) * 2.0;
+	float g = exp(-d * d * 9.0) + 0.25 * exp(-d * d * 2.5);
+	ALBEDO = tint.rgb * g * 1.1;
+	ALPHA = 1.0;
+}
+"""
+	return _halo
+
+
+func _update_lights(delta: float) -> void:
+	_blink = fmod(_blink + delta, 1.4)
+	var on_flash := _blink < 0.05 or (_blink > 0.17 and _blink < 0.22)
+	var n := clampf(night, 0.0, 1.0)
+	for e in _nav:
+		var lit: bool = on_flash if e.strobe else true
+		(e.bulb as MeshInstance3D).visible = lit
+		(e.light as OmniLight3D).light_energy = (e.energy as float) * n if lit else 0.0
+		(e.light as OmniLight3D).visible = n > 0.01 and lit
+	for f in _floods:
+		f.light_energy = 4.0 * n
+		f.visible = n > 0.01
+
+
 ## Drops the visual of the bottom stage; returns it re-parented for debris.
 func detach_bottom_stage() -> Node3D:
 	if _stage_nodes.size() <= 1:
@@ -805,6 +924,7 @@ func update_visual(delta: float) -> void:
 			_update_chute(delta, top.position.y + float(vessel.stages[0].length))
 		else:
 			_chute_collapse = 0.0
+	_update_lights(delta)
 	# Hatch animation (eased swing about the hinge line).
 	if hatch_pivot and not is_equal_approx(_hatch_open, _hatch_target):
 		_hatch_open = move_toward(_hatch_open, _hatch_target, delta / 1.6)

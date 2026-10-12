@@ -1086,6 +1086,15 @@ func _update_sky() -> void:
 	if not map_mode and not body.is_star:
 		var ground_w := 1.0 - smoothstep(2000.0, 30_000.0, agl)
 		sun.light_energy *= lerpf(1.0, smoothstep(-0.05, 0.03, sun_elev), ground_w)
+	# In the planet's shadow (night side of an orbit): no sunlight either.
+	if not body.is_star:
+		var pv := vessel.pos.to_v3()
+		var along := pv.dot(sun_dir())
+		if along < 0.0:
+			var perp := (pv - sun_dir() * along).length()
+			sun.light_energy *= smoothstep(body.radius * 0.995, body.radius * 1.02, perp)
+	var full_sun := 2.6 if not body.has_atmosphere() and not body.is_star else 1.5
+	rocket.night = 1.0 - smoothstep(0.15, 0.6, sun.light_energy / full_sun)
 	sun.visible = sun.light_energy > 0.001
 	# Sun shadows (rocks, rocket, crater walls) only near the ground, high preset.
 	var shadows := Graphics.quality == Graphics.HIGH and agl < 3000.0 and not map_mode
