@@ -11,6 +11,7 @@ const ConsoleScript := preload("res://scripts/ui/debug_console.gd")
 const OrbitLine := preload("res://scripts/flight/trajectory_view.gd")
 const AutopilotPanel := preload("res://scripts/flight/autopilot_panel.gd")
 const ManeuverPanel := preload("res://scripts/flight/maneuver_panel.gd")
+const InventoryPanel := preload("res://scripts/ui/inventory_panel.gd")
 
 const ACCENT := Color(1.0, 0.62, 0.22)
 const TEXT := Color(0.93, 0.95, 1.0)
@@ -67,6 +68,7 @@ var _stage_confirm := 0.0   ## seconds left to confirm staging while landed
 var _pause_layer: CanvasLayer
 var _inf_fuel_btn: CheckButton
 var _timer := 0.0
+var _inventory: Control
 var _throttle_box: Control
 var _stage_col: Control
 
@@ -98,6 +100,10 @@ func _ready() -> void:
 	_console = ConsoleScript.new()
 	_console.hide()
 	_root.add_child(_console)
+	_inventory = InventoryPanel.new()
+	_inventory.flight = flight
+	_inventory.hide()
+	_root.add_child(_inventory)
 	flight.message.connect(toast)
 	Updater.update_available.connect(func(info: Dictionary) -> void:
 		toast("Доступно обновление %s — установить можно на титульном экране" % info.tag))
@@ -243,6 +249,7 @@ func _build_top_right() -> void:
 	box.add_child(row)
 	_map_btn = _button("Карта", _on_map, 130)
 	row.add_child(_map_btn)
+	row.add_child(_button("Груз", func() -> void: _inventory.visible = not _inventory.visible, 100))
 	row.add_child(_button("Дебаг", func() -> void: _debug_menu.visible = not _debug_menu.visible, 110))
 	row.add_child(_button("II", toggle_pause, 64))
 	# Map-only buttons.
@@ -829,6 +836,7 @@ func toggle_pause() -> void:
 	if _pause_layer == null:
 		_build_pause()
 	var on := not _pause_layer.visible
+	_close_slots()
 	_pause_layer.visible = on
 	get_tree().paused = on
 
@@ -846,6 +854,7 @@ func _build_pause() -> void:
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_pause_layer.add_child(dim)
 	var p := _panel()
+	_pause_panel = p
 	p.theme = make_theme()
 	p.set_anchors_and_offsets_preset(Control.PRESET_CENTER, Control.PRESET_MODE_MINSIZE)
 	p.grow_horizontal = Control.GROW_DIRECTION_BOTH
@@ -860,6 +869,9 @@ func _build_pause() -> void:
 	t.add_theme_font_size_override("font_size", 34)
 	box.add_child(t)
 	box.add_child(_button("Продолжить", toggle_pause, 360))
+	if Game.has_game():
+		box.add_child(_button("Сохранить", func() -> void: _show_slots(true), 360))
+		box.add_child(_button("Загрузить", func() -> void: _show_slots(false), 360))
 	box.add_child(_button("Заново на старт", func() -> void:
 		toggle_pause()
 		flight.reset_to_pad(), 360))
@@ -867,6 +879,58 @@ func _build_pause() -> void:
 		get_tree().paused = false
 		get_tree().change_scene_to_file("res://scenes/boot.tscn"), 360))
 	box.add_child(_button("Выйти из игры", func() -> void: get_tree().quit(), 360))
+
+
+var _slots_panel: PanelContainer
+var _pause_panel: PanelContainer
+
+
+func _close_slots() -> void:
+	if _slots_panel:
+		_slots_panel.queue_free()
+		_slots_panel = null
+	if _pause_panel:
+		_pause_panel.show()
+
+
+## Save / load slot list over the pause menu.
+func _show_slots(saving: bool) -> void:
+	if _slots_panel:
+		_slots_panel.queue_free()
+	_pause_panel.hide()
+	_slots_panel = _panel()
+	_slots_panel.theme = make_theme()
+	_slots_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER, Control.PRESET_MODE_MINSIZE)
+	_slots_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_slots_panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	_pause_layer.add_child(_slots_panel)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	_slots_panel.add_child(box)
+	var t := _label(30, TEXT)
+	t.text = "Сохранить в слот" if saving else "Загрузить"
+	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(t)
+	var list: Array = Game.SLOTS.duplicate() if saving else [Game.AUTOSAVE] + Game.SLOTS
+	for slot in list:
+		var info := Game.slot_info(slot)
+		var title: String = "Автосохранение" if slot == Game.AUTOSAVE else "Слот " + str(slot).right(1)
+		var text := "%s — пусто" % title
+		if not info.is_empty():
+			text = "%s · %s\n%s · %s" % [title, Game.fmt_date(info.time), Game.mode_title(info.mode), info.where]
+		var s_id: String = slot
+		var b := _button(text, func() -> void:
+			if saving:
+				var ok := Game.save_to(s_id, flight)
+				_close_slots()
+				toast("Сохранено: %s" % title if ok else "Не удалось сохранить")
+			else:
+				Game.load_from(s_id), 480)
+		b.custom_minimum_size.y = 74
+		b.add_theme_font_size_override("font_size", 20)
+		b.disabled = not saving and info.is_empty()
+		box.add_child(b)
+	box.add_child(_button("Назад", _close_slots, 480))
 
 
 static func _fmt_time(t: float) -> String:

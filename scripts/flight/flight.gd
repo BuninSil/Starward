@@ -129,7 +129,13 @@ func _ready() -> void:
 	hud = HudScript.new()
 	hud.flight = self
 	add_child(hud)
-	reset_to_pad()
+	if not Game.pending.is_empty():
+		var st := Game.pending
+		Game.pending = {}
+		if not apply_state(st):
+			reset_to_pad()
+	else:
+		reset_to_pad()
 	Log.info("Flight: scene ready, bodies=%d, body=%s R=%.0f m g=%.2f" % [bodies.size(), body.name, body.radius, body.surface_gravity()])
 
 
@@ -387,10 +393,14 @@ func _notification(what: int) -> void:
 		NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_APPLICATION_PAUSED:
 			# Fingers lifted while the app was away never send "released".
 			_touches.clear()
+			autosave()
+		NOTIFICATION_WM_CLOSE_REQUEST:
+			autosave()
 
 
 func _exit_tree() -> void:
 	get_tree().paused = false
+	autosave()
 	# Planning threads may still walk the body tree: let them finish first.
 	if autopilot:
 		autopilot.stop(vessel)
@@ -784,8 +794,69 @@ func _step_debris(dt: float) -> void:
 			_debris.remove_at(i)
 
 
+# --- Save / load ------------------------------------------------------------------
+
+const AUTOSAVE_EVERY := 120.0
+var _autosave_t := AUTOSAVE_EVERY
+
+
+## Cargo can move between suit and ship inside, or right next to the ship.
+func can_transfer_cargo() -> bool:
+	return not eva_mode or entry_distance() < 4.0
+
+
+## Where we are, for the save slot list.
+func where_text() -> String:
+	var v := vessel
+	if v.landed:
+		return "%s · на поверхности" % v.body.name
+	var el := OrbitMath.elements(v.pos, v.vel, v.body.mu)
+	if el.periapsis - v.body.radius > v.body.atmosphere_height and el.apoapsis > 0.0:
+		return "%s · орбита %s × %s" % [v.body.name, TrajectoryView.fmt_dist(el.periapsis - v.body.radius), TrajectoryView.fmt_dist(el.apoapsis - v.body.radius)]
+	return "%s · в полёте" % v.body.name
+
+
+func save_state() -> Dictionary:
+	return {"sim_time": sim_time, "vessel": vessel.to_data(), "cam": [cam_yaw, cam_pitch, cam_dist]}
+
+
+func apply_state(d: Dictionary) -> bool:
+	var vd: Dictionary = d.get("vessel", {})
+	var b := SolarSystem.find(root_body, str(vd.get("body", "")))
+	if b == null or vd.is_empty():
+		Log.warn("Flight: save has no usable vessel, starting on the pad")
+		return false
+	abort_eva()
+	sim_time = float(d.get("sim_time", 0.0))
+	_set_vessel(Vessel.from_data(vd, b))
+	if vessel.landed:
+		vessel._stick_to_surface(sim_time)
+	rocket.build(vessel)
+	set_warp(0)
+	var cam: Array = d.get("cam", [cam_yaw, cam_pitch, cam_dist])
+	cam_yaw = float(cam[0])
+	cam_pitch = float(cam[1])
+	cam_dist = float(cam[2])
+	hud.on_vessel_reset()
+	_traj_timer = 0.0
+	Log.info("Flight: loaded, %s" % where_text())
+	return true
+
+
+## Autosave (also on minimise / quit). Not after a crash, not in a test run.
+func autosave() -> void:
+	if not Game.has_game() or vessel == null or vessel.destroyed_flag:
+		return
+	Game.save_to(Game.AUTOSAVE, self)
+	_autosave_t = AUTOSAVE_EVERY
+
+
 func _process(delta: float) -> void:
 	ApPlan.reap()
+	vessel.cargo_mass = Game.ship_inv.mass()
+	_autosave_t -= delta
+	if _autosave_t <= 0.0:
+		autosave()
 	# Floating origin: the vessel at 0 (or the focused body on the map), everything
 	# else relative to it in doubles.
 	var vabs := render_origin()

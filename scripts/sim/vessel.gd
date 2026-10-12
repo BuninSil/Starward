@@ -26,6 +26,7 @@ var destroyed_flag := false
 var height_offset := 0.0        ## distance from vessel origin to its lowest point
 var chute_deployed := false
 var touchdown_speed := 0.0
+var cargo_mass := 0.0            ## kg of cargo in the capsule (ship inventory)
 
 const CHUTE_CDA := 260.0        ## Cd * area of the open main chute, m^2
 const CHUTE_MAX_SPEED := 500.0  ## faster than this the chute tears
@@ -50,7 +51,7 @@ var last_accel_ng := Vector3.ZERO   ## non-gravitational acceleration (thrust + 
 
 
 func mass() -> float:
-	var m := 0.0
+	var m := cargo_mass
 	for s in stages:
 		m += s.dry_mass + s.fuel
 	return m
@@ -105,7 +106,7 @@ func has_fuel() -> bool:
 ## Delta-v per stage (top..bottom order as in `stages`) at current pressure.
 func stage_delta_v() -> Array[float]:
 	var out: Array[float] = []
-	var above := 0.0
+	var above := cargo_mass   # cargo rides in the capsule, on top of everything
 	for i in stages.size():
 		var s := stages[i]
 		var m_full: float = above + s.dry_mass + s.fuel
@@ -598,6 +599,66 @@ static func make_stage(name: String, dry: float, fuel: float, thrust: float,
 		"thrust_vac": thrust, "isp_sl": isp_sl, "isp_vac": isp_vac,
 		"diameter": diameter, "length": length, "has_engine": thrust > 0.0,
 	}
+
+
+# --- Save / load ------------------------------------------------------------------
+
+static func _v3(a: Array) -> Vector3:
+	return Vector3(float(a[0]), float(a[1]), float(a[2]))
+
+
+static func _dv(a: Array) -> DVec3:
+	return DVec3.new(float(a[0]), float(a[1]), float(a[2]))
+
+
+static func _q(a: Array) -> Quaternion:
+	return Quaternion(float(a[0]), float(a[1]), float(a[2]), float(a[3])).normalized()
+
+
+## Plain data (JSON-safe) of the whole vessel state. The body is stored by id.
+func to_data() -> Dictionary:
+	return {
+		"body": body.id,
+		"pos": [pos.x, pos.y, pos.z], "vel": [vel.x, vel.y, vel.z],
+		"attitude": [attitude.x, attitude.y, attitude.z, attitude.w],
+		"ang_vel": [ang_vel.x, ang_vel.y, ang_vel.z],
+		"landed": landed, "destroyed": destroyed_flag, "height_offset": height_offset,
+		"chute": chute_deployed, "sas": sas, "hold_mode": hold_mode,
+		"heat_temp": heat_temp, "cargo_mass": cargo_mass,
+		"surface_fixed": [_surface_fixed.x, _surface_fixed.y, _surface_fixed.z],
+		"surface_att": [_surface_att_fixed.x, _surface_att_fixed.y, _surface_att_fixed.z, _surface_att_fixed.w],
+		"stages": stages.duplicate(true),
+	}
+
+
+## Rebuilds a vessel from to_data(); `b` is the body resolved from data.body.
+static func from_data(d: Dictionary, b: CelestialBody) -> Vessel:
+	var v := Vessel.new()
+	v.body = b
+	v.pos = _dv(d.pos)
+	v.vel = _dv(d.vel)
+	v.attitude = _q(d.attitude)
+	v.ang_vel = _v3(d.get("ang_vel", [0, 0, 0]))
+	v.landed = bool(d.get("landed", false))
+	v.destroyed_flag = false
+	v.height_offset = float(d.get("height_offset", 0.0))
+	v.chute_deployed = bool(d.get("chute", false))
+	v.sas = bool(d.get("sas", true))
+	v.hold_mode = str(d.get("hold_mode", ""))
+	v.heat_temp = float(d.get("heat_temp", 280.0))
+	v.cargo_mass = float(d.get("cargo_mass", 0.0))
+	v._surface_fixed = _dv(d.get("surface_fixed", [0, 0, 0]))
+	v._surface_att_fixed = _q(d.get("surface_att", [0, 0, 0, 1]))
+	var st: Array[Dictionary] = []
+	for s in d.get("stages", []):
+		var sd: Dictionary = (s as Dictionary).duplicate(true)
+		# JSON has no ints/bools distinction problems, but keep the numbers floats.
+		for k in ["dry_mass", "fuel", "fuel_max", "thrust_vac", "isp_sl", "isp_vac", "diameter", "length"]:
+			if sd.has(k):
+				sd[k] = float(sd[k])
+		st.append(sd)
+	v.stages = st
+	return v
 
 
 ## Prebuilt designs: id -> title (shown on the title screen and in the debug menu).

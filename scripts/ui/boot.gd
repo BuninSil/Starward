@@ -26,6 +26,11 @@ var _ui: Control
 var _moon: MeshInstance3D
 var _console: PanelContainer
 var _settings: Control
+var _new_game: Control
+var _load_panel: Control
+var _mode := "career"
+var _mode_cards: Array[Button] = []
+var _mode_info: Label
 var _console_button: Button
 var _update_dialog: UpdateDialogScript
 var _update_status: Label
@@ -43,6 +48,10 @@ func _notification(what: int) -> void:
 			_console.hide()
 		elif _settings and _settings.visible:
 			_settings.hide()
+		elif _new_game and _new_game.visible:
+			_new_game.hide()
+		elif _load_panel and _load_panel.visible:
+			_load_panel.hide()
 		elif _update_dialog and _update_dialog.visible:
 			_update_dialog.hide()
 		else:
@@ -234,44 +243,30 @@ func _build_ui() -> void:
 	gap.custom_minimum_size = Vector2(0, 6)
 	col.add_child(gap)
 
-	col.add_child(_menu_button("▶  ИГРАТЬ", _play, true))
-
-	# Rocket choice: two cards side by side, the selected one outlined.
-	var cards := HBoxContainer.new()
-	cards.add_theme_constant_override("separation", 10)
-	col.add_child(cards)
-	for r in ROCKETS:
-		var c := Button.new()
-		c.text = r.name
-		c.toggle_mode = true
-		c.focus_mode = Control.FOCUS_NONE
-		c.custom_minimum_size = Vector2(215, 62)
-		c.add_theme_font_size_override("font_size", 22)
-		var n := _style(Color(0.05, 0.07, 0.12, 0.55), Color(1, 1, 1, 0.1), 1, 12)
-		n.content_margin_left = 12
-		n.content_margin_right = 12
-		var sel := _style(Color(0.16, 0.12, 0.08, 0.85), ACCENT, 2, 12)
-		sel.content_margin_left = 12
-		sel.content_margin_right = 12
-		c.add_theme_stylebox_override("normal", n)
-		c.add_theme_stylebox_override("hover", n)
-		c.add_theme_stylebox_override("pressed", sel)
-		c.add_theme_stylebox_override("hover_pressed", sel)
-		c.add_theme_color_override("font_color", DIM)
-		c.add_theme_color_override("font_hover_color", DIM)
-		c.add_theme_color_override("font_pressed_color", TEXT)
-		c.add_theme_color_override("font_hover_pressed_color", TEXT)
-		var id: String = r.id
-		c.pressed.connect(func() -> void: _select_rocket(id))
-		cards.add_child(c)
-		_rocket_cards.append(c)
-	_rocket_info = Label.new()
-	_rocket_info.custom_minimum_size = Vector2(440, 0)
-	_rocket_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_rocket_info.add_theme_font_size_override("font_size", 18)
-	_rocket_info.add_theme_color_override("font_color", DIM)
-	col.add_child(_rocket_info)
-	_select_rocket(Vessel.design)
+	# Continue the last game, or start one.
+	var latest := Game.latest_slot()
+	if latest != "":
+		var info := Game.slot_info(latest)
+		col.add_child(_menu_button("▶  ПРОДОЛЖИТЬ", func() -> void: Game.load_from(latest), true))
+		var where := Label.new()
+		where.text = "%s · %s · %s" % [Game.mode_title(info.mode), info.where, Game.fmt_date(info.time)]
+		where.custom_minimum_size = Vector2(440, 0)
+		where.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		where.add_theme_font_size_override("font_size", 18)
+		where.add_theme_color_override("font_color", DIM)
+		col.add_child(where)
+		var row2 := HBoxContainer.new()
+		row2.add_theme_constant_override("separation", 10)
+		col.add_child(row2)
+		for e in [["Новая игра", func() -> void: _show_panel(_new_game)], ["Загрузить", func() -> void: _show_panel(_load_panel)]]:
+			var b := _menu_button(e[0], e[1])
+			b.alignment = HORIZONTAL_ALIGNMENT_CENTER
+			b.custom_minimum_size = Vector2(215, 64)
+			b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			b.add_theme_font_size_override("font_size", 24)
+			row2.add_child(b)
+	else:
+		col.add_child(_menu_button("▶  НОВАЯ ИГРА", func() -> void: _show_panel(_new_game), true))
 
 	# Secondary entries in one row.
 	var row := HBoxContainer.new()
@@ -280,7 +275,7 @@ func _build_ui() -> void:
 	for e in [["Ракеты", func() -> void:
 				ShowcaseScript.return_scene = "res://scenes/boot.tscn"
 				get_tree().change_scene_to_file("res://scenes/parts_showcase.tscn")],
-			["Настройки", func() -> void: _settings.visible = not _settings.visible],
+			["Настройки", func() -> void: _show_panel(_settings)],
 			["Выход", func() -> void: get_tree().quit()]]:
 		var b := _menu_button(e[0], e[1])
 		b.alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -317,6 +312,12 @@ func _build_ui() -> void:
 			_update_dialog.show_for(Updater.latest))
 	_ui.add_child(_update_banner)
 
+	_new_game = _build_new_game()
+	_new_game.hide()
+	_ui.add_child(_new_game)
+	_load_panel = _build_load()
+	_load_panel.hide()
+	_ui.add_child(_load_panel)
 	_settings = _build_settings()
 	_settings.hide()
 	_ui.add_child(_settings)
@@ -338,7 +339,133 @@ func _select_rocket(id: String) -> void:
 
 
 func _play() -> void:
+	Game.new_game(_mode, Vessel.design)
 	get_tree().change_scene_to_file("res://scenes/flight.tscn")
+
+
+func _show_panel(p: Control) -> void:
+	for q in [_new_game, _load_panel, _settings]:
+		q.visible = q == p and not q.visible
+
+
+func _panel_box(title: String) -> Array:
+	var panel := PanelContainer.new()
+	panel.add_theme_stylebox_override("panel", _style(Color(0.03, 0.05, 0.1, 0.94), Color(1, 1, 1, 0.12), 1, 18))
+	panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_RIGHT, Control.PRESET_MODE_MINSIZE, 48)
+	panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 12)
+	panel.add_child(box)
+	var head := Label.new()
+	head.text = title
+	head.add_theme_font_size_override("font_size", 32)
+	head.add_theme_color_override("font_color", TEXT)
+	box.add_child(head)
+	return [panel, box]
+
+
+func _card(text: String, cb: Callable) -> Button:
+	var c := Button.new()
+	c.text = text
+	c.toggle_mode = true
+	c.focus_mode = Control.FOCUS_NONE
+	c.custom_minimum_size = Vector2(215, 62)
+	c.add_theme_font_size_override("font_size", 22)
+	var n := _style(Color(0.05, 0.07, 0.12, 0.55), Color(1, 1, 1, 0.1), 1, 12)
+	n.content_margin_left = 12
+	n.content_margin_right = 12
+	var sel := _style(Color(0.16, 0.12, 0.08, 0.85), ACCENT, 2, 12)
+	sel.content_margin_left = 12
+	sel.content_margin_right = 12
+	c.add_theme_stylebox_override("normal", n)
+	c.add_theme_stylebox_override("hover", n)
+	c.add_theme_stylebox_override("pressed", sel)
+	c.add_theme_stylebox_override("hover_pressed", sel)
+	c.add_theme_color_override("font_color", DIM)
+	c.add_theme_color_override("font_hover_color", DIM)
+	c.add_theme_color_override("font_pressed_color", TEXT)
+	c.add_theme_color_override("font_hover_pressed_color", TEXT)
+	c.pressed.connect(cb)
+	return c
+
+
+func _hint(text := "") -> Label:
+	var l := Label.new()
+	l.text = text
+	l.custom_minimum_size = Vector2(440, 0)
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l.add_theme_font_size_override("font_size", 18)
+	l.add_theme_color_override("font_color", DIM)
+	return l
+
+
+const MODES := [
+	{"id": "career", "name": "Карьера", "info": "Старт с малым запасом: ресурсы добываешь, детали и модули открываешь сам."},
+	{"id": "sandbox", "name": "Песочница", "info": "Всё открыто и с большим запасом: просто летать и пробовать."},
+]
+
+
+func _build_new_game() -> Control:
+	var pb := _panel_box("Новая игра")
+	var box: VBoxContainer = pb[1]
+	var modes := HBoxContainer.new()
+	modes.add_theme_constant_override("separation", 10)
+	box.add_child(modes)
+	for m in MODES:
+		var id: String = m.id
+		var c := _card(m.name, func() -> void: _select_mode(id))
+		modes.add_child(c)
+		_mode_cards.append(c)
+	_mode_info = _hint()
+	box.add_child(_mode_info)
+	_select_mode(_mode)
+	var lbl := _hint("Ракета:")
+	lbl.add_theme_color_override("font_color", TEXT)
+	box.add_child(lbl)
+	var cards := HBoxContainer.new()
+	cards.add_theme_constant_override("separation", 10)
+	box.add_child(cards)
+	for r in ROCKETS:
+		var id: String = r.id
+		var c := _card(r.name, func() -> void: _select_rocket(id))
+		cards.add_child(c)
+		_rocket_cards.append(c)
+	_rocket_info = _hint()
+	box.add_child(_rocket_info)
+	_select_rocket(Vessel.design)
+	if Game.latest_slot() != "":
+		box.add_child(_hint("Автосохранение перезапишется новой игрой; слоты 1–3 останутся."))
+	box.add_child(_menu_button("▶  НАЧАТЬ", _play, true))
+	box.add_child(_menu_button("Назад", func() -> void: (pb[0] as Control).hide()))
+	return pb[0]
+
+
+func _select_mode(id: String) -> void:
+	_mode = id
+	for i in MODES.size():
+		_mode_cards[i].set_pressed_no_signal(MODES[i].id == id)
+		if MODES[i].id == id:
+			_mode_info.text = MODES[i].info
+
+
+func _build_load() -> Control:
+	var pb := _panel_box("Загрузить")
+	var box: VBoxContainer = pb[1]
+	for slot in [Game.AUTOSAVE] + Game.SLOTS:
+		var info := Game.slot_info(slot)
+		var title: String = "Автосохранение" if slot == Game.AUTOSAVE else "Слот " + str(slot).right(1)
+		var text := "%s — пусто" % title
+		if not info.is_empty():
+			text = "%s · %s\n%s · %s" % [title, Game.fmt_date(info.time), Game.mode_title(info.mode), info.where]
+		var s: String = slot
+		var b := _menu_button(text, func() -> void: Game.load_from(s))
+		b.add_theme_font_size_override("font_size", 20)
+		b.custom_minimum_size = Vector2(460, 74)
+		b.disabled = info.is_empty()
+		box.add_child(b)
+	box.add_child(_menu_button("Назад", func() -> void: (pb[0] as Control).hide()))
+	return pb[0]
 
 
 func _show_update_banner(info: Dictionary) -> void:

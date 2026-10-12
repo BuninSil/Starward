@@ -177,14 +177,30 @@ func _build_right() -> void:
 	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT, Control.PRESET_MODE_MINSIZE, 16)
 	top.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	_root.add_child(top)
+	top.add_child(_btn("Груз", _toggle_inventory, 110))
 	top.add_child(_btn("II", func() -> void: flight.hud.toggle_pause(), 70))
 
 
+var _inventory: Control
+
+
+func _toggle_inventory() -> void:
+	if _inventory == null:
+		_inventory = preload("res://scripts/ui/inventory_panel.gd").new()
+		_inventory.flight = flight
+		_inventory.hide()
+		_root.add_child(_inventory)
+	_inventory.visible = not _inventory.visible
+
+
 func _build_pause_button() -> void:
-	var b := _btn("II", func() -> void: flight.hud.toggle_pause(), 70)
-	b.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT, Control.PRESET_MODE_MINSIZE, 16)
-	b.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-	_root.add_child(b)
+	var top := HBoxContainer.new()
+	top.add_theme_constant_override("separation", 8)
+	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT, Control.PRESET_MODE_MINSIZE, 16)
+	top.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	_root.add_child(top)
+	top.add_child(_btn("Груз", _toggle_inventory, 110))
+	top.add_child(_btn("II", func() -> void: flight.hud.toggle_pause(), 70))
 
 
 func _build_surface() -> void:
