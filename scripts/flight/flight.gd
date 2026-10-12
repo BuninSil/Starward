@@ -669,7 +669,7 @@ func _update_fx(delta: float) -> void:
 					# dense as in air, but it hugs the surface).
 					var sp2 := randf_range(8.0, 30.0) * maxf(k, 0.4)
 					fx.emit(b, at, _air_velocity(b, at).add(DVec3.from_v3(d * sp2 + up * randf_range(0.1, 0.8))),
-						randf_range(3.0, 5.0), randf_range(3.0, 5.0), randf_range(11.0, 18.0), _dust_color(b, 0.92).lightened(0.12), 0.35, false, 0.0, 0.3)
+						randf_range(3.0, 5.0), randf_range(3.0, 5.0), randf_range(11.0, 18.0), _dust_color(b, 0.92).lightened(0.12), 0.35, false, 0.0, 0.4)
 	# Ascent in thick air: a column of exhaust smoke left behind the engines.
 	if v.last_thrust > 0.0 and b.has_atmosphere() and not v.destroyed_flag:
 		var dens := b.density_at(v.altitude()) / b.sea_level_density
@@ -702,7 +702,8 @@ func _update_fx(delta: float) -> void:
 	var nozzle := rocket.global_transform * Vector3(0, -3.0, 0)
 	# A vacuum plume is thin and faint: it barely lights the dust.
 	var pr_f := clampf(b.pressure_at(v.altitude()), 0.0, 1.0) if b.has_atmosphere() else 0.0
-	fx.set_flame(nozzle, thr_f * lerpf(0.12, 1.0, pr_f), 22.0)
+	fx.set_flame(nozzle, thr_f * lerpf(lerpf(0.12, 0.4, rocket.night), 1.0, pr_f), 22.0)
+	fx.set_lamp(rocket.global_transform * Vector3(0, 2.0, 0), rocket.night)
 	# The flame lights up the ground and the pad near it.
 	var agl_f := v.altitude_above_ground(sim_time)
 	_flame_light.visible = thr_f > 0.0 and agl_f < 200.0

@@ -259,6 +259,9 @@ func update_view(origin_rel: DVec3, t: float, view_scale := 1.0) -> void:
 
 ## Body id used for asset file names.
 func _asset_id() -> String:
+	# No map of Deimos: it is a dark, dusty sibling of Phobos, borrow its maps.
+	if body.id == "deimos" and not ResourceLoader.exists("res://assets/planets/deimos_color.jpg"):
+		return "phobos"
 	return body.id
 
 

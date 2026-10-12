@@ -51,6 +51,13 @@ func set_flame(pos: Vector3, power: float, reach: float) -> void:
 	m.set_shader_parameter("flame_reach", reach)
 
 
+## The ship's floodlights at night light up nearby dust.
+func set_lamp(pos: Vector3, power: float) -> void:
+	var m := material_override as ShaderMaterial
+	m.set_shader_parameter("lamp_pos", pos)
+	m.set_shader_parameter("lamp_power", power)
+
+
 ## 0..1 overall light on the scene (night, shadow of the planet).
 func set_light(l: float) -> void:
 	(material_override as ShaderMaterial).set_shader_parameter("light", l)
@@ -140,6 +147,8 @@ uniform float light = 1.0;
 uniform vec3 flame_pos = vec3(0.0);   // view... world position of the engine flame
 uniform float flame_power = 0.0;      // 0..1
 uniform float flame_reach = 40.0;
+uniform vec3 lamp_pos = vec3(0.0);     // ship floodlights (night)
+uniform float lamp_power = 0.0;
 varying vec3 v_world;
 varying vec4 v_col;
 varying vec4 v_cus;
@@ -169,7 +178,9 @@ void fragment() {
 	// the scene light, glowing bits add on top.
 	// The engine flame lights the clouds orange from below / inside.
 	float fl = flame_power * exp(-length(v_world - flame_pos) / flame_reach) * (0.6 + 0.8 * (1.0 - top));
-	ALBEDO = v_col.rgb * light * shade * (1.0 - 0.35 * fl) + vec3(1.0, 0.5, 0.16) * (fl * 1.8 + v_cus.x * 1.5);
+	float lp = lamp_power * exp(-length(v_world - lamp_pos) / 28.0);
+	ALBEDO = v_col.rgb * (light * shade * (1.0 - 0.35 * fl) + vec3(1.0, 0.88, 0.72) * lp * 1.4 * shade)
+		+ vec3(1.0, 0.5, 0.16) * (fl * 1.8 + v_cus.x * 1.5);
 	// Ground clouds: the lower edge thins out instead of a hard cut.
 	a *= mix(1.0, smoothstep(0.42, 0.12, p.y), v_cus.z);
 	ALPHA = a;
