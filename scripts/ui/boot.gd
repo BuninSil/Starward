@@ -73,7 +73,9 @@ func _ready() -> void:
 		Updater.offered_tag = str(info.tag)
 		_show_update_banner(info)
 		_update_dialog.show_for(info))
-	Updater.check_finished.connect(func(_has: bool, msg: String) -> void: _update_status.text = msg)
+	Updater.check_finished.connect(func(_has: bool, msg: String) -> void:
+		_update_status.text = msg
+		_maybe_whats_new())
 	Updater.check_on_startup()
 	# Back from a flight: the check already ran, show what it found.
 	var info: Dictionary = Updater.latest
@@ -83,6 +85,24 @@ func _ready() -> void:
 		if Updater.offered_tag != str(info.tag) and not Updater.is_downloading:
 			Updater.offered_tag = str(info.tag)
 			_update_dialog.show_for(info)
+	elif not info.is_empty():
+		_maybe_whats_new()
+
+
+## First launch of a freshly installed version: show its release notes once.
+func _maybe_whats_new() -> void:
+	var info: Dictionary = Updater.latest
+	var code := Updater.current_version_code()
+	if info.is_empty() or code <= 0 or int(info.get("version_code", 0)) != code or _update_dialog.visible:
+		return
+	var cf := ConfigFile.new()
+	cf.load("user://settings.cfg")
+	var seen := int(cf.get_value("app", "notes_seen", 0))
+	if seen >= code:
+		return
+	cf.set_value("app", "notes_seen", code)
+	cf.save("user://settings.cfg")
+	_update_dialog.show_whats_new(info)
 
 
 func _process(delta: float) -> void:

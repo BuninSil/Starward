@@ -195,16 +195,26 @@ jobs:
         if: steps.meta.outputs.release == 'true'
         run: |
           prev=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)
+          range="HEAD"
+          [ -n "$prev" ] && range="$prev..HEAD"
           {
-            if [ -n "$prev" ]; then
-              echo "Изменения с $prev:"
-              echo
-              git log "$prev..HEAD" --no-merges --pretty='- %s (%h)'
-            else
-              echo "Первый релиз. Коммиты:"
-              echo
-              git log --no-merges --pretty='- %s (%h)'
-            fi
+            # Each commit: "## subject" + its bullet list. Attribution and
+            # [skip ci] noise are dropped. The game shows this text as is.
+            git log "$range" --no-merges --reverse --pretty='%s%n%b%x1e' | python3 -c '
+          import sys
+          for c in sys.stdin.read().split("\x1e"):
+              lines = [l.rstrip() for l in c.strip().splitlines()]
+              if not lines:
+                  continue
+              subj = lines[0].replace("[skip ci]", "").strip()
+              if not subj or subj.lower().startswith("merge"):
+                  continue
+              body = [l for l in lines[1:] if l.strip() and not l.startswith(("Co-Authored-By", "Claude-Session"))]
+              print("## " + subj)
+              for l in body:
+                  print(l if l.lstrip().startswith("-") else "- " + l.strip())
+              print()
+          '
             echo
             echo "---"
             echo "versionCode: ${{ steps.meta.outputs.code }} · commit: ${GITHUB_SHA::7} · Godot ${GODOT_VERSION}"
