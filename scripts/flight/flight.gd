@@ -564,11 +564,17 @@ var _fx_acc := 0.0
 var _trail_acc := 0.0
 var _smoke_acc := 0.0
 var _flame_light: OmniLight3D
+var _last_ground_event := -100000
 var _engine_recent := 99.0  ## seconds since the engine last ran (for scorch marks)
 
 
 ## Touchdown or liftoff on the engine: leave a scorch mark on the ground.
 func _on_landed_changed(now_landed: bool) -> void:
+	# Tiny moons: contact can flicker every frame; one puff / mark per 2 s.
+	var now := Time.get_ticks_msec()
+	if now - _last_ground_event < 2000:
+		return
+	_last_ground_event = now
 	if now_landed and has_solid_surface(vessel.body):
 		_dust_burst(clampf(vessel.touchdown_speed / 6.0, 0.3, 1.0))
 	if _engine_recent > 2.5 or not has_solid_surface(vessel.body):
@@ -643,10 +649,10 @@ func _update_fx(delta: float) -> void:
 		if agl < 60.0:
 			var thr := v.last_thrust / maxf(v.current_thrust_max(), 1.0)
 			var k := (1.0 - agl / 60.0) * clampf(thr, 0.2, 1.0)
-			_fx_acc += delta * k * (16.0 if low else 30.0)
+			var air := b.has_atmosphere()
+			_fx_acc += delta * k * ((16.0 if low else 30.0) if air else (120.0 if low else 260.0))
 			var g := _ground_under()
 			var up := g.normalized().to_v3()
-			var air := b.has_atmosphere()
 			while _fx_acc >= 1.0:
 				_fx_acc -= 1.0
 				var d := _rand_dir()
@@ -658,9 +664,10 @@ func _update_fx(delta: float) -> void:
 					fx.emit(b, at, _air_velocity(b, at).add(DVec3.from_v3(d * sp + up * randf_range(1.0, 5.0))),
 						randf_range(8.0, 13.0), randf_range(6.0, 9.0), randf_range(20.0, 34.0), _dust_color(b, 0.97), 0.35)
 				else:
-					var sp2 := randf_range(15.0, 55.0) * k
-					fx.emit(b, at, _air_velocity(b, at).add(DVec3.from_v3(d * sp2 + up * randf_range(1.0, 6.0))),
-						randf_range(0.9, 1.8), 0.5, randf_range(1.5, 3.0), _dust_color(b, 0.55), 0.0, true)
+					# Vacuum: a low, fast sheet of dust skimming outward (Apollo landings).
+					var sp2 := randf_range(25.0, 80.0) * maxf(k, 0.4)
+					fx.emit(b, at, _air_velocity(b, at).add(DVec3.from_v3(d * sp2 + up * randf_range(0.3, 2.5))),
+						randf_range(0.7, 1.4), 1.5, randf_range(4.0, 7.0), _dust_color(b, 0.42).lightened(0.25), 0.0, true)
 	# Ascent in thick air: a column of exhaust smoke left behind the engines.
 	if v.last_thrust > 0.0 and b.has_atmosphere() and not v.destroyed_flag:
 		var dens := b.density_at(v.altitude()) / b.sea_level_density
@@ -691,7 +698,9 @@ func _update_fx(delta: float) -> void:
 	fx.set_light(lerpf(1.0, 0.12, rocket.night))
 	var thr_f := v.last_thrust / maxf(v.current_thrust_max(), 1.0) if v.last_thrust > 0.0 else 0.0
 	var nozzle := rocket.global_transform * Vector3(0, -3.0, 0)
-	fx.set_flame(nozzle, thr_f, 22.0)
+	# A vacuum plume is thin and faint: it barely lights the dust.
+	var pr_f := clampf(b.pressure_at(v.altitude()), 0.0, 1.0) if b.has_atmosphere() else 0.0
+	fx.set_flame(nozzle, thr_f * lerpf(0.12, 1.0, pr_f), 22.0)
 	# The flame lights up the ground and the pad near it.
 	var agl_f := v.altitude_above_ground(sim_time)
 	_flame_light.visible = thr_f > 0.0 and agl_f < 200.0
