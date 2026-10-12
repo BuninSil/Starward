@@ -33,6 +33,13 @@ uniform float win_n = 99.0;             // only the first N windows from win_u0
 uniform vec4 hatch = vec4(0.0);         // u, v, du, dv (du = 0: none)
 uniform float hatch_open = 0.0;
 uniform float soot = 0.0;
+// Re-entry: char streaks from where the heat hit (scorch_y0, running along
+// scorch_dir) and the glow of the hot skin while it lasts.
+uniform float scorch = 0.0;
+uniform float scorch_y0 = 0.0;
+uniform float scorch_dir = 1.0;
+uniform float scorch_len = 3.0;
+uniform float glow = 0.0;
 uniform float heat = 0.0;
 uniform float heat_v0 = 0.0;
 uniform sampler2D noise_tex : hint_default_white, filter_linear_mipmap, repeat_enable;
@@ -102,6 +109,16 @@ void fragment() {
 	}
 	float st = soot * exp(-v / 1.4);
 	col = mix(col, vec3(0.03, 0.028, 0.026), clamp(st, 0.0, 0.85));
+	float sd = max((v - scorch_y0) * scorch_dir, 0.0);
+	float chr = 0.0;
+	if (scorch > 0.0) {
+		float streak = texture(noise_tex, vec2(u * 13.0, sd * 0.06)).r;
+		float streak2 = texture(noise_tex, vec2(u * 41.0 + 0.3, sd * 0.11)).r;
+		chr = scorch * exp(-sd / scorch_len) * (0.45 + 0.55 * streak + 0.3 * streak2);
+		chr = clamp(chr, 0.0, 0.93);
+		col = mix(col, vec3(0.055, 0.042, 0.032), chr);
+		rgh = mix(rgh, 0.9, chr);
+	}
 	// Reflection of the fake environment.
 	vec3 nv = normalize(NORMAL + (TANGENT * bump.x + BINORMAL * bump.y) * 0.3);
 	vec3 rw = (INV_VIEW_MATRIX * vec4(reflect(-VIEW, nv), 0.0)).xyz;
@@ -121,7 +138,11 @@ void fragment() {
 	METALLIC = m * (1.0 - glass);
 	ROUGHNESS = foil > 0.0 ? 0.25 : rgh;
 	SPECULAR = 0.5;
-	EMISSION = env * mix(f0, vec3(1.0), fres) * g;
+	EMISSION = env * mix(f0, vec3(1.0), fres) * g * (1.0 - 0.8 * chr);
+	if (glow > 0.0) {
+		float hot = glow * exp(-sd / (scorch_len * 0.6));
+		EMISSION += mix(vec3(0.9, 0.18, 0.03), vec3(1.0, 0.6, 0.25), hot) * hot * 3.0;
+	}
 	NORMAL_MAP = normalize(vec3(bump * 0.5, 1.0)) * 0.5 + 0.5;
 	NORMAL_MAP_DEPTH = 1.0;
 	if (heat > 0.0) {

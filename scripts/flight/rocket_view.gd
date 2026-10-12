@@ -51,6 +51,7 @@ func build(v: Vessel) -> void:
 	_fill = null
 	_chute_collapse = 0.0
 	hatch_pivot = null
+	_engine_light = null
 	var y := 0.0
 	# Bottom to top.
 	for i in range(v.stages.size() - 1, -1, -1):
@@ -66,6 +67,8 @@ func build(v: Vessel) -> void:
 	_build_flames()
 	_build_chute()
 	_build_lights()
+	_build_plasma()
+	_collect_hull_mats()
 	_build_collider()
 	_update_legs()
 
@@ -658,6 +661,23 @@ func _build_flames() -> void:
 		f.visible = false
 		add_child(f)
 		_flames.append(f)
+	# The flame's own light: just below the nozzles, lighting the engines, the
+	# skirt and the underside; falls off quickly up the hull.
+	if _engine_light == null or not is_instance_valid(_engine_light):
+		_engine_light = OmniLight3D.new()
+		_engine_light.light_color = Color(1.0, 0.6, 0.28)
+		_engine_light.shadow_enabled = false
+		add_child(_engine_light)
+	var low_y := 0.0
+	var rmax := 0.5
+	for e in ex:
+		var v4: Vector4 = e
+		low_y = minf(low_y, v4.y + bottom.position.y)
+		rmax = maxf(rmax, Vector2(v4.x, v4.z).length() + v4.w)
+	_engine_light.position = Vector3(0, low_y - 1.2 - rmax * 0.5, 0)
+	_engine_light.omni_range = 6.0 + rmax * 6.0
+	_engine_light.omni_attenuation = 2.2
+	_engine_light.visible = false
 
 
 func _build_collider() -> void:
@@ -911,6 +931,102 @@ func _update_lights(delta: float) -> void:
 		_fill.visible = n > 0.01
 
 
+# --- Re-entry: plasma, char, hot skin ---------------------------------------------
+
+var _engine_light: OmniLight3D
+var _plasma: MeshInstance3D
+var _plasma_mat: ShaderMaterial
+var _hull_mats: Dictionary = {}   ## stage node -> Array[ShaderMaterial]
+var _char_shown: Dictionary = {}  ## stage node -> last char value pushed to shaders
+
+
+func _build_plasma() -> void:
+	var cm := CylinderMesh.new()
+	cm.top_radius = 1.0
+	cm.bottom_radius = 1.9
+	cm.height = 1.0
+	cm.radial_segments = 24
+	cm.rings = 6
+	cm.cap_top = false
+	cm.cap_bottom = false
+	_plasma = MeshInstance3D.new()
+	_plasma.mesh = cm
+	_plasma_mat = ShaderMaterial.new()
+	_plasma_mat.shader = load("res://shaders/plasma.gdshader")
+	_plasma_mat.set_shader_parameter("noise_tex", _noise_tex())
+	_plasma.material_override = _plasma_mat
+	_plasma.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_plasma.top_level = true
+	_plasma.visible = false
+	add_child(_plasma)
+
+
+func _collect_hull_mats() -> void:
+	_hull_mats.clear()
+	_char_shown.clear()
+	for node in _stage_nodes:
+		var mats: Array[ShaderMaterial] = []
+		var stack: Array[Node] = [node]
+		while not stack.is_empty():
+			var n: Node = stack.pop_back()
+			stack.append_array(n.get_children())
+			if n is MeshInstance3D and (n as MeshInstance3D).material_override is ShaderMaterial:
+				var m := (n as MeshInstance3D).material_override as ShaderMaterial
+				if m.shader == HULL_SHADER and not mats.has(m):
+					mats.append(m)
+		_hull_mats[node] = mats
+
+
+func _update_reentry() -> void:
+	var n_st := _stage_nodes.size()
+	if n_st == 0 or n_st != vessel.stages.size():
+		return
+	var heat := clampf((vessel.heat_temp - 700.0) / maxf(vessel.heat_limit - 700.0, 1.0), 0.0, 1.0)
+	var lead_i := 0 if vessel.heat_lead == "nose" else n_st - 1
+	for i in n_st:
+		var node := _stage_nodes[i]
+		var s: Dictionary = vessel.stages[i]
+		var ch := float(s.get("char", 0.0))
+		var g := heat if i == lead_i else 0.0
+		var last: Vector2 = _char_shown.get(node, Vector2(-1, -1))
+		if absf(last.x - ch) < 0.01 and absf(last.y - g) < 0.01:
+			continue
+		_char_shown[node] = Vector2(ch, g)
+		var top: bool = s.get("char_top", false)
+		var L := float(s.length)
+		for m in _hull_mats.get(node, []):
+			m.set_shader_parameter("scorch", ch * 1.3)
+			m.set_shader_parameter("scorch_y0", L if top else -0.2)
+			m.set_shader_parameter("scorch_dir", -1.0 if top else 1.0)
+			m.set_shader_parameter("scorch_len", clampf(L * 0.6, 1.2, 5.0))
+			m.set_shader_parameter("glow", g)
+	# Plasma sheath around the leading end, along the airflow.
+	var q := vessel.heat_flux
+	var pw := clampf(pow(q / 350_000.0, 0.7), 0.0, 1.0)
+	_plasma.visible = pw > 0.03 and not vessel.destroyed_flag
+	if not _plasma.visible:
+		return
+	var vdir := vessel.surface_velocity().to_v3().normalized()
+	var total := 0.0
+	for s in vessel.stages:
+		total += float(s.length)
+	var lead_local := Vector3.ZERO
+	match vessel.heat_lead:
+		"nose": lead_local = Vector3(0, total, 0)
+		"side": lead_local = Vector3(0, vessel.com_height(), 0)
+		_: lead_local = Vector3(0, -0.2, 0)
+	var lead := global_transform * lead_local
+	var R := 0.0
+	for s in vessel.stages:
+		R = maxf(R, float(s.diameter) * 0.5)
+	R *= 1.12 if vessel.heat_lead != "side" else 1.6
+	var length := R * lerpf(2.5, 7.0, pw) + (total * 0.8 if vessel.heat_lead == "side" else 0.0)
+	var x := vdir.cross(Vector3.UP if absf(vdir.y) < 0.95 else Vector3.RIGHT).normalized()
+	var z := x.cross(vdir)
+	_plasma.global_transform = Transform3D(Basis(x * R, vdir * length, z * R), lead - vdir * (length * 0.5 - R * 0.35))
+	_plasma_mat.set_shader_parameter("power", pw)
+
+
 ## Drops the visual of the bottom stage; returns it re-parented for debris.
 func detach_bottom_stage() -> Node3D:
 	if _stage_nodes.size() <= 1:
@@ -928,6 +1044,8 @@ func detach_bottom_stage() -> Node3D:
 	_build_flames()
 	_build_collider()
 	_update_legs()
+	_hull_mats.erase(node)
+	_char_shown.erase(node)
 	return node
 
 
@@ -940,6 +1058,7 @@ func update_visual(delta: float) -> void:
 		else:
 			_chute_collapse = 0.0
 	_update_lights(delta)
+	_update_reentry()
 	# Hatch animation (eased swing about the hinge line).
 	if hatch_pivot and not is_equal_approx(_hatch_open, _hatch_target):
 		_hatch_open = move_toward(_hatch_open, _hatch_target, delta / 1.6)
@@ -954,8 +1073,14 @@ func update_visual(delta: float) -> void:
 			m.set_shader_parameter("heat", thr * 0.6)
 	for f in _flames:
 		f.visible = on
+	if _engine_light:
+		_engine_light.visible = on and not _flames.is_empty()
 	if not on or _stage_nodes.is_empty():
 		return
+	if _engine_light and _engine_light.visible:
+		# Bright in air (a full luminous plume), dim in vacuum (thin, faint plume).
+		var pr := clampf(vessel.body.pressure_at(vessel.altitude()), 0.0, 1.0)
+		_engine_light.light_energy = lerpf(0.45, 1.0, thr) * lerpf(0.9, 3.2, pr) * randf_range(0.85, 1.15)
 	var p := clampf(vessel.body.pressure_at(vessel.altitude()), 0.0, 1.0)
 	_flame_mat.set_shader_parameter("throttle", lerpf(0.4, 1.0, thr))
 	_flame_mat.set_shader_parameter("pressure", p)

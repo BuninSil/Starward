@@ -5,6 +5,7 @@ extends Node3D
 const PlanetView := preload("res://scripts/flight/planet_view.gd")
 const RocketView := preload("res://scripts/flight/rocket_view.gd")
 const SoundFxScript := preload("res://scripts/flight/sound_fx.gd")
+const FxScript := preload("res://scripts/flight/fx_particles.gd")
 const TrajectoryView := preload("res://scripts/flight/trajectory_view.gd")
 const HudScript := preload("res://scripts/flight/flight_hud.gd")
 const SKY_SHADER := preload("res://shaders/starfield.gdshader")
@@ -104,6 +105,15 @@ func _ready() -> void:
 		(planets[b] as Node3D).call("set_hd", tex, rect))
 	rocket = RocketView.new()
 	add_child(rocket)
+	fx = FxScript.new()
+	add_child(fx)
+	_flame_light = OmniLight3D.new()
+	_flame_light.light_color = Color(1.0, 0.62, 0.3)
+	_flame_light.omni_range = 70.0
+	_flame_light.omni_attenuation = 1.3
+	_flame_light.shadow_enabled = false
+	_flame_light.visible = false
+	add_child(_flame_light)
 	traj_view = TrajectoryView.new()
 	add_child(traj_view)
 	traj_view.setup(root_body)
@@ -196,6 +206,8 @@ func reset_to_pad() -> void:
 	for d in _debris:
 		d.node.queue_free()
 	_debris.clear()
+	if fx:
+		fx.clear()
 	if vessel:
 		autopilot.disengage(vessel)
 	var inf_fuel := vessel.infinite_fuel if vessel else false
@@ -222,6 +234,11 @@ func _set_vessel(v: Vessel) -> void:
 	vessel.staged.connect(_on_staged)
 	vessel.destroyed.connect(_on_destroyed)
 	vessel.soi_changed.connect(_on_soi_changed)
+	vessel.burned_off.connect(func(st: Dictionary) -> void:
+		_sparks(st)
+		message.emit("%s сгорела при входе в атмосферу" % st.name)
+		Log.warn("Flight: %s burned off on entry" % st.name))
+	vessel.landed_changed.connect(_on_landed_changed)
 
 
 ## Debug: replaces the vessel by the lunar module (capsule + ascent + descent
@@ -542,6 +559,187 @@ func _apply_autopilot_warp() -> void:
 	warp_index = idx
 
 
+var fx: Node   ## smoke / dust / sparks
+var _fx_acc := 0.0
+var _trail_acc := 0.0
+var _smoke_acc := 0.0
+var _flame_light: OmniLight3D
+var _engine_recent := 99.0  ## seconds since the engine last ran (for scorch marks)
+
+
+## Touchdown or liftoff on the engine: leave a scorch mark on the ground.
+func _on_landed_changed(now_landed: bool) -> void:
+	if now_landed and has_solid_surface(vessel.body):
+		_dust_burst(clampf(vessel.touchdown_speed / 6.0, 0.3, 1.0))
+	if _engine_recent > 2.5 or not has_solid_surface(vessel.body):
+		return
+	if vessel.body == home and vessel.pos.sub(_pad_position()).length() < 60.0:
+		return   # the launch pad has its own scorched concrete
+	var d := 0.0
+	for st in vessel.stages:
+		d = maxf(d, float(st.diameter))
+	var size := d * (6.0 if now_landed else 4.0)
+	var mi := MeshInstance3D.new()
+	var pm := PlaneMesh.new()
+	pm.size = Vector2(size, size)
+	mi.mesh = pm
+	var m := ShaderMaterial.new()
+	m.shader = load("res://shaders/scorch.gdshader")
+	m.set_shader_parameter("seed", randf() * 100.0)
+	m.set_shader_parameter("strength", 0.85 if vessel.body.has_atmosphere() else 0.7)
+	mi.material_override = m
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
+	mi.top_level = true
+	var ground := vessel.pos.normalized().mul(vessel.body.radius + vessel.ground_height(sim_time) + 0.06)
+	_debris.append({
+		"node": mi, "body": vessel.body, "basis": Basis(), "scorch": true,
+		"fixed": vessel.body.inertial_to_fixed(ground, sim_time),
+		"pos": DVec3.new(), "vel": DVec3.new(), "life": INF,
+	})
+
+
+# --- Smoke & dust -----------------------------------------------------------------
+
+func _rand_dir() -> Vector3:
+	return Vector3(randf() - 0.5, randf() - 0.5, randf() - 0.5).normalized()
+
+
+func _air_velocity(b: CelestialBody, p: DVec3) -> DVec3:
+	return DVec3.new(0, b.angular_velocity(), 0).cross(p)
+
+
+var _dust_cache := {}
+
+
+func _dust_color(b: CelestialBody, alpha: float) -> Color:
+	var c: Color = _dust_cache.get(b, Color(0.62, 0.6, 0.56))
+	if not _dust_cache.has(b) and planets.has(b):
+		c = (planets[b] as Node3D).call("surface_style").get("dust_color", c)
+		_dust_cache[b] = c
+	if b == home:
+		c = Color(0.7, 0.68, 0.64)   # exhaust smoke + dust on Earth: grey-beige clouds
+	return Color(c.r, c.g, c.b, alpha)
+
+
+## Ground point under the vessel (relative to the body centre).
+func _ground_under() -> DVec3:
+	var b := vessel.body
+	return vessel.pos.normalized().mul(b.radius + vessel.ground_height(sim_time))
+
+
+func _update_fx(delta: float) -> void:
+	var w := warp()
+	if w > PHYSICS_WARP_MAX or map_mode:
+		fx.clear()
+		_flame_light.visible = false
+		return
+	var b := vessel.body
+	var v := vessel
+	var low := Graphics.quality == Graphics.LOW
+	# Engine blast on the ground: billowing clouds in air, a ballistic spray in vacuum.
+	if v.last_thrust > 0.0 and has_solid_surface(b) and not v.destroyed_flag:
+		var agl := v.altitude_above_ground(sim_time) - v.height_offset
+		if agl < 60.0:
+			var thr := v.last_thrust / maxf(v.current_thrust_max(), 1.0)
+			var k := (1.0 - agl / 60.0) * clampf(thr, 0.2, 1.0)
+			_fx_acc += delta * k * (16.0 if low else 30.0)
+			var g := _ground_under()
+			var up := g.normalized().to_v3()
+			var air := b.has_atmosphere()
+			while _fx_acc >= 1.0:
+				_fx_acc -= 1.0
+				var d := _rand_dir()
+				d = (d - up * d.dot(up)).normalized()
+				var at := g.add(DVec3.from_v3(d * randf_range(0.5, 2.0) + up * 0.3))
+				if air:
+					# Thick clouds rolling out along the ground, then rising.
+					var sp := randf_range(10.0, 34.0) * k
+					fx.emit(b, at, _air_velocity(b, at).add(DVec3.from_v3(d * sp + up * randf_range(1.0, 5.0))),
+						randf_range(8.0, 13.0), randf_range(6.0, 9.0), randf_range(20.0, 34.0), _dust_color(b, 0.97), 0.35)
+				else:
+					var sp2 := randf_range(15.0, 55.0) * k
+					fx.emit(b, at, _air_velocity(b, at).add(DVec3.from_v3(d * sp2 + up * randf_range(1.0, 6.0))),
+						randf_range(0.9, 1.8), 0.5, randf_range(1.5, 3.0), _dust_color(b, 0.55), 0.0, true)
+	# Ascent in thick air: a column of exhaust smoke left behind the engines.
+	if v.last_thrust > 0.0 and b.has_atmosphere() and not v.destroyed_flag:
+		var dens := b.density_at(v.altitude()) / b.sea_level_density
+		if dens > 0.05:
+			_smoke_acc += delta * clampf(dens, 0.0, 1.0) * (10.0 if low else 24.0)
+			var down := -v.up_world()
+			while _smoke_acc >= 1.0:
+				_smoke_acc -= 1.0
+				var at := v.pos.add(DVec3.from_v3(down * randf_range(4.0, 9.0) + _rand_dir() * 0.8))
+				fx.emit(b, at, _air_velocity(b, at).add(DVec3.from_v3(down * randf_range(15.0, 30.0) + _rand_dir() * 3.0)),
+					randf_range(6.0, 10.0), 3.0, randf_range(12.0, 22.0), Color(0.86, 0.85, 0.83, 0.7), 0.5, false, 0.5)
+	# Re-entry: glowing smoke left in the air behind the leading end.
+	if v.heat_flux > 40_000.0 and not v.destroyed_flag:
+		var q := clampf(v.heat_flux / 300_000.0, 0.15, 1.0)
+		_trail_acc += delta * q * (20.0 if low else 45.0)
+		var total := 0.0
+		var r := 0.5
+		for st in v.stages:
+			total += float(st.length)
+			r = maxf(r, float(st.diameter) * 0.5)
+		var lead_h := total if v.heat_lead == "nose" else (v.com_height() if v.heat_lead == "side" else 0.0)
+		var lead := v.pos.add(DVec3.from_v3(v.up_world() * lead_h))
+		while _trail_acc >= 1.0:
+			_trail_acc -= 1.0
+			var at := lead.add(DVec3.from_v3(_rand_dir() * r * 0.8))
+			fx.emit(b, at, _air_velocity(b, at).add(DVec3.from_v3(_rand_dir() * 4.0)),
+				randf_range(3.0, 5.0), r * 2.0, r * randf_range(6.0, 10.0), Color(0.3, 0.27, 0.25, 0.7), 0.25, false, q)
+	fx.set_light(lerpf(1.0, 0.12, rocket.night))
+	var thr_f := v.last_thrust / maxf(v.current_thrust_max(), 1.0) if v.last_thrust > 0.0 else 0.0
+	var nozzle := rocket.global_transform * Vector3(0, -3.0, 0)
+	fx.set_flame(nozzle, thr_f, 22.0)
+	# The flame lights up the ground and the pad near it.
+	var agl_f := v.altitude_above_ground(sim_time)
+	_flame_light.visible = thr_f > 0.0 and agl_f < 200.0
+	if _flame_light.visible:
+		# Near the ground, where the flame hits it: lights the pad and the clouds.
+		var up_f := v.pos.normalized().to_v3()
+		_flame_light.global_position = nozzle - up_f * maxf(agl_f - 6.0, 0.0) * 0.8
+		_flame_light.light_energy = thr_f * (1.0 - agl_f / 200.0) * randf_range(4.0, 5.0)
+	fx.step(delta * w, render_origin(), sim_time)
+
+
+## Touchdown: a puff of dust around the feet.
+func _dust_burst(k: float) -> void:
+	var b := vessel.body
+	var g := _ground_under()
+	var up := g.normalized().to_v3()
+	var air := b.has_atmosphere()
+	for i in int(lerpf(8.0, 26.0, k)):
+		var d := _rand_dir()
+		d = (d - up * d.dot(up)).normalized()
+		var at := g.add(DVec3.from_v3(d * randf_range(0.5, 1.8)))
+		if air:
+			fx.emit(b, at, _air_velocity(b, at).add(DVec3.from_v3(d * randf_range(2.0, 7.0) * k + up * 0.8)),
+				randf_range(2.0, 3.5), 1.2, randf_range(4.0, 7.0), _dust_color(b, 0.45), 0.9)
+		else:
+			fx.emit(b, at, _air_velocity(b, at).add(DVec3.from_v3(d * randf_range(3.0, 10.0) * k + up * randf_range(0.5, 2.5))),
+				randf_range(0.8, 1.6), 0.3, 1.0, _dust_color(b, 0.5), 0.0, true)
+
+
+## A stage burning off on entry: a spray of glowing fragments and smoke.
+func _sparks(st: Dictionary) -> void:
+	var b := vessel.body
+	var at := vessel.pos
+	var base := vessel.vel
+	for i in 34:
+		var spark := i % 2 == 0
+		fx.emit(b, at.add(DVec3.from_v3(_rand_dir() * float(st.diameter) * 0.6)),
+			base.add(DVec3.from_v3(_rand_dir() * randf_range(10.0, 60.0))),
+			randf_range(0.8, 2.0) if spark else randf_range(2.0, 3.5),
+			0.4 if spark else 2.0, 0.7 if spark else 8.0,
+			Color(0.35, 0.2, 0.1, 0.95) if spark else Color(0.2, 0.18, 0.17, 0.6), 0.4, false, 1.0 if spark else 0.6)
+
+
+func _pad_position() -> DVec3:
+	var n := CelestialBody.surface_normal(SolarSystem.LAUNCH_LAT, SolarSystem.LAUNCH_LON)
+	return home.fixed_to_inertial(n.mul(home.radius + home.surface_height(n)), sim_time)
+
+
 func _step_debris(dt: float) -> void:
 	for i in range(_debris.size() - 1, -1, -1):
 		var d: Dictionary = _debris[i]
@@ -587,10 +785,18 @@ func _process(delta: float) -> void:
 	rocket.basis = Basis(vessel.attitude)
 	rocket.update_visual(delta)
 	_update_sound(delta)
+	_engine_recent = 0.0 if vessel.last_thrust > 0.0 else _engine_recent + delta
+	_update_fx(delta)
 	for d in _debris:
 		var n: Node3D = d.node
 		var dabs := (d.body as CelestialBody).absolute_position(sim_time).add(d.pos)
-		n.global_transform = Transform3D(d.basis, dabs.sub(vabs).to_v3())
+		var bas: Basis = d.basis
+		if d.has("scorch"):
+			# Flat on the ground: rebuilt from the local vertical (the body turns).
+			var up := (d.pos as DVec3).normalized().to_v3()
+			var x := up.cross(Vector3.FORWARD if absf(up.z) < 0.9 else Vector3.RIGHT).normalized()
+			bas = Basis(x, up, x.cross(up))
+		n.global_transform = Transform3D(bas, dabs.sub(vabs).to_v3())
 
 	_update_sky()
 	if map_mode:

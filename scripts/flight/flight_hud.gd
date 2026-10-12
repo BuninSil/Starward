@@ -50,6 +50,7 @@ var _ap_panel: PanelContainer
 var _mn_panel: PanelContainer
 var _ap_btn: Button
 var _ap_label: Label
+var _heat_label: Label
 var _hold_btn: Button
 var _hold_menu: PanelContainer
 var _hold_buttons := {}
@@ -436,6 +437,16 @@ func _build_toast() -> void:
 	_ap_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	_root.add_child(_ap_label)
 
+	_heat_label = _label(23, Color(1.0, 0.55, 0.25))
+	_heat_label.custom_minimum_size = Vector2(900, 0)
+	_heat_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_heat_label.add_theme_constant_override("outline_size", 6)
+	_heat_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
+	_heat_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_heat_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 172)
+	_heat_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_root.add_child(_heat_label)
+
 	_toast = _label(25, Color(1.0, 0.85, 0.45))
 	_toast.custom_minimum_size = Vector2(900, 0)
 	_toast.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -723,6 +734,20 @@ func _process(delta: float) -> void:
 		if vt > Vessel.CRASH_SPEED:
 			_ap_label.text = "Парашют не держит: касание ~%d м/с > %d. Сбрось ступени или притормози двигателем" % [int(vt), int(Vessel.CRASH_SPEED)]
 	_ap_btn.text = "Стоп\nавтопилот" if ap.active() else "Автопилот"
+	# Re-entry heating: shown once it matters, with what to do about it.
+	var hf := v.heat_fraction()
+	if hf > 0.25 and not v.landed and not v.destroyed_flag:
+		var tip := ""
+		if v.heat_lead == "nose" or v.heat_lead == "side":
+			tip = " · разверни дном вперёд («Против хода»)!"
+		elif v.heat_lead == "bottom":
+			tip = " · без теплозащиты: ступень может сгореть"
+		else:
+			tip = " · теплозащитный экран"
+		_heat_label.text = "Нагрев %d%%%s" % [int(hf * 100.0), tip]
+		_heat_label.add_theme_color_override("font_color", Color(1.0, 0.75, 0.3).lerp(Color(1.0, 0.25, 0.15), clampf((hf - 0.5) * 2.0, 0.0, 1.0)))
+	else:
+		_heat_label.text = ""
 	_eva_btn.visible = flight.can_eva() == "" and not flight.map_mode
 	_chute_btn.visible = v.has_chute() and not v.chute_deployed and not v.landed \
 		and v.body.has_atmosphere() and v.altitude() < v.body.atmosphere_height
@@ -762,7 +787,7 @@ func _update_texts() -> void:
 		"—" if v.landed else OrbitLine.fmt_dist(el.apoapsis - b.radius),
 		"—" if v.landed else OrbitLine.fmt_dist(el.periapsis - b.radius)]
 	_tele_line2.text = "Δv %d м/с   Т/В %.2f   топливо %d%%" % [int(v.total_delta_v()), v.twr(), int(fuel_pct)]
-	_tele_where.text = "%s · %s   ▾" % [b.name, "на поверхности" if v.landed else ("в атмосфере" if alt < b.atmosphere_height else "в космосе")]
+	_tele_where.text = "%s · %s   ▾" % [b.name, "на поверхности" if v.landed else ("в атмосфере" if b.has_atmosphere() and alt < b.atmosphere_height else "в космосе")]
 	var fixed := b.inertial_to_fixed(v.pos, flight.sim_time)
 	var ll := CelestialBody.lat_lon(fixed)
 	_telemetry.text = "\n".join(PackedStringArray([

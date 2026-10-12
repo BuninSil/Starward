@@ -214,8 +214,79 @@ func step(dt: float, t: float) -> void:
 	var a1 := _accel(pos, vel, thrust, m)
 	vel.add_scaled(a0.add(a1), 0.5 * dt)
 
+	_step_heating(dt)
 	_check_ground(t + dt)
 	check_soi(t + dt)
+
+
+# --- Re-entry heating -------------------------------------------------------------
+# Sutton-Graves stagnation heat flux q = k sqrt(rho / Rn) v^3 on the leading part,
+# its skin temperature from q against radiative cooling. Orbital speeds are ~1/3
+# of real ones in the scaled system, so the flux is boosted (HEAT_SCALE) to keep
+# the real feel: a shielded capsule survives, bare tanks and noses do not.
+
+signal burned_off(stage: Dictionary)   ## a stage that overheated and broke away
+
+const HEAT_SCALE := 3.0
+const SHIELD_LIMIT := 2400.0      ## K, ablative heat shield (capsule bottom first)
+const HULL_LIMIT := 900.0         ## K, bare aluminium tanks / capsule nose
+const SKIN_CAPACITY := 2.2e4      ## J/(m^2 K), effective heat capacity of the skin
+const EMISSIVITY_SIGMA := 0.8 * 5.67e-8
+
+var heat_temp := 280.0            ## K, skin temperature of the leading part
+var heat_flux := 0.0              ## W/m^2 right now
+var heat_limit := HULL_LIMIT
+var heat_lead := "bottom"         ## "bottom", "shield", "nose" or "side"
+
+
+func heat_fraction() -> float:
+	return clampf((heat_temp - 280.0) / (heat_limit - 280.0), 0.0, 1.5)
+
+
+func _step_heating(dt: float) -> void:
+	var alt := altitude()
+	var rho := body.density_at(alt) if body.has_atmosphere() and alt < body.atmosphere_height else 0.0
+	var vrel := surface_velocity()
+	var sp := vrel.length()
+	heat_flux = 0.0
+	if rho > 0.0 and sp > 200.0 and not stages.is_empty():
+		var lead := up_world().dot((vrel.mul(1.0 / sp)).to_v3())
+		var r_nose := maxf(float(stages[stages.size() - 1].diameter) * 0.5, 0.5)
+		heat_flux = 1.74e-4 * HEAT_SCALE * sqrt(rho / r_nose) * sp * sp * sp
+		if lead < -0.6:
+			var shield: bool = stages.size() == 1 and stages[0].get("parachute", false)
+			heat_lead = "shield" if shield else "bottom"
+			heat_limit = SHIELD_LIMIT if shield else HULL_LIMIT
+		elif lead > 0.6:
+			heat_lead = "nose"
+			heat_limit = HULL_LIMIT
+		else:
+			heat_lead = "side"
+			heat_limit = HULL_LIMIT
+			heat_flux *= 1.4   # broadside: the whole length takes it
+	var cool := EMISSIVITY_SIGMA * (pow(heat_temp, 4.0) - pow(280.0, 4.0))
+	heat_temp = maxf(heat_temp + (heat_flux - cool) / SKIN_CAPACITY * dt, 280.0)
+	# Char on the part that takes the heat (kept after entry).
+	var burnt := clampf((heat_temp - 650.0) / 900.0, 0.0, 1.0)
+	if burnt > 0.0 and not stages.is_empty():
+		var lead_stage: Dictionary = stages[0] if heat_lead == "nose" else stages[stages.size() - 1]
+		lead_stage["char"] = maxf(float(lead_stage.get("char", 0.0)), burnt)
+		if not lead_stage.has("char_top"):
+			lead_stage["char_top"] = heat_lead == "nose"
+	if heat_temp <= heat_limit:
+		return
+	if heat_lead == "bottom" and stages.size() > 1:
+		# The bare bottom stage fails and breaks off; the next one takes over.
+		var dropped: Dictionary = stages.pop_back()
+		heat_temp = lerpf(280.0, heat_temp, 0.55)
+		burned_off.emit(dropped)
+		staged.emit(dropped)
+		return
+	destroyed_flag = true
+	throttle = 0.0
+	var what := "капсула" if stages.size() == 1 else "ракета"
+	var how := {"nose": "носом вперёд", "side": "боком", "bottom": "без теплозащиты", "shield": "слишком круто"}
+	destroyed.emit("Перегрев при входе в атмосферу: %s сгорела (%s, %d м/с, %d K)" % [what, how.get(heat_lead, ""), int(sp), int(heat_temp)])
 
 
 func _accel(p: DVec3, v: DVec3, thrust: float, m: float) -> DVec3:
