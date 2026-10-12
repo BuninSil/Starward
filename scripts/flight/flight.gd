@@ -648,9 +648,9 @@ func _update_fx(delta: float) -> void:
 		var agl := v.altitude_above_ground(sim_time) - v.height_offset
 		if agl < 60.0:
 			var thr := v.last_thrust / maxf(v.current_thrust_max(), 1.0)
-			var k := (1.0 - agl / 60.0) * clampf(thr, 0.2, 1.0)
+			var k := (1.0 - agl / 60.0) * clampf(thr * 2.0, 0.6, 1.0)
 			var air := b.has_atmosphere()
-			_fx_acc += delta * k * ((16.0 if low else 30.0) if air else (120.0 if low else 260.0))
+			_fx_acc += delta * k * ((16.0 if low else 30.0) if air else (32.0 if low else 60.0))
 			var g := _ground_under()
 			var up := g.normalized().to_v3()
 			while _fx_acc >= 1.0:
@@ -662,12 +662,14 @@ func _update_fx(delta: float) -> void:
 					# Thick clouds rolling out along the ground, then rising.
 					var sp := randf_range(10.0, 34.0) * k
 					fx.emit(b, at, _air_velocity(b, at).add(DVec3.from_v3(d * sp + up * randf_range(1.0, 5.0))),
-						randf_range(8.0, 13.0), randf_range(6.0, 9.0), randf_range(20.0, 34.0), _dust_color(b, 0.97), 0.35)
+						randf_range(8.0, 13.0), randf_range(6.0, 9.0), randf_range(20.0, 34.0), _dust_color(b, 0.97), 0.35, false, 0.0, 0.22)
 				else:
 					# Vacuum: a low, fast sheet of dust skimming outward (Apollo landings).
-					var sp2 := randf_range(25.0, 80.0) * maxf(k, 0.4)
-					fx.emit(b, at, _air_velocity(b, at).add(DVec3.from_v3(d * sp2 + up * randf_range(0.3, 2.5))),
-						randf_range(0.7, 1.4), 1.5, randf_range(4.0, 7.0), _dust_color(b, 0.42).lightened(0.25), 0.0, true)
+					# Regolith: a thick, low cloud skimming out along the ground (as
+					# dense as in air, but it hugs the surface).
+					var sp2 := randf_range(8.0, 30.0) * maxf(k, 0.4)
+					fx.emit(b, at, _air_velocity(b, at).add(DVec3.from_v3(d * sp2 + up * randf_range(0.1, 0.8))),
+						randf_range(3.0, 5.0), randf_range(3.0, 5.0), randf_range(11.0, 18.0), _dust_color(b, 0.92).lightened(0.12), 0.35, false, 0.0, 0.3)
 	# Ascent in thick air: a column of exhaust smoke left behind the engines.
 	if v.last_thrust > 0.0 and b.has_atmosphere() and not v.destroyed_flag:
 		var dens := b.density_at(v.altitude()) / b.sea_level_density

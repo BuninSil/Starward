@@ -18,6 +18,7 @@ class P:
 	var glow := 0.0       ## emissive at birth (sparks, re-entry smoke)
 	var drag := 0.0       ## 1/s: relaxes toward the air (body rotation) velocity
 	var gravity := false
+	var lift := 0.0       ## ground cloud: raised by this fraction of its size
 
 var _ps: Array[P] = []
 var _mm: MultiMesh
@@ -65,7 +66,7 @@ func count() -> int:
 
 
 func emit(body: CelestialBody, pos: DVec3, vel: DVec3, life: float, size0: float, size1: float,
-		color: Color, drag := 0.0, gravity := false, glow := 0.0) -> void:
+		color: Color, drag := 0.0, gravity := false, glow := 0.0, lift := 0.0) -> void:
 	if _ps.size() >= MAX:
 		_ps.pop_front()
 	var p := P.new()
@@ -79,6 +80,7 @@ func emit(body: CelestialBody, pos: DVec3, vel: DVec3, life: float, size0: float
 	p.drag = drag
 	p.gravity = gravity
 	p.glow = glow
+	p.lift = lift
 	_ps.append(p)
 
 
@@ -117,10 +119,13 @@ func step(dt: float, origin: DVec3, t: float) -> void:
 		var x := p.age / p.life
 		var size := lerpf(p.size0, p.size1, 1.0 - pow(1.0 - x, 2.0))
 		var at := centre.add(p.pos).to_v3()
+		if p.lift > 0.0:
+			# Keep the growing puff standing on the ground instead of sinking in.
+			at += p.pos.normalized().to_v3() * size * p.lift
 		_mm.set_instance_transform(k, Transform3D(cb.scaled(Vector3(size, size, size)), at))
 		var a := p.color.a * smoothstep(0.0, 0.08, x) * (1.0 - smoothstep(0.55, 1.0, x))
 		_mm.set_instance_color(k, Color(p.color.r, p.color.g, p.color.b, a))
-		_mm.set_instance_custom_data(k, Color(p.glow * maxf(1.0 - x * 2.5, 0.0), float(k % 7) / 7.0, 0, 0))
+		_mm.set_instance_custom_data(k, Color(p.glow * maxf(1.0 - x * 2.5, 0.0), float(k % 7) / 7.0, 1.0 if p.lift > 0.0 else 0.0, 0))
 
 
 static var _sh: Shader
@@ -165,6 +170,8 @@ void fragment() {
 	// The engine flame lights the clouds orange from below / inside.
 	float fl = flame_power * exp(-length(v_world - flame_pos) / flame_reach) * (0.6 + 0.8 * (1.0 - top));
 	ALBEDO = v_col.rgb * light * shade * (1.0 - 0.35 * fl) + vec3(1.0, 0.5, 0.16) * (fl * 1.8 + v_cus.x * 1.5);
+	// Ground clouds: the lower edge thins out instead of a hard cut.
+	a *= mix(1.0, smoothstep(0.42, 0.12, p.y), v_cus.z);
 	ALPHA = a;
 }
 """
