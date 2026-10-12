@@ -1,0 +1,92 @@
+name: Fetch CC0 assets (one-time)
+
+# Manual: downloads CC0 asset packs that the dev container cannot reach
+# (Quaternius Ultimate Space Kit, Kenney sound packs), lists their contents
+# (glTF animations, audio files) into assets/_incoming/REPORT.md and commits
+# the candidates to the given branch for curation. Nothing goes into the game
+# until it is moved out of assets/_incoming/ and credited in CREDITS.md.
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch to commit the downloads to"
+        default: "ccr-5579ac45-n3nljq"
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+
+      - name: Download packs
+        run: |
+          set -u
+          W="$RUNNER_TEMP/dl"; mkdir -p "$W"
+          UA="Mozilla/5.0 (X11; Linux x86_64) Starward-asset-fetch"
+          scrape() {  # page url, regex for zip links, output prefix
+            curl -sSL -A "$UA" "$1" -o "$W/page.html" || { echo "page failed: $1"; return; }
+            grep -oE "$2" "$W/page.html" | sort -u | head -5 | while read -r u; do
+              case "$u" in http*) ;; /*) u="$(echo "$1" | grep -oE '^https?://[^/]+')$u" ;; esac
+              echo "download $u"
+              curl -sSL -A "$UA" "$u" -o "$W/$3_$(basename "${u%%\?*}")" || echo "failed $u"
+            done
+          }
+          scrape "https://opengameart.org/content/ultimate-space-kit-by-quaternius" 'https?://opengameart.org/sites/default/files/[^"]+\.zip' quat
+          scrape "https://kenney.nl/assets/sci-fi-sounds" '[^"]*kenney_sci-fi-sounds[^"]*\.zip' kenney
+          scrape "https://kenney.nl/assets/impact-sounds" '[^"]*kenney_impact-sounds[^"]*\.zip' kenney
+          ls -la "$W"
+
+      - name: Unpack and report
+        run: |
+          W="$RUNNER_TEMP/dl"; O="assets/_incoming"; mkdir -p "$O"
+          cd "$W"
+          for z in *.zip; do mkdir -p "x_${z%.zip}"; unzip -q -o "$z" -d "x_${z%.zip}" || echo "bad zip $z"; done
+          cd "$GITHUB_WORKSPACE"
+          python3 - "$W" "$O" <<'EOF'
+          import json, os, struct, sys, shutil
+          src, out = sys.argv[1], sys.argv[2]
+          rep = ["# Incoming CC0 assets", ""]
+          for root, _, files in os.walk(src):
+              for f in sorted(files):
+                  p = os.path.join(root, f)
+                  rel = os.path.relpath(p, src)
+                  low = f.lower()
+                  if low.endswith((".txt", ".md")) and ("licen" in low or "readme" in low):
+                      rep.append("## " + rel)
+                      rep.append("```")
+                      rep.append(open(p, errors="replace").read()[:1500])
+                      rep.append("```")
+                  if low.endswith(".glb"):
+                      try:
+                          d = open(p, "rb").read()
+                          n = struct.unpack("<I", d[12:16])[0]
+                          j = json.loads(d[20:20 + n])
+                          anims = [a.get("name", "?") for a in j.get("animations", [])]
+                          rep.append(f"- {rel} ({len(d)//1024} KB): skins={len(j.get('skins', []))} anims={anims}")
+                          if any(k in low for k in ("astronaut", "character", "human", "suit")):
+                              shutil.copy(p, os.path.join(out, f))
+                      except Exception as e:
+                          rep.append(f"- {rel}: parse error {e}")
+                  if low.endswith(".ogg"):
+                      rep.append(f"- {rel} ({os.path.getsize(p)//1024} KB)")
+                      dst = os.path.join(out, "sounds", os.path.basename(os.path.dirname(p)) + "__" + f)
+                      os.makedirs(os.path.dirname(dst), exist_ok=True)
+                      shutil.copy(p, dst)
+          open(os.path.join(out, "REPORT.md"), "w").write("\n".join(rep) + "\n")
+          EOF
+          du -sh "$O"; head -c 6000 "$O/REPORT.md"
+
+      - name: Commit
+        run: |
+          git config user.name "starward-bot"
+          git config user.email "starward-bot@users.noreply.github.com"
+          git add assets/_incoming
+          git commit -m "Incoming CC0 assets for curation [skip ci]" || exit 0
+          git pull --rebase origin "${{ github.event.inputs.branch }}"
+          git push origin HEAD:"${{ github.event.inputs.branch }}"
