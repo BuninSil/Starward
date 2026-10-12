@@ -4,6 +4,7 @@ extends Node3D
 
 const PlanetView := preload("res://scripts/flight/planet_view.gd")
 const RocketView := preload("res://scripts/flight/rocket_view.gd")
+const SoundFxScript := preload("res://scripts/flight/sound_fx.gd")
 const TrajectoryView := preload("res://scripts/flight/trajectory_view.gd")
 const HudScript := preload("res://scripts/flight/flight_hud.gd")
 const SKY_SHADER := preload("res://shaders/starfield.gdshader")
@@ -43,6 +44,9 @@ var map_mode := false
 
 var planets := {}          ## CelestialBody -> PlanetView
 var rocket: Node3D
+var sfx: Node
+var _prev_ang_vel := Vector3.ZERO
+var _was_landed := true
 var traj_view: Node3D
 var map_focus: CelestialBody
 var trajectory: Array[Dictionary] = []
@@ -94,6 +98,8 @@ func _ready() -> void:
 		planets[b] = pv
 	hd_tiles = HdTilesScript.new()
 	add_child(hd_tiles)
+	sfx = SoundFxScript.new()
+	add_child(sfx)
 	hd_tiles.tiles_ready.connect(func(b: CelestialBody, tex: Texture2D, rect: Rect2) -> void:
 		(planets[b] as Node3D).call("set_hd", tex, rect))
 	rocket = RocketView.new()
@@ -377,6 +383,7 @@ func _on_staged(_dropped: Dictionary) -> void:
 		"life": 25.0,
 	})
 	Log.info("Flight: stage separated, %d stage(s) left" % vessel.stages.size())
+	sfx.event("staging")
 
 
 func engage_autopilot(altitude: float) -> void:
@@ -419,6 +426,7 @@ func _on_soi_changed(from: CelestialBody, to: CelestialBody) -> void:
 
 func _on_destroyed(reason: String) -> void:
 	Log.warn("Flight: vessel destroyed: " + reason)
+	sfx.event("crash")
 	rocket.visible = false
 	set_warp(0)
 	hud.show_destroyed(reason)
@@ -550,6 +558,7 @@ func _process(delta: float) -> void:
 		(planets[b] as Node3D).call("update_view", rel, sim_time, 1.0 if map_mode else _view_scale(rel.length(), b.radius))
 	rocket.basis = Basis(vessel.attitude)
 	rocket.update_visual(delta)
+	_update_sound(delta)
 	for d in _debris:
 		var n: Node3D = d.node
 		var dabs := (d.body as CelestialBody).absolute_position(sim_time).add(d.pos)
@@ -699,6 +708,7 @@ func start_eva() -> void:
 	vessel.sas = true
 	vessel.hold_mode = ""
 	rocket.set_hatch_open(true)
+	sfx.event("hatch_open")
 	astronaut = AstronautScript.new()
 	add_child(astronaut)
 	if vessel.landed:
@@ -823,6 +833,7 @@ func end_eva(forced_reason := "") -> void:
 	eva_hud = null
 	eva_mode = false
 	rocket.set_hatch_open(false)
+	sfx.event("hatch_close")
 	hud.visible = true
 	if forced_reason != "":
 		Log.warn("EVA: " + forced_reason)
@@ -1026,6 +1037,29 @@ func _update_sky() -> void:
 	if shadows != sun.shadow_enabled:
 		sun.shadow_enabled = shadows
 	_update_reflection_env(up, sun_elev, day, agl)
+
+
+func _update_sound(delta: float) -> void:
+	var alt := vessel.altitude()
+	var thr := vessel.last_thrust / maxf(vessel.current_thrust_max(), 1.0) if vessel.last_thrust > 0.0 else 0.0
+	var pressure := clampf(vessel.body.pressure_at(alt), 0.0, 1.0) if vessel.body.has_atmosphere() else 0.0
+	var sv := vessel.surface_velocity().length()
+	var q := 0.5 * vessel.body.density_at(alt) * sv * sv if vessel.body.has_atmosphere() else 0.0
+	var turning := not vessel.landed and (vessel.ang_vel - _prev_ang_vel).length() / maxf(delta, 1e-4) > 0.03
+	_prev_ang_vel = vessel.ang_vel
+	if vessel.landed and not _was_landed and not vessel.destroyed_flag:
+		sfx.event("touchdown")
+	_was_landed = vessel.landed
+	var walk := 0.0
+	var ground := false
+	var jet := false
+	if eva_mode and astronaut:
+		var up: Vector3 = astronaut.up_dir
+		var v: Vector3 = astronaut.linear_velocity
+		walk = (v - up * v.dot(up)).length()
+		ground = astronaut.on_ground
+		jet = (astronaut.last_thrust as Vector3).length() > 0.01
+	sfx.update(delta, thr if not vessel.destroyed_flag else 0.0, pressure, q, turning, eva_mode, walk, ground, jet)
 
 
 ## Global shader environment for metal reflections (hull.gdshader): sky colour
