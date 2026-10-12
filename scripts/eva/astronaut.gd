@@ -160,6 +160,8 @@ func set_surface_mode(on: bool, up: Vector3, g: float, air: bool) -> void:
 	surface_mode = on
 	up_dir = up
 	gravity = g
+	if model:
+		model.low_gravity = g < 3.0
 	breathable = air
 	axis_lock_angular_x = on
 	axis_lock_angular_y = on
