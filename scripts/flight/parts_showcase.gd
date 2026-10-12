@@ -16,6 +16,7 @@ var _dist := 8.0
 var _label: Label
 var _views: Array = []
 var _drag := false
+static var return_scene := "res://scenes/flight.tscn"   ## where «Назад» goes
 var _root_body: CelestialBody
 
 
@@ -145,7 +146,7 @@ func _build_ui() -> void:
 
 
 func _back() -> void:
-	get_tree().change_scene_to_file("res://scenes/flight.tscn")
+	get_tree().change_scene_to_file(return_scene)
 
 
 func _notification(what: int) -> void:

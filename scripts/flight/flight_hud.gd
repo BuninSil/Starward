@@ -421,6 +421,7 @@ func _build_debug_menu() -> void:
 	grid.add_child(gfx_btn)
 	grid.add_child(_button("Время ×1000", func() -> void: flight.set_warp(flight.WARPS.find(1000))))
 	grid.add_child(_button("Витрина деталей", func() -> void:
+		preload("res://scripts/flight/parts_showcase.gd").return_scene = "res://scenes/flight.tscn"
 		get_tree().change_scene_to_file("res://scenes/parts_showcase.tscn")))
 	grid.add_child(_button("Консоль", func() -> void: _console.visible = not _console.visible))
 	grid.add_child(_button("Скопировать лог", Log.copy_to_clipboard))
