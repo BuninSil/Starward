@@ -463,6 +463,10 @@ func _build_ascent_stage(node: Node3D, s: Dictionary, upper_d: float) -> void:
 	var dish_p := PackedVector2Array([Vector2(0.0, -0.02), Vector2(0.05, 0.0), Vector2(0.18, 0.05), Vector2(0.3, 0.13), Vector2(0.3, 0.13), Vector2(0.28, 0.14)])
 	var dm := _mesh(node, _lathe(dish_p, 20), _skin(Color(0.78, 0.78, 0.77), {"metal": 0.4, "rough": 0.6, "gloss": 0.1}), boom_b)
 	dm.rotation = Vector3(-0.5, 0.0, 0.4)
+	# Back of the dish (open surface: draw both sides).
+	var db := _mesh(node, dm.mesh, _dark_inside(), boom_b)
+	db.rotation = dm.rotation
+	(db.material_override as StandardMaterial3D).albedo_color = Color(0.7, 0.7, 0.69)
 	_rcs_quads(node, r * 0.98, length * 0.58, 4)
 	node.set_meta("exhausts", [_engine_vec(node, Vector3(0, -0.5, 0), 0.26, 0.5)] as Array[Vector4])
 
@@ -572,6 +576,10 @@ func _build_capsule(node: Node3D, s: Dictionary) -> void:
 	node.add_child(hatch_pivot)
 	var door := _mesh(hatch_pivot, door_mesh, door_mat)
 	door.transform = hinge.affine_inverse()
+	# Inner face of the door (seen when it is swung open).
+	var door_in := _mesh(hatch_pivot, door_mesh, _dark_inside())
+	door_in.transform = door.transform
+	(door_in.material_override as StandardMaterial3D).albedo_color = Color(0.55, 0.56, 0.58)
 	_hatch_open = 0.0
 	_hatch_target = 0.0
 

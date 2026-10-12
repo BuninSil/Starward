@@ -133,7 +133,8 @@ vec4 crater_layer(vec2 uv, float cell, float fill, float seed, vec2 sun_h, float
 
 void fragment() {
 	vec3 col = texture(albedo_tex, UV).rgb;
-	if (hd_rect.z > 0.0) {
+	float view_d = length(VERTEX);
+	if (hd_rect.z > 0.0 && view_d < 8000.0) {
 		float du = UV.x - hd_rect.x;
 		du -= floor(du);                       // wrap across the date line
 		vec2 hu = vec2(du / hd_rect.z, (UV.y - hd_rect.y) / hd_rect.w);
@@ -146,7 +147,10 @@ void fragment() {
 			// own brightness (tile / its local mean from a small mip level).
 			vec3 hd = texture(hd_tex, hu).rgb;
 			vec3 hd_mean = textureLod(hd_tex, hu, 6.0).rgb;
-			col = mix(col, col * clamp(hd / max(hd_mean, vec3(0.01)), vec3(0.0), vec3(3.0)), edge);
+			// Only near the camera: from far away and at grazing angles the
+			// ratio aliases into streaks.
+			edge *= 1.0 - smoothstep(3000.0, 8000.0, view_d);
+			col = mix(col, col * clamp(hd / max(hd_mean, vec3(0.02)), vec3(0.5), vec3(1.6)), edge);
 		}
 	}
 	if (albedo_target > 0.0) {
@@ -160,8 +164,8 @@ void fragment() {
 	float dist = length(VERTEX);
 	float shade = 0.0;
 
-	if (use_detail && dist < 20000.0) {
-		float fade_far = 1.0 - smoothstep(6000.0, 20000.0, dist);
+	if (use_detail && dist < 8000.0) {
+		float fade_far = 1.0 - smoothstep(3000.0, 8000.0, dist);
 		float fade_mid = 1.0 - smoothstep(600.0, 3000.0, dist);
 		float fade_near = 1.0 - smoothstep(25.0, 120.0, dist);
 		vec2 ddx = dFdx(UV2);
@@ -192,7 +196,7 @@ void fragment() {
 		vec2 near_off_a = vec2(0.0);
 		vec2 near_off_b = vec2(0.0);
 		float near_mix = 0.0;
-		if (detail_level > 0 && dist < 3000.0) {
+		if (detail_level > 0 && dist < 2500.0) {
 			// Mid-scale normals, rotated back to the patch axes.
 			vec4 mn1 = textureGrad(ground_pack_normal, umid, mdx, mdy) * 2.0 - 1.0;
 			vec4 mn2 = textureGrad(ground_pack_normal2, umid, mdx, mdy) * 2.0 - 1.0;
@@ -288,9 +292,9 @@ void fragment() {
 					* (1.0 - smoothstep(15.0, 30.0, dist));
 				cr = vec4(transpose(ra) * c1.xy, c1.zw);
 			}
-			if (dist < 90.0) {
+			if (dist < 60.0) {
 				vec4 c2 = crater_layer(rb * UV2, 5.0, 0.22 * crater_decals, 7.7, rb * sun_h, tan_e)
-					* (1.0 - smoothstep(50.0, 90.0, dist));
+					* (1.0 - smoothstep(35.0, 60.0, dist));
 				cr = vec4(cr.xy + transpose(rb) * c2.xy, max(cr.z, c2.z), cr.w + c2.w);
 			}
 			g += cr.xy;
@@ -300,14 +304,14 @@ void fragment() {
 		bn.xy += vec2(-g.x, g.y) * 2.0;
 
 		// Micro shadows of grains / pebbles / rock ridges near the camera.
-		if (detail_level > 0 && dist < 60.0 && tan_e > 0.0) {
+		if (detail_level > 0 && dist < 25.0 && tan_e > 0.0) {
 			vec2 un = UV2 / 3.2 + sun_h * (0.05 / 3.2);
 			vec4 s = mix(textureGrad(ground_pack, un + near_off_a, ddx / 3.2, ddy / 3.2),
 				textureGrad(ground_pack, un + near_off_b, ddx / 3.2, ddy / 3.2), near_mix);
 			vec4 hb0 = vec4(hf, hs, hg, hr);
 			vec4 hb1 = vec4(s.r * 0.4 + s.b * 0.6, s.b, s.a, s.g);
 			float dh = dot(hb1 - hb0, w);
-			shade = max(shade, smoothstep(0.02, 0.12, dh - 0.05 * tan_e) * (1.0 - smoothstep(30.0, 60.0, dist)));
+			shade = max(shade, smoothstep(0.02, 0.12, dh - 0.05 * tan_e) * (1.0 - smoothstep(12.0, 25.0, dist)));
 		}
 		nm = normalize(bn) * 0.5 + 0.5;
 		// Waves on water: two scrolling layers of the fine normals.

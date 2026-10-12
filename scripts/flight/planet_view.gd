@@ -635,27 +635,27 @@ func surface_style() -> Dictionary:
 		"craters": 0.0, "macro_amp": 0.3, "macro_tint": Color(1.0, 1.0, 1.0), "pebbles": 0}
 	match body.id:
 		"moon":
-			st.merge({"rocks": 1700, "rock_max": 2.4, "rock_color": Color(0.29, 0.285, 0.28), "dust_color": Color(0.39, 0.38, 0.37),
+			st.merge({"rocks": 1000, "rock_max": 2.4, "rock_color": Color(0.29, 0.285, 0.28), "dust_color": Color(0.39, 0.38, 0.37),
 				"albedo": 0.12, "map_mean": 0.3226, "ground": Color(0.39, 0.385, 0.378), "recolor": 0.75,
 				"mats": Vector4(1.0, 0.6, 0.55, 0.5), "rock_tint": Color(0.86, 0.86, 0.86), "gravel_tint": Color(1.0, 1.0, 1.0),
-				"craters": 1.0, "macro_amp": 0.35, "macro_tint": Color(1.03, 1.0, 0.96), "pebbles": 2600}, true)
+				"craters": 1.0, "macro_amp": 0.35, "macro_tint": Color(1.03, 1.0, 0.96), "pebbles": 1000}, true)
 		"mars":
-			st.merge({"rocks": 1600, "rock_max": 2.6, "rock_color": Color(0.36, 0.27, 0.22), "dust_color": Color(0.7, 0.48, 0.3),
+			st.merge({"rocks": 1000, "rock_max": 2.6, "rock_color": Color(0.36, 0.27, 0.22), "dust_color": Color(0.7, 0.48, 0.3),
 				"albedo": 0.22, "map_mean": 0.1614, "ground": Color(0.64, 0.46, 0.33), "recolor": 0.8, "kind": 1,
 				"mats": Vector4(1.0, 0.85, 0.5, 0.45), "rock_tint": Color(0.82, 0.78, 0.76), "gravel_tint": Color(0.78, 0.74, 0.74),
-				"craters": 0.25, "macro_amp": 0.3, "macro_tint": Color(1.05, 0.97, 0.9), "pebbles": 2600}, true)
+				"craters": 0.25, "macro_amp": 0.3, "macro_tint": Color(1.05, 0.97, 0.9), "pebbles": 1000}, true)
 		"mercury":
-			st.merge({"rocks": 1200, "rock_max": 2.4, "rock_color": Color(0.3, 0.29, 0.28), "dust_color": Color(0.4, 0.385, 0.37),
+			st.merge({"rocks": 800, "rock_max": 2.4, "rock_color": Color(0.3, 0.29, 0.28), "dust_color": Color(0.4, 0.385, 0.37),
 				"albedo": 0.12, "map_mean": 0.139, "ground": Color(0.4, 0.385, 0.365), "recolor": 0.6,
-				"mats": Vector4(1.0, 0.5, 0.5, 0.5), "craters": 1.0, "pebbles": 2000}, true)
+				"mats": Vector4(1.0, 0.5, 0.5, 0.5), "craters": 1.0, "pebbles": 900}, true)
 		"venus":
 			st.merge({"rocks": 900, "rock_max": 2.0, "rock_color": Color(0.33, 0.26, 0.2), "dust_color": Color(0.5, 0.39, 0.28),
 				"albedo": 0.18, "map_mean": 0.1346, "ground": Color(0.55, 0.42, 0.3), "recolor": 0.4,
-				"mats": Vector4(1.0, 0.5, 0.4, 0.6), "pebbles": 1500}, true)
+				"mats": Vector4(1.0, 0.5, 0.4, 0.6), "pebbles": 700}, true)
 		"phobos", "deimos":
 			st.merge({"rocks": 700, "rock_max": 1.6, "rock_color": Color(0.24, 0.23, 0.22), "dust_color": Color(0.3, 0.29, 0.28),
 				"albedo": 0.07, "map_mean": 0.1198, "ground": Color(0.3, 0.29, 0.28), "recolor": 0.6,
-				"mats": Vector4(1.0, 0.5, 0.5, 0.4), "craters": 1.0, "pebbles": 1500}, true)
+				"mats": Vector4(1.0, 0.5, 0.5, 0.4), "craters": 1.0, "pebbles": 700}, true)
 		"earth":
 			st.merge({"rocks": 250, "rock_max": 1.2, "rock_color": Color(0.46, 0.44, 0.41), "dust_color": Color(0.5, 0.48, 0.44),
 				"mats": Vector4(1.0, 0.3, 0.2, 0.0), "pebbles": 0}, true)
@@ -683,9 +683,9 @@ func _apply_patch(res: Dictionary) -> void:
 	if _patch_material == null:
 		_patch_material = _make_patch_material()
 	mi.material_override = _patch_material
-	# Ground casts sun shadows (crater walls, hills) on the high preset.
-	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if Graphics.quality == Graphics.HIGH \
-		else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# The ground only receives shadows (casting it into the shadow map is too
+	# costly on phones; crater shading comes from the shader).
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_site.add_child(mi)
 	_add_scatter(res.scatter)
 	if not res.with_pad:
