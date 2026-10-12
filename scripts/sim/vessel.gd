@@ -343,6 +343,22 @@ func _step_attitude(dt: float) -> void:
 			accel = desired.limit_length(SAS_ACCEL)
 	elif sas:
 		accel = (-ang_vel / maxf(dt, 1e-4)).limit_length(SAS_ACCEL)
+	# Hanging under an open parachute: the canopy pulls the craft into line
+	# with the airflow (nose against it) and damps the swinging; the attitude
+	# controls are far too weak to fight it.
+	if chute_deployed and not landed and body.has_atmosphere():
+		var vrel := surface_velocity()
+		var sp := vrel.length()
+		if sp > 1.0:
+			var target := vrel.mul(-1.0 / sp).to_v3()
+			var up := up_world()
+			var axis := up.cross(target)
+			var ang := up.angle_to(target)
+			if axis.length() < 1e-6:
+				axis = attitude * Vector3.RIGHT
+			var q := clampf(0.5 * body.density_at(altitude()) * sp * sp / 60.0, 0.6, 1.0)
+			var restore := (axis.normalized() * ang * 4.0 - ang_vel * 3.0) * q
+			accel = accel * 0.15 + restore.limit_length(SAS_ACCEL * 3.0)
 	ang_vel += accel * dt
 	if landed:
 		ang_vel = Vector3.ZERO

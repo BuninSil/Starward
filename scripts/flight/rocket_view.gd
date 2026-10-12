@@ -707,7 +707,8 @@ var _canopy: MeshInstance3D
 var _chute_mat: ShaderMaterial
 var _chute_lines: Array[MeshInstance3D] = []
 var _chute_collapse := 0.0
-var _chute_wind := 0.0   ## yaw the canopy falls towards
+var _chute_wind := 0.0
+var _chute_flow := Quaternion.IDENTITY   ## yaw the canopy falls towards
 
 
 func _build_chute() -> void:
@@ -776,7 +777,20 @@ func _update_chute(delta: float, attach_y: float) -> void:
 		_chute_wind = randf() * TAU
 	_chute_collapse = c
 	_chute.position.y = attach_y
-	_chute.rotation.y = _chute_wind
+	# In the air the canopy streams behind along the airflow, whatever the
+	# capsule does; on the ground it falls over relative to the upright ship.
+	var flow := Basis()
+	var vrel := vessel.surface_velocity().to_v3()
+	if not vessel.landed and vrel.length() > 0.5:
+		var up_local := (global_transform.basis.inverse() * -vrel).normalized()
+		var axis := Vector3.UP.cross(up_local)
+		if axis.length() > 1e-4:
+			flow = Basis(axis.normalized(), Vector3.UP.angle_to(up_local))
+		elif up_local.y < 0.0:
+			flow = Basis(Vector3.RIGHT, PI)
+	var target_q := flow.get_rotation_quaternion() if c == 0.0 else Quaternion.IDENTITY
+	_chute_flow = _chute_flow.slerp(target_q, clampf(delta * 3.0, 0.0, 1.0))
+	_chute.basis = Basis(_chute_flow) * Basis(Vector3.UP, _chute_wind)
 	# 0..0.6: deflates and tips over; 0.6..1: settles flat on the ground.
 	var tip := smoothstep(0.0, 0.7, c)
 	var settle := smoothstep(0.45, 1.0, c)

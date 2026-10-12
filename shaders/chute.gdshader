@@ -28,9 +28,9 @@ void vertex() {
 }
 
 void fragment() {
-	vec3 n = FRONT_FACING ? NORMAL : -NORMAL;
-	NORMAL = n;
-	ALBEDO = COLOR.rgb;
+	// Inside of the canopy: thin nylon glows with the light coming through it,
+	// so light it like the outside (sun side) instead of a black hollow.
+	ALBEDO = FRONT_FACING ? COLOR.rgb : COLOR.rgb * 0.8;
 	ROUGHNESS = 0.82;
 	SPECULAR = 0.25;
 	// Thin nylon: sunlight shows through from behind.
