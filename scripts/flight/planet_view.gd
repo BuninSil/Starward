@@ -692,32 +692,9 @@ func _apply_patch(res: Dictionary) -> void:
 		return
 	var h0: float = res.h0
 
-	# Concrete pad, sitting on the flattened terrain.
-	var pad := MeshInstance3D.new()
-	var pm := CylinderMesh.new()
-	pm.top_radius = PAD_RADIUS
-	pm.bottom_radius = PAD_RADIUS + 1.0
-	pm.height = 1.0
-	pm.radial_segments = 48
-	pad.mesh = pm
-	var pmat := StandardMaterial3D.new()
-	pmat.albedo_color = Color(0.55, 0.55, 0.55)
-	pmat.roughness = 0.95
-	pad.material_override = pmat
-	pad.position = Vector3(0.0, h0 - 0.5, 0.0)
-	_site.add_child(pad)
-
-	# Launch tower next to the rocket.
-	var tower := MeshInstance3D.new()
-	var tm := BoxMesh.new()
-	tm.size = Vector3(2.0, 20.0, 2.0)
-	tower.mesh = tm
-	var tmat := StandardMaterial3D.new()
-	tmat.albedo_color = Color(0.7, 0.25, 0.15)
-	tmat.roughness = 0.7
-	tower.material_override = tmat
-	tower.position = Vector3(5.0, h0 + 10.0, 0.0)
-	_site.add_child(tower)
+	# Launch complex on the flattened terrain.
+	_ground_textures()
+	LaunchPad.build(_site, PAD_RADIUS, h0, _ground_pack)
 
 
 var _patch_material: Material = null

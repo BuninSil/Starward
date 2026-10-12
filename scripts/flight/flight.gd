@@ -162,9 +162,12 @@ func _build_environment() -> void:
 	sun.light_energy = 1.5
 	sun.shadow_enabled = false
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
-	sun.directional_shadow_max_distance = 300.0
-	sun.shadow_bias = 0.05
-	sun.shadow_normal_bias = 1.5
+	# Short range, so the near split is sharp (rocket, lander, rocks around).
+	sun.directional_shadow_max_distance = 80.0
+	sun.directional_shadow_split_1 = 0.2
+	sun.directional_shadow_blend_splits = true
+	sun.shadow_bias = 0.03
+	sun.shadow_normal_bias = 2.2
 	add_child(sun)
 	_update_sun_light()
 
@@ -999,7 +1002,7 @@ func _update_sky() -> void:
 		env.fog_density = haze
 		env.fog_sky_affect = 0.0
 	# Daytime ambient: the sky's own colour (blue on Earth, dusty on Mars).
-	var amb_day: Color = (sky[0] as Color).lerp(sky[1], 0.5) * 0.55
+	var amb_day: Color = (sky[0] as Color).lerp(sky[1], 0.5).lerp(Color(0.6, 0.6, 0.6), 0.45) * 0.55
 	var amb := Color(0.06, 0.07, 0.1).lerp(amb_day, day)
 	var agl := vessel.altitude_above_ground(sim_time)
 	var near := 1.0 - smoothstep(2000.0, 40_000.0, agl)
@@ -1020,6 +1023,30 @@ func _update_sky() -> void:
 	var shadows := Graphics.quality == Graphics.HIGH and agl < 3000.0 and not map_mode
 	if shadows != sun.shadow_enabled:
 		sun.shadow_enabled = shadows
+	_update_reflection_env(up, sun_elev, day, agl)
+
+
+## Global shader environment for metal reflections (hull.gdshader): sky colour
+## above, sunlit ground below, local up.
+func _update_reflection_env(up: Vector3, sun_elev: float, day: float, agl: float) -> void:
+	var sky_lin := Vector3(0.004, 0.005, 0.008)
+	if body.has_atmosphere():
+		var sky: Array = SKY_COLORS.get(body.id, SKY_COLORS["earth"])
+		var c := ((sky[0] as Color).lerp(sky[1], 0.4)).srgb_to_linear()
+		sky_lin = sky_lin.lerp(Vector3(c.r, c.g, c.b) * 0.9, day)
+	var g := Color(0.35, 0.33, 0.29)
+	var pv = planets.get(body)
+	if pv != null and pv.has_method("surface_style"):
+		var st: Dictionary = pv.surface_style()
+		if float(st.albedo) > 0.0:
+			g = st.ground
+	var gl := g.srgb_to_linear()
+	# Lit ground seen from close by; from orbit the planet fills less of the view.
+	var near := 1.0 - smoothstep(5000.0, 200_000.0, agl)
+	var lit := sun.light_energy * clampf(sun_elev + 0.15, 0.0, 1.0) * lerpf(0.35, 1.0, near)
+	RenderingServer.global_shader_parameter_set("env_sky", sky_lin)
+	RenderingServer.global_shader_parameter_set("env_ground", Vector3(gl.r, gl.g, gl.b) * lit * 0.8 + sky_lin * 0.3)
+	RenderingServer.global_shader_parameter_set("env_up", up)
 
 
 func _update_flight_camera() -> void:

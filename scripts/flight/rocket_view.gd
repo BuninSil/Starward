@@ -1,15 +1,41 @@
 extends Node3D
-## Procedural rocket model built from primitives, one child per stage, stacked
-## along +Y with the origin at the bottom of the lowest stage.
+## Procedural rocket model in a clean "SFS-like" style, one child per stage,
+## stacked along +Y with the origin at the bottom of the lowest stage.
+## Parts are revolved profiles with bevels (smooth normals), painted by
+## hull.gdshader (bands, seams, windows, hatch outline, metal / foil); windows
+## and the hatch opening are painted, never separate overlapping boxes, and
+## adjacent surfaces only touch at their edges (no z-fighting). The hatch door
+## is a cut piece of the capsule hull on a hinge.
+
+const HULL_SHADER := preload("res://shaders/hull.gdshader")
+const EXHAUST_SHADER := preload("res://shaders/exhaust.gdshader")
+
+const WHITE := Color(0.92, 0.92, 0.9)
+const LIGHT_GREY := Color(0.72, 0.73, 0.74)
+const DARK_GREY := Color(0.2, 0.2, 0.21)
+const ORANGE := Color(0.95, 0.42, 0.08)
+const BLACK := Color(0.04, 0.04, 0.045)
 
 var vessel: Vessel
 var _stage_nodes: Array[Node3D] = []
-var _flame: MeshInstance3D
-var _flame_mat: StandardMaterial3D
+var _flames: Array[MeshInstance3D] = []
+var _flame_mat: ShaderMaterial
 var _chute: Node3D
+var _bell_mats: Array[ShaderMaterial] = []
+var _capsule_mat: ShaderMaterial
+## Hinged hatch (rotates about its local Y axis = the hinge line).
+var hatch_pivot: Node3D
+var _hatch_basis := Basis()
+var _hatch_open := 0.0
+var _hatch_target := 0.0
 ## Ship collision for EVA (follows the rocket node, pushes the astronaut).
 var collider: AnimatableBody3D
 const HATCH_HEIGHT := 0.35   ## fraction of the capsule height
+const HATCH_U := 0.25        ## +Z side (lathe angle = u * TAU, x = cos, z = sin)
+const HATCH_DU := 0.11       ## hatch width as a fraction of the circumference
+const HATCH_DV := 0.8        ## hatch height, metres
+
+static var _noise: NoiseTexture2D = null
 
 
 func build(v: Vessel) -> void:
@@ -17,6 +43,9 @@ func build(v: Vessel) -> void:
 	for c in get_children():
 		c.queue_free()
 	_stage_nodes.clear()
+	_flames.clear()
+	_bell_mats.clear()
+	hatch_pivot = null
 	var y := 0.0
 	# Bottom to top.
 	for i in range(v.stages.size() - 1, -1, -1):
@@ -26,131 +55,193 @@ func build(v: Vessel) -> void:
 		node.position.y = y
 		add_child(node)
 		_stage_nodes.push_front(node)
-		if i == 0:
-			_build_capsule(node, s)
-		else:
-			_build_tank_stage(node, s, i == v.stages.size() - 1)
+		var upper_d: float = float(v.stages[i - 1].diameter) if i > 0 else 0.0
+		build_stage(node, s, i, v.stages.size(), upper_d, _shroud_height(v, i))
 		y += s.length
-	_build_flame()
+	_build_flames()
 	_build_chute()
 	_build_collider()
 	_update_legs()
 
 
-func _material(color: Color, metallic := 0.3, rough := 0.5) -> StandardMaterial3D:
-	var m := StandardMaterial3D.new()
-	m.albedo_color = color
-	# Environment reflections are off (mobile): real metals would render black,
-	# so keep them mostly dielectric and let roughness/specular do the shine.
-	m.metallic = minf(metallic, 0.3)
-	m.metallic_specular = 0.6
-	m.roughness = maxf(rough, 0.35)
+## Builds one stage's geometry into `node` (also used by the parts showcase).
+func build_stage(node: Node3D, s: Dictionary, index: int, count: int, upper_d: float, shroud_h := 0.0) -> void:
+	if index == 0:
+		_build_capsule(node, s)
+	elif s.get("legs", false):
+		_build_descent_stage(node, s)
+	elif s.name == "Взлётная ступень":
+		_build_ascent_stage(node, s, upper_d)
+	else:
+		_build_tank_stage(node, s, index == count - 1, upper_d)
+	if shroud_h > 0.0:
+		_build_shroud(node, s, shroud_h)
+
+
+## Height of the lander stages sitting right above stage i (they ride inside an
+## adapter shroud on this stage, like the Saturn V SLA), 0 if none.
+static func _shroud_height(v: Vessel, i: int) -> float:
+	if i < 2 or not v.stages[i - 1].get("legs", false):
+		return 0.0
+	var h := 0.0
+	for k in range(i - 1, 0, -1):
+		h += float(v.stages[k].length)
+	return h
+
+
+## Adapter shroud on top of a stage enclosing the lander: panels with seams,
+## tapering to the capsule; goes away with this stage at separation.
+func _build_shroud(node: Node3D, s: Dictionary, h: float) -> void:
+	var r := float(s.diameter) * 0.5
+	var y0 := float(s.length)
+	var r_top := 0.95
+	var rb := r + 0.25
+	var prof := PackedVector2Array([Vector2(r * 0.99, y0 - 0.05), Vector2(rb, y0 + 0.4)])
+	for k in 6:
+		var t := float(k + 1) / 6.0
+		prof.append(Vector2(lerpf(rb, r_top, t * t), y0 + 0.4 + (h - 0.4) * t))
+	prof.append(Vector2(r_top, y0 + h))
+	prof.append(Vector2(r_top, y0 + h))
+	var shell := _skin(WHITE, {"panel": 0.0, "stringers": 4.0, "rough": 0.38, "gloss": 0.25,
+		"band1": Vector4(y0 + h - 0.35, y0 + h, 1, 0), "band": LIGHT_GREY})
+	shell.set_shader_parameter("pattern", 0)
+	var mi := _mesh(node, _lathe(prof, 64), shell)
+	mi.name = "Shroud"
+	var inner := MeshInstance3D.new()
+	inner.mesh = mi.mesh
+	inner.material_override = _dark_inside()
+	node.add_child(inner)
+
+
+# --- Materials ------------------------------------------------------------------
+
+static func _noise_tex() -> NoiseTexture2D:
+	if _noise == null:
+		var n := FastNoiseLite.new()
+		n.seed = 77
+		n.noise_type = FastNoiseLite.TYPE_SIMPLEX
+		n.frequency = 0.05
+		n.fractal_octaves = 4
+		_noise = NoiseTexture2D.new()
+		_noise.width = 256
+		_noise.height = 256
+		_noise.seamless = true
+		_noise.noise = n
+	return _noise
+
+
+## Painted / metal skin. Colours are sRGB here (converted to linear).
+func _skin(color: Color, opts := {}) -> ShaderMaterial:
+	var m := ShaderMaterial.new()
+	m.shader = HULL_SHADER
+	m.set_shader_parameter("base_color", color.srgb_to_linear())
+	m.set_shader_parameter("band_color", (opts.get("band", ORANGE) as Color).srgb_to_linear())
+	m.set_shader_parameter("alt_color", (opts.get("alt", BLACK) as Color).srgb_to_linear())
+	m.set_shader_parameter("band1", opts.get("band1", Vector4.ZERO))
+	m.set_shader_parameter("band2", opts.get("band2", Vector4.ZERO))
+	m.set_shader_parameter("pattern", opts.get("pattern", 0))
+	m.set_shader_parameter("panel_h", opts.get("panel", 0.0))
+	m.set_shader_parameter("stringers", opts.get("stringers", 0.0))
+	m.set_shader_parameter("corrugation", opts.get("corrugation", 0.0))
+	m.set_shader_parameter("rough", opts.get("rough", 0.42))
+	m.set_shader_parameter("metal", opts.get("metal", 0.0))
+	m.set_shader_parameter("foil", opts.get("foil", 0.0))
+	m.set_shader_parameter("gloss", opts.get("gloss", 0.22))
+	m.set_shader_parameter("soot", opts.get("soot", 0.0))
+	m.set_shader_parameter("noise_tex", _noise_tex())
 	return m
 
 
-func _build_tank_stage(node: Node3D, s: Dictionary, bottom: bool) -> void:
-	var d: float = s.diameter
-	var length: float = s.length
-	var engine_len := 1.2 if bottom else 0.9
-	var base := 0.0
-	if s.get("legs", false):
-		base = 0.6           # ground clearance under the bell, legs reach y = 0
-		engine_len = 0.7
-		_build_legs(node, s, base)
-	# Engine bell
-	var bell := MeshInstance3D.new()
-	var bm := CylinderMesh.new()
-	bm.top_radius = d * 0.18
-	bm.bottom_radius = d * 0.32
-	bm.height = engine_len
-	bm.radial_segments = 20
-	bell.mesh = bm
-	bell.material_override = _material(Color(0.25, 0.25, 0.28), 0.8, 0.35)
-	bell.position.y = base + engine_len * 0.5
-	node.add_child(bell)
-	# Tank
-	var tank := MeshInstance3D.new()
-	var tm := CylinderMesh.new()
-	tm.top_radius = d * 0.5
-	tm.bottom_radius = d * 0.5
-	tm.height = length - engine_len - base
-	tm.radial_segments = 32 if not s.get("legs", false) else 8
-	tank.mesh = tm
-	var gold: bool = s.get("legs", false) or s.name == "Взлётная ступень"
-	tank.material_override = _material(Color(0.86, 0.68, 0.3), 0.25, 0.45) if gold else _material(Color(0.92, 0.92, 0.9), 0.1, 0.6)
-	tank.position.y = base + engine_len + tm.height * 0.5
-	node.add_child(tank)
-	# Dark band = decoupler at the top of the stage
-	var band := MeshInstance3D.new()
-	var dm := CylinderMesh.new()
-	dm.top_radius = d * 0.5 + 0.02
-	dm.bottom_radius = d * 0.5 + 0.02
-	dm.height = 0.35
-	dm.radial_segments = 32
-	band.mesh = dm
-	band.material_override = _material(Color(0.12, 0.12, 0.14), 0.4, 0.5)
-	band.position.y = length - 0.18
-	node.add_child(band)
-	# Fins on the bottom stage (not on a lander)
-	if bottom and not s.get("legs", false):
-		for k in 4:
-			var fin := MeshInstance3D.new()
-			var fm := BoxMesh.new()
-			fm.size = Vector3(0.12, 2.0, 1.2)
-			fin.mesh = fm
-			fin.material_override = _material(Color(0.75, 0.2, 0.15), 0.2, 0.6)
-			var ang := TAU * k / 4.0 + PI / 4.0
-			fin.position = Vector3(cos(ang), 0, sin(ang)) * (d * 0.5 + 0.5) + Vector3(0, engine_len + 1.0, 0)
-			fin.rotation.y = -ang
-			node.add_child(fin)
+func _metal(color: Color, rough := 0.4) -> ShaderMaterial:
+	return _skin(color, {"metal": 0.85, "rough": rough})
 
 
-## Four landing legs: struts from the tank side down to foot pads at y = 0.
-## Hidden while a stage is attached below (see _update_legs).
-func _build_legs(node: Node3D, s: Dictionary, base: float) -> void:
-	var legs := Node3D.new()
-	legs.name = "Legs"
-	node.add_child(legs)
-	var r: float = float(s.diameter) * 0.5
-	var mat := _material(Color(0.7, 0.7, 0.72), 0.8, 0.4)
-	for k in 4:
-		var ang := TAU * k / 4.0 + PI / 4.0
-		var dir := Vector3(cos(ang), 0.0, sin(ang))
-		var top := dir * (r * 0.9) + Vector3(0, base + float(s.length) * 0.55, 0)
-		var foot := dir * (r + 1.1) + Vector3(0, 0.12, 0)
-		var strut := MeshInstance3D.new()
-		var cm := CylinderMesh.new()
-		cm.top_radius = 0.07
-		cm.bottom_radius = 0.07
-		cm.height = top.distance_to(foot)
-		cm.radial_segments = 8
-		strut.mesh = cm
-		strut.material_override = mat
-		legs.add_child(strut)
-		strut.transform = _segment(top, foot)
-		# Diagonal brace from the tank bottom.
-		var brace := MeshInstance3D.new()
-		var bm := CylinderMesh.new()
-		var b0 := dir * (r * 0.9) + Vector3(0, base + 0.2, 0)
-		var b1 := (top + foot) * 0.5
-		bm.top_radius = 0.045
-		bm.bottom_radius = 0.045
-		bm.height = b0.distance_to(b1)
-		bm.radial_segments = 6
-		brace.mesh = bm
-		brace.material_override = mat
-		legs.add_child(brace)
-		brace.transform = _segment(b0, b1)
-		var pad := MeshInstance3D.new()
-		var pm := CylinderMesh.new()
-		pm.top_radius = 0.3
-		pm.bottom_radius = 0.38
-		pm.height = 0.12
-		pm.radial_segments = 12
-		pad.mesh = pm
-		pad.material_override = mat
-		pad.position = foot - Vector3(0, 0.06, 0)
-		legs.add_child(pad)
+func _dark_inside() -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = Color(0.03, 0.03, 0.03)
+	m.roughness = 0.8
+	m.cull_mode = BaseMaterial3D.CULL_FRONT
+	return m
+
+
+# --- Geometry helpers -----------------------------------------------------------
+
+## Revolved profile (x = radius, y = height, bottom to top). UV = (angle 0..1,
+## height in metres). Repeated points make a sharp crease, otherwise normals
+## are smooth. a0..a1 = angle range (fractions of a turn) for partial pieces;
+## grow pushes the surface out along its normal (pieces laid over a hull).
+static func _lathe(profile: PackedVector2Array, segs: int, flat := false, cap_top := false,
+		cap_bottom := false, a0 := 0.0, a1 := 1.0, grow := 0.0) -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var n := profile.size()
+	var pn: Array[Vector2] = []
+	for i in n:
+		var a := profile[maxi(i - 1, 0)]
+		var b := profile[mini(i + 1, n - 1)]
+		if i + 1 < n and profile[i + 1].is_equal_approx(profile[i]):
+			b = profile[i]
+		elif i > 0 and profile[i - 1].is_equal_approx(profile[i]):
+			a = profile[i]
+		var t := (b - a)
+		pn.append(Vector2(t.y, -t.x).normalized() if t.length() > 1e-6 else Vector2(1, 0))
+	for i in n - 1:
+		if profile[i].is_equal_approx(profile[i + 1]):
+			continue
+		for j in segs:
+			var f0 := lerpf(a0, a1, float(j) / segs)
+			var f1 := lerpf(a0, a1, float(j + 1) / segs)
+			var quad := [[i, f0], [i + 1, f0], [i + 1, f1], [i, f1]]
+			for k in [0, 2, 1, 0, 3, 2]:   # Godot: clockwise = front face
+				var q: Array = quad[k]
+				var p := profile[q[0]] + pn[q[0]] * grow
+				var ang: float = float(q[1]) * TAU
+				var nn: Vector2 = pn[q[0]]
+				if not flat:
+					st.set_normal(Vector3(nn.x * cos(ang), nn.y, nn.x * sin(ang)))
+				st.set_uv(Vector2(q[1], profile[q[0]].y))
+				st.add_vertex(Vector3(p.x * cos(ang), p.y, p.x * sin(ang)))
+	for cap in [[cap_top, n - 1, 1.0], [cap_bottom, 0, -1.0]]:
+		if not cap[0]:
+			continue
+		var p := profile[cap[1]]
+		for j in segs:
+			var ang0 := TAU * j / segs
+			var ang1 := TAU * (j + 1) / segs
+			var tri := [Vector3(0, p.y, 0), Vector3(p.x * cos(ang0), p.y, p.x * sin(ang0)), Vector3(p.x * cos(ang1), p.y, p.x * sin(ang1))]
+			var order := [0, 1, 2] if cap[2] > 0.0 else [0, 2, 1]
+			for k in order:
+				if not flat:
+					st.set_normal(Vector3(0, cap[2], 0))
+				st.set_uv(Vector2(0.5, p.y))
+				st.add_vertex(tri[k])
+	if flat:
+		st.generate_normals()
+	st.generate_tangents()
+	return st.commit()
+
+
+## Cylinder r between y0 and y1 with rounded (bevelled) top and bottom edges.
+static func _bevel_cyl(r: float, y0: float, y1: float, bev: float) -> PackedVector2Array:
+	var p := PackedVector2Array()
+	p.append(Vector2(0.0, y0))
+	for k in 4:   # bottom edge quarter round
+		var a := PI * 0.5 * float(k) / 3.0
+		p.append(Vector2(r - bev + sin(a) * bev, y0 + bev - cos(a) * bev))
+	for k in 4:   # top edge
+		var a := PI * 0.5 * float(k) / 3.0
+		p.append(Vector2(r - bev + cos(a) * bev, y1 - bev + sin(a) * bev))
+	p.append(Vector2(0.0, y1))
+	return p
+
+
+func _mesh(parent: Node3D, mesh: Mesh, mat: Material, pos := Vector3.ZERO) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	mi.mesh = mesh
+	mi.material_override = mat
+	mi.position = pos
+	parent.add_child(mi)
+	return mi
 
 
 ## Local transform for a Y-axis cylinder spanning a..b.
@@ -161,6 +252,261 @@ static func _segment(a: Vector3, b: Vector3) -> Transform3D:
 	return Transform3D(Basis(x, y, z), (a + b) * 0.5)
 
 
+func _strut(parent: Node3D, a: Vector3, b: Vector3, r: float, mat: Material) -> void:
+	var len := a.distance_to(b)
+	var mi := _mesh(parent, _lathe(_bevel_cyl(r, -len * 0.5, len * 0.5, r * 0.4), 16), mat)
+	mi.transform = _segment(a, b)
+
+
+## Ring (rounded lip) around a hull: hull radius r, centred at y, height t.
+func _rim(parent: Node3D, r: float, y: float, t: float, mat: Material) -> void:
+	var p := PackedVector2Array()
+	for k in 7:
+		var a := PI * float(k) / 6.0
+		p.append(Vector2(r + sin(a) * t * 0.35, y - cos(a) * t * 0.5))
+	_mesh(parent, _lathe(p, 64), mat)
+
+
+# --- Engines --------------------------------------------------------------------
+
+## Engine: chamber with turbopump, throat and a smooth bell with a lip; exit
+## plane at y = 0, total height h, exit radius re.
+func _engine(parent: Node3D, pos: Vector3, re: float, h: float) -> Node3D:
+	var e := Node3D.new()
+	e.position = pos
+	parent.add_child(e)
+	var rt := re * 0.3
+	var rc := re * 0.42
+	var bell_h := h * 0.68
+	var prof := PackedVector2Array()
+	prof.append(Vector2(re * 1.05, 0.0))
+	prof.append(Vector2(re * 1.05, 0.0))
+	prof.append(Vector2(re * 1.05, 0.05))
+	prof.append(Vector2(re * 1.05, 0.05))
+	prof.append(Vector2(re, 0.07))
+	for k in range(1, 10):
+		var s := float(k) / 9.0
+		prof.append(Vector2(rt + (re - rt) * pow(1.0 - s, 2.0), 0.07 + s * (bell_h - 0.07)))
+	prof.append(Vector2(rc, bell_h + h * 0.07))
+	prof.append(Vector2(rc, h * 0.9))
+	prof.append(Vector2(rc * 0.7, h))
+	var mat := _skin(Color(0.58, 0.57, 0.56), {"metal": 0.85, "rough": 0.38, "panel": 0.12})
+	mat.set_shader_parameter("heat_v0", bell_h)
+	_bell_mats.append(mat)
+	var bell := _mesh(e, _lathe(prof, 48, false, true), mat)
+	var inner := MeshInstance3D.new()
+	inner.mesh = bell.mesh
+	inner.material_override = _dark_inside()
+	e.add_child(inner)
+	# Turbopump and its exhaust pipe on the side of the chamber.
+	var pump := _metal(Color(0.38, 0.38, 0.39), 0.45)
+	_strut(e, Vector3(rc + re * 0.12, bell_h + h * 0.05, 0), Vector3(rc + re * 0.12, h * 0.95, 0), re * 0.1, pump)
+	_strut(e, Vector3(rc + re * 0.12, bell_h + h * 0.08, 0), Vector3(re * 0.75, bell_h * 0.35, 0.0), re * 0.04, pump)
+	return e
+
+
+## Engines of a stage: cluster by stage size. Returns exhaust anchors.
+func _engine_cluster(node: Node3D, d: float, y: float, h: float, count: int) -> Array[Vector4]:
+	var out: Array[Vector4] = []
+	var re := d * (0.3 if count == 1 else (0.16 if count == 5 else 0.19))
+	var ring := d * 0.3
+	for k in count:
+		var p := Vector3(0, y, 0)
+		if count > 1 and not (count == 5 and k == 4):
+			var a := TAU * k / (4 if count == 5 else count) + PI / 4.0
+			p = Vector3(cos(a) * ring, y, sin(a) * ring)
+		var e := _engine(node, p, re, h)
+		e.rotation.y = TAU * k / maxf(count, 1)
+		out.append(Vector4(p.x, p.y, p.z, re))
+	return out
+
+
+# --- Stages ---------------------------------------------------------------------
+
+func _build_tank_stage(node: Node3D, s: Dictionary, bottom: bool, upper_d: float) -> void:
+	var d: float = s.diameter
+	var r := d * 0.5
+	var length: float = s.length
+	var first := bottom
+	var engine_h := minf(2.0, d * 0.55) if first else minf(1.4, d * 0.5)
+	var count := (5 if d >= 3.0 else 4) if bottom else 1
+	var tank_y0 := engine_h + 0.35
+	var sep_h := 0.4 if upper_d > 0.0 else 0.0
+	var tank_y1 := length - sep_h
+	node.set_meta("exhausts", _engine_cluster(node, d, 0.02, engine_h, count))
+	var metal := _metal(LIGHT_GREY, 0.45)
+	# Engine mount: dark truncated cone from the tank down to the engines,
+	# open below (inner face dark) so the engine tops sit inside it.
+	var mount := PackedVector2Array([Vector2(r * 0.62, engine_h * 0.82), Vector2(r * 0.62, engine_h * 0.82),
+		Vector2(r * 0.96, tank_y0), Vector2(r * 0.96, tank_y0)])
+	var mm := _mesh(node, _lathe(mount, 48), _skin(DARK_GREY, {"rough": 0.55, "stringers": 16.0, "soot": 0.4}))
+	var mi := MeshInstance3D.new()
+	mi.mesh = mm.mesh
+	mi.material_override = _dark_inside()
+	node.add_child(mi)
+	if not first:
+		# Aft skirt around the engine (open below), so stacked stages read as one body.
+		var skirt := PackedVector2Array([Vector2(r * 0.99, 0.0), Vector2(r * 0.99, 0.0), Vector2(r * 0.99, tank_y0), Vector2(r * 0.99, tank_y0)])
+		var sk := _mesh(node, _lathe(skirt, 64), _skin(Color(0.6, 0.61, 0.62), {"rough": 0.5, "corrugation": 72.0, "metal": 0.3}))
+		var ski := MeshInstance3D.new()
+		ski.mesh = sk.mesh
+		ski.material_override = _dark_inside()
+		node.add_child(ski)
+	# Tank body: bevelled cylinder, white paint with bands.
+	var opts := {"panel": 1.5, "gloss": 0.25, "rough": 0.38}
+	if first:
+		opts.merge({"band1": Vector4(tank_y0 + 0.4, tank_y0 + 2.6, 1, 0), "pattern": 1, "band": BLACK,
+			"band2": Vector4(tank_y1 - 1.0, tank_y1 - 0.6, 1, 0)})
+	elif s.name == "Разгонный блок":
+		opts.merge({"band1": Vector4(tank_y0 + 0.3, tank_y0 + 0.7, 1, 0), "band": ORANGE,
+			"band2": Vector4(tank_y1 - 0.7, tank_y1 - 0.3, 1, 0)})
+	else:
+		opts.merge({"band1": Vector4(tank_y1 - 0.9, tank_y1 - 0.5, 1, 0), "band": ORANGE})
+	_mesh(node, _lathe(_bevel_cyl(r, tank_y0, tank_y1, 0.08), 64), _skin(WHITE, opts))
+	# Rims at both tank ends (grey metal lips).
+	_rim(node, r, tank_y0 + 0.12, 0.12, metal)
+	_rim(node, r, tank_y1 - 0.12, 0.12, metal)
+	# Separator / adapter to the next stage.
+	if sep_h > 0.0:
+		var ur := maxf(upper_d * 0.5, r * 0.55)
+		var sp := PackedVector2Array([Vector2(r * 0.97, tank_y1), Vector2(r * 0.97, tank_y1), Vector2(ur, length), Vector2(ur, length), Vector2(0.0, length)])
+		_mesh(node, _lathe(sp, 64), _skin(DARK_GREY, {"rough": 0.6, "corrugation": 72.0}))
+		# Yellow / black hazard ring (decoupler).
+		var hz := _skin(Color(0.95, 0.75, 0.1), {"rough": 0.5, "stringers": 32.0})
+		var hr := lerpf(r * 0.97, ur, 0.5)
+		_rim(node, hr, tank_y1 + sep_h * 0.5, 0.12, hz)
+	# Fins on the first stage.
+	if first:
+		var fin_mat := _skin(WHITE, {"band1": Vector4(0.8, 1.6, 1, 0), "band": BLACK, "rough": 0.4})
+		for k in 4:
+			var a := TAU * k / 4.0 + PI / 4.0
+			var fm := _mesh(node, _fin(r * 0.96, tank_y0 + 1.6, tank_y0 - 0.2, 1.5, 0.16), fin_mat)
+			fm.rotation.y = -a
+	# Conduit along the tank.
+	_mesh(node, _lathe(_bevel_cyl(0.08, tank_y0 + 0.3, tank_y1 - 0.3, 0.03), 16), _skin(LIGHT_GREY, {"rough": 0.5}),
+		Vector3(0, 0, -(r + 0.05)))
+
+
+## Swept fin in the XY plane at x >= r (root along the hull), thinner tip.
+static func _fin(r: float, root_top: float, root_bot: float, span: float, thick: float) -> ArrayMesh:
+	var pts := [Vector2(r, root_bot), Vector2(r + span, root_bot - 0.5), Vector2(r + span, root_bot + 0.4), Vector2(r, root_top)]
+	var zs := [1.0, 0.4, 0.4, 1.0]
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var z := thick * 0.5
+	var quads := []
+	quads.append([Vector3(pts[0].x, pts[0].y, z), Vector3(pts[1].x, pts[1].y, z * 0.4), Vector3(pts[2].x, pts[2].y, z * 0.4), Vector3(pts[3].x, pts[3].y, z)])
+	quads.append([Vector3(pts[3].x, pts[3].y, -z), Vector3(pts[2].x, pts[2].y, -z * 0.4), Vector3(pts[1].x, pts[1].y, -z * 0.4), Vector3(pts[0].x, pts[0].y, -z)])
+	for e in 4:
+		var a: Vector2 = pts[e]
+		var b: Vector2 = pts[(e + 1) % 4]
+		var za: float = z * zs[e]
+		var zb: float = z * zs[(e + 1) % 4]
+		quads.append([Vector3(a.x, a.y, -za), Vector3(b.x, b.y, -zb), Vector3(b.x, b.y, zb), Vector3(a.x, a.y, za)])
+	for q in quads:
+		for k in [0, 2, 1, 0, 3, 2]:
+			st.set_uv(Vector2(0.0, (q[k] as Vector3).y - root_bot + 1.0))
+			st.add_vertex(q[k])
+	st.generate_normals()
+	st.generate_tangents()
+	return st.commit()
+
+
+## Lunar module descent stage: gold-foil octagon with black panels, recessed
+## engine, telescopic landing legs.
+func _build_descent_stage(node: Node3D, s: Dictionary) -> void:
+	var d: float = s.diameter
+	var r := d * 0.5
+	var length: float = s.length
+	var base := 0.6
+	var body_y0 := base + 0.45
+	var foil := _skin(Color(0.95, 0.72, 0.3), {"foil": 1.0, "metal": 1.0})
+	var black := _skin(Color(0.08, 0.08, 0.09), {"foil": 0.5, "rough": 0.6})
+	var prof := PackedVector2Array([Vector2(0.0, body_y0), Vector2(r * 0.8, body_y0), Vector2(r * 0.8, body_y0), Vector2(r, body_y0 + 0.25), Vector2(r, body_y0 + 0.25),
+		Vector2(r, length - 0.05), Vector2(r, length - 0.05), Vector2(r * 0.96, length), Vector2(r * 0.96, length), Vector2(0.0, length)])
+	_mesh(node, _lathe(prof, 64), foil)
+	# Black blanket panels on four sides (slightly proud of the foil).
+	var bp := PackedVector2Array([Vector2(r, body_y0 + 0.4), Vector2(r, body_y0 + 0.4), Vector2(r, length - 0.25), Vector2(r, length - 0.25)])
+	for k in 4:
+		var bm := _mesh(node, _lathe(bp, 8, false, false, false, 0.0, 0.11, 0.015), black)
+		bm.rotation.y = TAU * k / 4.0 + 0.2
+	node.set_meta("exhausts", [_engine_vec(node, Vector3(0, base + 0.02, 0), 0.45, 0.8)] as Array[Vector4])
+	_build_legs(node, s, base)
+
+
+func _engine_vec(node: Node3D, p: Vector3, re: float, h: float) -> Vector4:
+	_engine(node, p, re, h)
+	return Vector4(p.x, p.y, p.z, re)
+
+
+## Lunar module ascent stage: faceted anodised cabin with seams, front
+## window, docking tunnel, dish antenna, RCS quads.
+func _build_ascent_stage(node: Node3D, s: Dictionary, upper_d: float) -> void:
+	var d: float = s.diameter
+	var r := d * 0.5
+	var length: float = s.length
+	var top_r := maxf(upper_d * 0.5, r * 0.5)
+	var cabin := _skin(Color(0.82, 0.82, 0.83), {"panel": 0.55, "stringers": 7.0, "rough": 0.42, "metal": 0.15,
+		"band1": Vector4(0.0, 0.32, 1, 0), "band": Color(0.22, 0.22, 0.23)})
+	cabin.set_shader_parameter("win_count", 8.0)
+	cabin.set_shader_parameter("win_n", 1.0)
+	cabin.set_shader_parameter("win_u0", 0.25)
+	cabin.set_shader_parameter("win_v", length * 0.62)
+	cabin.set_shader_parameter("win_size", Vector2(0.07, 0.45))
+	var prof := PackedVector2Array([Vector2(0.0, 0.0), Vector2(r * 0.72, 0.0), Vector2(r * 0.72, 0.0), Vector2(r, 0.32), Vector2(r, 0.32),
+		Vector2(r * 0.96, length * 0.8), Vector2(r * 0.96, length * 0.8), Vector2(top_r, length), Vector2(top_r, length), Vector2(0.0, length)])
+	_mesh(node, _lathe(prof, 64), cabin)
+	# Dish antenna on a boom (matte metal, not overexposed).
+	var boom_a := Vector3(-r * 0.62, length * 0.8, -r * 0.5)
+	var boom_b := boom_a + Vector3(-0.45, 0.5, -0.2)
+	_strut(node, boom_a, boom_b, 0.03, _metal(LIGHT_GREY, 0.5))
+	var dish_p := PackedVector2Array([Vector2(0.0, -0.02), Vector2(0.05, 0.0), Vector2(0.18, 0.05), Vector2(0.3, 0.13), Vector2(0.3, 0.13), Vector2(0.28, 0.14)])
+	var dm := _mesh(node, _lathe(dish_p, 20), _skin(Color(0.78, 0.78, 0.77), {"metal": 0.4, "rough": 0.6, "gloss": 0.1}), boom_b)
+	dm.rotation = Vector3(-0.5, 0.0, 0.4)
+	_rcs_quads(node, r * 0.98, length * 0.58, 4)
+	node.set_meta("exhausts", [_engine_vec(node, Vector3(0, -0.5, 0), 0.26, 0.5)] as Array[Vector4])
+
+
+## Small RCS thruster quads around a hull.
+func _rcs_quads(node: Node3D, r: float, y: float, count: int) -> void:
+	var body := _skin(LIGHT_GREY, {"rough": 0.45, "metal": 0.4})
+	var noz := _metal(Color(0.3, 0.3, 0.31), 0.45)
+	for k in count:
+		var a := TAU * k / count + PI / 4.0
+		var dir := Vector3(cos(a), 0, sin(a))
+		var c := dir * (r + 0.08) + Vector3(0, y, 0)
+		_mesh(node, _lathe(_bevel_cyl(0.09, -0.09, 0.09, 0.03), 16), body, c)
+		for t in [Vector3.UP, Vector3.DOWN, dir.cross(Vector3.UP), -dir.cross(Vector3.UP)]:
+			var np := PackedVector2Array([Vector2(0.025, 0.0), Vector2(0.025, 0.0), Vector2(0.045, 0.09), Vector2(0.045, 0.09)])
+			var mi := _mesh(node, _lathe(np, 12), noz)
+			var seg := _segment(c + t * 0.07, c + t * 0.16)
+			mi.transform = Transform3D(seg.basis, c + t * 0.07)
+
+
+## Telescopic landing legs: upper strut (foil-wrapped), lower piston, two side
+## struts, footpad. Hidden while a stage is attached below (see _update_legs).
+func _build_legs(node: Node3D, s: Dictionary, base: float) -> void:
+	var legs := Node3D.new()
+	legs.name = "Legs"
+	node.add_child(legs)
+	var r: float = float(s.diameter) * 0.5
+	var steel := _metal(Color(0.78, 0.79, 0.8), 0.38)
+	var gold := _skin(Color(0.95, 0.72, 0.3), {"foil": 0.8, "metal": 1.0})
+	for k in 4:
+		var ang := TAU * k / 4.0 + PI / 4.0
+		var dir := Vector3(cos(ang), 0.0, sin(ang))
+		var side := dir.cross(Vector3.UP)
+		var top := dir * (r * 0.95) + Vector3(0, base + float(s.length) * 0.62, 0)
+		var foot := dir * (r + 1.1) + Vector3(0, 0.12, 0)
+		var mid := top.lerp(foot, 0.55)
+		_strut(legs, top, mid, 0.1, gold)
+		_strut(legs, mid, foot, 0.06, steel)
+		for sg in [-1.0, 1.0]:
+			_strut(legs, dir * (r * 0.88) + side * sg * r * 0.45 + Vector3(0, base + 0.5, 0), mid, 0.035, steel)
+		var pad := PackedVector2Array([Vector2(0.0, -0.08), Vector2(0.3, -0.06), Vector2(0.38, 0.02), Vector2(0.36, 0.05), Vector2(0.1, 0.06), Vector2(0.0, 0.06)])
+		_mesh(legs, _lathe(pad, 32), steel, foot - Vector3(0, 0.04, 0))
+
+
 ## Legs are deployed only on the bottom stage.
 func _update_legs() -> void:
 	for i in _stage_nodes.size():
@@ -169,58 +515,91 @@ func _update_legs() -> void:
 			legs.visible = i == _stage_nodes.size() - 1
 
 
+## Crew capsule: brown heat shield, white cone with windows and a black top
+## band, docking port, RCS quads and a hinged hatch cut from the hull.
 func _build_capsule(node: Node3D, s: Dictionary) -> void:
 	var d: float = s.diameter
-	var cone := MeshInstance3D.new()
-	var cm := CylinderMesh.new()
-	cm.top_radius = d * 0.18
-	cm.bottom_radius = d * 0.5
-	cm.height = s.length
-	cm.radial_segments = 32
-	cone.mesh = cm
-	cone.material_override = _material(Color(0.82, 0.84, 0.86), 0.5, 0.45)
-	cone.position.y = s.length * 0.5
-	node.add_child(cone)
-	# Hatch on the +Z side of the capsule.
-	var hatch := MeshInstance3D.new()
-	var hm := BoxMesh.new()
-	hm.size = Vector3(0.75, 0.9, 0.08)
-	hatch.mesh = hm
-	hatch.material_override = _material(Color(0.25, 0.27, 0.3), 0.6, 0.4)
-	var hy: float = s.length * HATCH_HEIGHT
-	var hr := lerpf(d * 0.5, d * 0.18, HATCH_HEIGHT)
-	hatch.position = Vector3(0, hy, hr - 0.02)
-	hatch.rotation.x = -atan2(d * 0.5 - d * 0.18, s.length)
-	node.add_child(hatch)
-	var window := MeshInstance3D.new()
-	var wm := SphereMesh.new()
-	wm.radius = 0.22
-	wm.height = 0.44
-	window.mesh = wm
-	var wmat := _material(Color(0.1, 0.2, 0.35), 0.9, 0.1)
-	window.material_override = wmat
-	window.position = Vector3(0, s.length * 0.45, d * 0.36)
-	node.add_child(window)
+	var r := d * 0.5
+	var L: float = s.length
+	var top_r := d * 0.17
+	var y_sh := 0.08
+	# Heat shield: shallow dome + rounded shoulder, ending exactly where the cone starts.
+	var shield := PackedVector2Array()
+	for k in 7:
+		var t := float(k) / 6.0
+		shield.append(Vector2(r * 0.96 * t, -0.1 * (1.0 - t * t)))
+	shield.append(Vector2(r, y_sh * 0.5))
+	shield.append(Vector2(r, y_sh))
+	_mesh(node, _lathe(shield, 64), _skin(Color(0.33, 0.24, 0.16), {"rough": 0.8, "gloss": 0.05}))
+	# Cone body.
+	_capsule_mat = _skin(WHITE, {"panel": 0.5, "stringers": 12.0, "gloss": 0.25, "rough": 0.38,
+		"band1": Vector4(L * 0.78, L * 0.86, 1, 0), "band": BLACK})
+	_capsule_mat.set_shader_parameter("win_count", 5.0)
+	_capsule_mat.set_shader_parameter("win_n", 5.0)
+	_capsule_mat.set_shader_parameter("win_u0", HATCH_U + 0.1)
+	_capsule_mat.set_shader_parameter("win_v", L * 0.6)
+	_capsule_mat.set_shader_parameter("win_size", Vector2(0.05, 0.28))
+	var hy := L * HATCH_HEIGHT
+	_capsule_mat.set_shader_parameter("hatch", Vector4(HATCH_U, hy, HATCH_DU, HATCH_DV))
+	_mesh(node, _lathe(_capsule_profile(r, top_r, L, y_sh), 64), _capsule_mat)
+	# Docking port on top.
+	var port := PackedVector2Array([Vector2(top_r, L * 0.86), Vector2(top_r, L * 0.86), Vector2(0.24, L * 0.88), Vector2(0.24, L * 0.88),
+		Vector2(0.24, L * 0.96), Vector2(0.24, L * 0.96), Vector2(0.16, L * 0.98), Vector2(0.05, L * 1.03), Vector2(0.0, L * 1.05)])
+	_mesh(node, _lathe(port, 32), _metal(LIGHT_GREY, 0.45))
+	_rcs_quads(node, _capsule_radius(r, top_r, L, y_sh, L * 0.68), L * 0.68, 4)
+	# Hatch door: the same hull piece, grown 1.5 cm outwards, on a hinge line
+	# along its left edge; swings out around it.
+	var u0 := HATCH_U - HATCH_DU * 0.5
+	var u1 := HATCH_U + HATCH_DU * 0.5
+	var door_prof := PackedVector2Array()
+	for k in 6:
+		var y := lerpf(hy - HATCH_DV * 0.5, hy + HATCH_DV * 0.5, float(k) / 5.0)
+		door_prof.append(Vector2(_capsule_radius(r, top_r, L, y_sh, y), y))
+	var door_mat := _skin(WHITE, {"rough": 0.38, "gloss": 0.25})
+	door_mat.set_shader_parameter("win_count", 1.0 / HATCH_DU)
+	door_mat.set_shader_parameter("win_u0", HATCH_U)
+	door_mat.set_shader_parameter("win_v", hy + 0.15)
+	door_mat.set_shader_parameter("win_size", Vector2(HATCH_DU * 0.3, 0.2))
+	var door_mesh := _lathe(door_prof, 6, false, false, false, u0, u1, 0.015)
+	var a_h := u0 * TAU
+	var p_lo := Vector3(cos(a_h) * door_prof[0].x, door_prof[0].y, sin(a_h) * door_prof[0].x)
+	var p_hi := Vector3(cos(a_h) * door_prof[5].x, door_prof[5].y, sin(a_h) * door_prof[5].x)
+	var hinge := _segment(p_lo, p_hi)
+	hatch_pivot = Node3D.new()
+	hatch_pivot.name = "Hatch"
+	hatch_pivot.transform = hinge
+	_hatch_basis = hinge.basis
+	node.add_child(hatch_pivot)
+	var door := _mesh(hatch_pivot, door_mesh, door_mat)
+	door.transform = hinge.affine_inverse()
+	_hatch_open = 0.0
+	_hatch_target = 0.0
 
 
-func _build_flame() -> void:
-	_flame = MeshInstance3D.new()
-	var fm := CylinderMesh.new()
-	fm.top_radius = 0.5
-	fm.bottom_radius = 0.05
-	fm.height = 1.0
-	fm.radial_segments = 16
-	_flame.mesh = fm
-	_flame_mat = StandardMaterial3D.new()
-	_flame_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_flame_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	_flame_mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
-	_flame_mat.albedo_color = Color(1.0, 0.6, 0.25, 0.85)
-	_flame_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	_flame.material_override = _flame_mat
-	_flame.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	add_child(_flame)
-	_flame.visible = false
+static func _capsule_profile(r: float, top_r: float, L: float, y_sh: float) -> PackedVector2Array:
+	var p := PackedVector2Array([Vector2(r, y_sh), Vector2(r, y_sh)])
+	for k in 9:
+		var y := lerpf(y_sh, L * 0.86, float(k + 1) / 9.0)
+		p.append(Vector2(_capsule_radius(r, top_r, L, y_sh, y), y))
+	p.append(Vector2(top_r, L * 0.86))
+	return p
+
+
+## Capsule radius at height y: cone with a gently rounded shoulder.
+static func _capsule_radius(r: float, top_r: float, L: float, y_sh: float, y: float) -> float:
+	var t := clampf((y - y_sh) / (L * 0.86 - y_sh), 0.0, 1.0)
+	return lerpf(r, top_r, t) - 0.04 * sin(t * PI)
+
+
+# --- Hatch ---------------------------------------------------------------------
+
+## Animated hatch: open (true) swings it out ~110° on its hinge.
+func set_hatch_open(open: bool) -> void:
+	_hatch_target = 1.0 if open else 0.0
+
+
+func hatch_is_open() -> bool:
+	return _hatch_open > 0.95
 
 
 ## Hatch position in the rocket node's local frame (slightly outside the hull).
@@ -230,8 +609,41 @@ func hatch_local() -> Vector3:
 	var cap: Node3D = _stage_nodes[0]
 	var s: Dictionary = vessel.stages[0]
 	var d: float = s.diameter
-	var hr := lerpf(d * 0.5, d * 0.18, HATCH_HEIGHT)
-	return cap.position + Vector3(0, float(s.length) * HATCH_HEIGHT, hr + 0.35)
+	var L: float = s.length
+	var hr := _capsule_radius(d * 0.5, d * 0.17, L, 0.08, L * HATCH_HEIGHT)
+	return cap.position + Vector3(0, L * HATCH_HEIGHT, hr + 0.35)
+
+
+# --- Exhaust, chute, collider ---------------------------------------------------
+
+func _build_flames() -> void:
+	_flames.clear()
+	if _flame_mat == null:
+		_flame_mat = ShaderMaterial.new()
+		_flame_mat.shader = EXHAUST_SHADER
+	var cone := CylinderMesh.new()
+	cone.top_radius = 0.35      # narrow end on the nozzle, UV.y = 0 there
+	cone.bottom_radius = 1.0
+	cone.height = 1.0
+	cone.radial_segments = 20
+	cone.rings = 1
+	cone.cap_top = false
+	cone.cap_bottom = false
+	if _stage_nodes.is_empty():
+		return
+	var bottom: Node3D = _stage_nodes[_stage_nodes.size() - 1]
+	var ex: Array = bottom.get_meta("exhausts", [])
+	for e in ex:
+		var v4: Vector4 = e
+		var f := MeshInstance3D.new()
+		f.mesh = cone
+		f.material_override = _flame_mat
+		f.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		f.set_meta("anchor", Vector3(v4.x, v4.y, v4.z) + bottom.position)
+		f.set_meta("re", v4.w)
+		f.visible = false
+		add_child(f)
+		_flames.append(f)
 
 
 func _build_collider() -> void:
@@ -298,6 +710,9 @@ func detach_bottom_stage() -> Node3D:
 	for n in _stage_nodes:
 		n.position.y -= drop
 	node.set_meta("global", gt)
+	for f in _flames:
+		f.queue_free()
+	_build_flames()
 	_build_collider()
 	_update_legs()
 	return node
@@ -308,18 +723,31 @@ func update_visual(delta: float) -> void:
 		_chute.visible = vessel.chute_deployed
 		var top: Node3D = _stage_nodes[0]
 		_chute.position.y = top.position.y + float(vessel.stages[0].length)
+	# Hatch animation (eased swing about the hinge line).
+	if hatch_pivot and not is_equal_approx(_hatch_open, _hatch_target):
+		_hatch_open = move_toward(_hatch_open, _hatch_target, delta / 1.6)
+		var e := _hatch_open * _hatch_open * (3.0 - 2.0 * _hatch_open)
+		hatch_pivot.basis = _hatch_basis * Basis(Vector3.UP, -e * deg_to_rad(110.0))
+		if _capsule_mat:
+			_capsule_mat.set_shader_parameter("hatch_open", clampf(_hatch_open * 4.0, 0.0, 1.0))
 	var on := vessel.last_thrust > 0.0
-	_flame.visible = on
+	var thr := vessel.last_thrust / maxf(vessel.current_thrust_max(), 1.0) if on else 0.0
+	for m in _bell_mats:
+		if is_instance_valid(m):
+			m.set_shader_parameter("heat", thr * 0.6)
+	for f in _flames:
+		f.visible = on
 	if not on or _stage_nodes.is_empty():
 		return
-	var s := vessel.active_stage()
-	var d: float = s.diameter
-	var thr := vessel.last_thrust / maxf(vessel.current_thrust_max(), 1.0)
-	# Wider plume in vacuum.
 	var p := clampf(vessel.body.pressure_at(vessel.altitude()), 0.0, 1.0)
-	var len := lerpf(4.0, 9.0, thr) * lerpf(1.3, 1.0, p)
-	var width := d * lerpf(0.9, 0.35, p)
-	var flicker := 1.0 + randf_range(-0.06, 0.06)
-	_flame.scale = Vector3(width, len * flicker, width)
-	_flame.position = Vector3(0, -len * flicker * 0.5 + 0.1, 0)
-	_flame_mat.albedo_color.a = lerpf(0.5, 0.9, thr)
+	_flame_mat.set_shader_parameter("throttle", lerpf(0.4, 1.0, thr))
+	_flame_mat.set_shader_parameter("pressure", p)
+	for f in _flames:
+		var re: float = f.get_meta("re")
+		var anchor: Vector3 = f.get_meta("anchor")
+		# Long thin plume in air, short wide bloom in vacuum.
+		var len := re * lerpf(9.0, 22.0, thr) * lerpf(0.8, 1.0, p)
+		var width := re * lerpf(3.2, 1.05, p)
+		var flick := 1.0 + randf_range(-0.04, 0.04)
+		f.scale = Vector3(width, len * flick, width)
+		f.position = anchor + Vector3(0, -len * flick * 0.5, 0)
