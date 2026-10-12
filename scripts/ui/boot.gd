@@ -95,12 +95,11 @@ func _version_code() -> int:
 # --- 3D backdrop ----------------------------------------------------------------
 
 func _setup_scene() -> void:
-	var earth := StandardMaterial3D.new()
-	earth.albedo_texture = load("res://assets/planets/earth_color.jpg")
-	earth.normal_enabled = true
-	earth.normal_texture = load("res://assets/planets/earth_normal.png")
-	earth.normal_scale = 0.6
-	earth.roughness = 0.75
+	var earth := ShaderMaterial.new()
+	earth.shader = load("res://shaders/title_earth.gdshader")
+	earth.set_shader_parameter("color_tex", load("res://assets/planets/earth_color.jpg"))
+	earth.set_shader_parameter("normal_tex", load("res://assets/planets/earth_normal.png"))
+	earth.set_shader_parameter("water_tex", load("res://assets/planets/earth_water.png"))
 	var surface := _planet.get_node("Surface") as MeshInstance3D
 	surface.material_override = earth
 	_planet.transform = Transform3D(Basis(Vector3(0, 0, 1), deg_to_rad(-23.4)), Vector3.ZERO)
