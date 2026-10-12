@@ -60,7 +60,7 @@ var sky_mat: ShaderMaterial
 # Flight camera, relative to the vessel attitude.
 var cam_yaw := 0.35
 var cam_pitch := 0.15
-var cam_dist := 40.0
+var cam_dist := 55.0
 # Map camera, inertial, around the planet.
 var map_yaw := 0.0
 var map_pitch := 0.5
@@ -208,10 +208,11 @@ func reset_to_pad() -> void:
 	var south := east.cross(up)
 	vessel.set_landed_attitude(Basis(east, up, south).get_rotation_quaternion(), sim_time)
 	rocket.build(vessel)
+	clear_maneuver()
 	set_warp(0)
 	cam_yaw = 0.35
 	cam_pitch = 0.12
-	cam_dist = 40.0
+	cam_dist = 55.0
 	hud.on_vessel_reset()
 	Log.info("Flight: vessel on pad, mass %.0f kg, dV %.0f m/s, TWR %.2f" % [vessel.mass(), vessel.total_delta_v(), vessel.twr()])
 
@@ -239,6 +240,9 @@ func teleport_lunar_module_to_orbit(altitude: float) -> void:
 ## Debug: circular orbit at the given altitude (prograde, equatorial-ish over the site).
 func teleport_to_orbit(altitude: float) -> void:
 	autopilot.disengage(vessel)
+	abort_eva()
+	clear_maneuver()
+	vessel.chute_deployed = false
 	var r := body.radius + altitude
 	var radial := vessel.pos.normalized()
 	if radial.length() < 0.5:
@@ -252,7 +256,9 @@ func teleport_to_orbit(altitude: float) -> void:
 	vessel.ang_vel = Vector3.ZERO
 	vessel.attitude = Quaternion(Vector3.UP, east.to_v3()).normalized()
 	set_warp(0)
+	rocket.visible = not map_mode
 	hud.on_vessel_reset()
+	_traj_timer = 0.0
 	Log.info("Flight: teleported to circular orbit %.0f m" % altitude)
 
 
@@ -326,6 +332,8 @@ func sunlit_longitude(b: CelestialBody) -> float:
 func teleport_to_surface(target: CelestialBody, lat: float, lon: float) -> void:
 	autopilot.disengage(vessel)
 	abort_eva()
+	clear_maneuver()
+	vessel.chute_deployed = false
 	vessel.body = target
 	vessel.throttle = 0.0
 	vessel.destroyed_flag = false
@@ -339,6 +347,8 @@ func teleport_to_surface(target: CelestialBody, lat: float, lon: float) -> void:
 
 func _after_teleport(what: String) -> void:
 	abort_eva()
+	clear_maneuver()
+	vessel.chute_deployed = false
 	vessel.landed = false
 	vessel.destroyed_flag = false
 	vessel.throttle = 0.0
@@ -351,7 +361,23 @@ func _after_teleport(what: String) -> void:
 	Log.info("Flight: teleported: " + what)
 
 
+func _notification(what: int) -> void:
+	match what:
+		NOTIFICATION_WM_GO_BACK_REQUEST:
+			# Android "back": pause menu instead of quitting the app.
+			if hud:
+				hud.toggle_pause()
+		NOTIFICATION_APPLICATION_FOCUS_OUT, NOTIFICATION_APPLICATION_PAUSED:
+			# Fingers lifted while the app was away never send "released".
+			_touches.clear()
+
+
 func _exit_tree() -> void:
+	get_tree().paused = false
+	# Planning threads may still walk the body tree: let them finish first.
+	if autopilot:
+		autopilot.stop(vessel)
+	ApPlan.wait_all()
 	# Break parent <-> children reference cycles of the body tree.
 	for b in bodies:
 		b.children.clear()
@@ -544,14 +570,16 @@ func _step_debris(dt: float) -> void:
 
 
 func _process(delta: float) -> void:
+	ApPlan.reap()
 	# Floating origin: the vessel at 0 (or the focused body on the map), everything
 	# else relative to it in doubles.
 	var vabs := render_origin()
 	_update_sun_light()
 	# Detailed ground patch under a low vessel (any body).
-	if vessel.altitude() < 30_000.0:
+	var agl := vessel.altitude_above_ground(sim_time) if vessel.altitude() < 30_000.0 else INF
+	if agl < 12_000.0:
 		var fixed_n := vessel.body.inertial_to_fixed(vessel.pos, sim_time).normalized()
-		(planets[vessel.body] as Node3D).call("ensure_patch", fixed_n, vessel.altitude_above_ground(sim_time))
+		(planets[vessel.body] as Node3D).call("ensure_patch", fixed_n, agl)
 		hd_tiles.call("want", vessel.body, fixed_n)
 	for b in bodies:
 		var rel := b.absolute_position(sim_time).sub(vabs)
@@ -577,7 +605,8 @@ func _process(delta: float) -> void:
 	if map_mode:
 		_traj_timer -= delta
 		if _traj_timer <= 0.0:
-			_traj_timer = 0.25
+			# Coasting: the conic barely changes, refresh it less often (saves CPU).
+			_traj_timer = 0.25 if vessel.throttle > 0.0 or vessel.landed or autopilot.active() else 1.0
 			refresh_trajectory()
 		var node_pos = null
 		var shown: ManeuverNode = maneuver if maneuver != null else autopilot.node
@@ -748,7 +777,8 @@ func _start_surface_eva() -> void:
 	astronaut.global_position = side * (rocket_r + 1.5) + up * 1.0
 	astronaut.linear_velocity = Vector3.ZERO
 	var b := vessel.body
-	astronaut.set_surface_mode(true, up, b.surface_gravity(), b.has_atmosphere())
+	# Only Earth's air is breathable: elsewhere the suit uses oxygen.
+	astronaut.set_surface_mode(true, up, b.surface_gravity(), b.id == "earth")
 	astronaut.cam_forward = -side
 	tether = TetherScript.new()
 	add_child(tether)
@@ -837,7 +867,7 @@ func end_eva(forced_reason := "") -> void:
 	hud.visible = true
 	if forced_reason != "":
 		Log.warn("EVA: " + forced_reason)
-		hud.show_destroyed(forced_reason)
+		hud.show_destroyed(forced_reason, "Космонавт погиб")
 	else:
 		Log.info("EVA: back inside")
 		message.emit("Космонавт в корабле")
@@ -857,6 +887,7 @@ func abort_eva() -> void:
 	tether = null
 	eva_hud = null
 	eva_mode = false
+	rocket.set_hatch_open(false)
 	hud.visible = true
 
 
@@ -1103,7 +1134,8 @@ func _update_flight_camera() -> void:
 	east = east.normalized()
 	var south := east.cross(up)
 	var horiz := south * cos(cam_yaw) + east * sin(cam_yaw)
-	var center := Basis(vessel.attitude) * Vector3(0, 6.0, 0)
+	# Orbit the centre of mass: that is also the point the vessel turns about.
+	var center := Basis(vessel.attitude) * Vector3(0, vessel.com_height(), 0)
 	var offset := (horiz * cos(cam_pitch) + up * sin(cam_pitch)) * cam_dist
 	var cam_pos := _keep_above_ground(center + offset, 2.0)
 	camera.global_transform = Transform3D(Basis(), cam_pos).looking_at(center, up)

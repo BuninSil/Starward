@@ -98,6 +98,8 @@ func _next(v: Vessel, t: float) -> void:
 
 
 func _finish(v: Vessel, ok: bool, msg: String) -> void:
+	if current:
+		current.stop(v)
 	current = null
 	queue.clear()
 	node = null

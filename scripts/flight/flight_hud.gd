@@ -24,6 +24,7 @@ var _overlay: Label
 var _throttle: ThrottleScript
 var _throttle_label: Label
 var _warp_label: Label
+var _warp_row: HBoxContainer
 var _stage_btn: Button
 var _map_btn: Button
 var _focus_btn: Button
@@ -45,6 +46,9 @@ var _debug_menu: PanelContainer
 var _console: PanelContainer
 var _destroyed_panel: PanelContainer
 var _destroyed_label: Label
+var _destroyed_title: Label
+var _stage_confirm := 0.0   ## seconds left to confirm staging while landed
+var _pause_layer: CanvasLayer
 var _inf_fuel_btn: CheckButton
 var _timer := 0.0
 
@@ -76,6 +80,8 @@ func _ready() -> void:
 	_console.hide()
 	_root.add_child(_console)
 	flight.message.connect(toast)
+	Updater.update_available.connect(func(info: Dictionary) -> void:
+		toast("Доступно обновление %s — установить можно на титульном экране" % info.tag))
 
 
 # --- Builders -------------------------------------------------------------------
@@ -155,6 +161,12 @@ func _build_top_right() -> void:
 	_map_btn = _button("Карта", _on_map, 120)
 	row.add_child(_map_btn)
 	row.add_child(_button("Дебаг", func() -> void: _debug_menu.visible = not _debug_menu.visible, 110))
+	row.add_child(_button("II", toggle_pause, 64))
+	# Time warp under the buttons (centred it collided with them on 16:9 screens).
+	_warp_row = HBoxContainer.new()
+	_warp_row.alignment = BoxContainer.ALIGNMENT_END
+	_warp_row.add_theme_constant_override("separation", 8)
+	box.add_child(_warp_row)
 	var op := _panel()
 	op.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	op.size_flags_horizontal = Control.SIZE_SHRINK_END
@@ -169,12 +181,8 @@ func _build_top_right() -> void:
 
 
 func _build_warp() -> void:
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 8)
-	row.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 16)
-	row.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	_root.add_child(row)
-	row.add_child(_small_button("Медленнее", func() -> void: flight.set_warp(flight.warp_index - 1)))
+	var row := _warp_row
+	row.add_child(_small_button("◀◀", func() -> void: flight.set_warp(flight.warp_index - 1)))
 	var p := _panel()
 	_warp_label = Label.new()
 	_warp_label.custom_minimum_size = Vector2(150, 0)
@@ -182,7 +190,7 @@ func _build_warp() -> void:
 	_warp_label.add_theme_font_size_override("font_size", 22)
 	p.add_child(_warp_label)
 	row.add_child(p)
-	row.add_child(_small_button("Быстрее", func() -> void: flight.set_warp(flight.warp_index + 1)))
+	row.add_child(_small_button("▶▶", func() -> void: flight.set_warp(flight.warp_index + 1)))
 	row.add_child(_small_button("×1", func() -> void: flight.set_warp(0)))
 
 
@@ -297,8 +305,9 @@ func _build_stage() -> void:
 	_chute_btn.add_theme_font_size_override("font_size", 22)
 	_chute_btn.custom_minimum_size = Vector2(170, 70)
 	_chute_btn.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 24)
+	_chute_btn.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	_chute_btn.grow_vertical = Control.GROW_DIRECTION_BEGIN
-	_chute_btn.position += Vector2(250, -96)
+	_chute_btn.position.y -= 182
 	_chute_btn.visible = false
 	_root.add_child(_chute_btn)
 
@@ -321,6 +330,8 @@ func _build_stage() -> void:
 
 func _build_toast() -> void:
 	_ap_label = Label.new()
+	_ap_label.custom_minimum_size = Vector2(900, 0)
+	_ap_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_ap_label.add_theme_font_size_override("font_size", 22)
 	_ap_label.add_theme_color_override("font_color", Color(0.45, 0.9, 1.0))
 	_ap_label.add_theme_constant_override("outline_size", 6)
@@ -332,6 +343,8 @@ func _build_toast() -> void:
 	_root.add_child(_ap_label)
 
 	_toast = Label.new()
+	_toast.custom_minimum_size = Vector2(900, 0)
+	_toast.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_toast.add_theme_font_size_override("font_size", 26)
 	_toast.add_theme_color_override("font_color", Color(1.0, 0.85, 0.45))
 	_toast.add_theme_constant_override("outline_size", 6)
@@ -358,9 +371,9 @@ func _build_debug_menu() -> void:
 	title.add_theme_font_size_override("font_size", 30)
 	box.add_child(title)
 	var grid := GridContainer.new()
-	grid.columns = 2
+	grid.columns = 3
 	grid.add_theme_constant_override("h_separation", 10)
-	grid.add_theme_constant_override("v_separation", 10)
+	grid.add_theme_constant_override("v_separation", 8)
 	box.add_child(grid)
 	_inf_fuel_btn = CheckButton.new()
 	_inf_fuel_btn.text = "Бесконечное топливо"
@@ -378,7 +391,7 @@ func _build_debug_menu() -> void:
 		flight.reset_to_pad()
 		toast("На старте: " + Vessel.DESIGNS[Vessel.design]))
 	grid.add_child(design_btn)
-	grid.add_child(_button("Лунный модуль на орбите Луны", func() -> void:
+	grid.add_child(_button("ЛМ на орбите Луны", func() -> void:
 		_debug_menu.hide()
 		flight.teleport_lunar_module_to_orbit(30_000.0)))
 	grid.add_child(_button("Орбита 20 км", func() -> void:
@@ -483,11 +496,14 @@ func _build_destroyed() -> void:
 	box.add_theme_constant_override("separation", 14)
 	_destroyed_panel.add_child(box)
 	var t := Label.new()
+	_destroyed_title = t
 	t.text = "Ракета разрушена"
 	t.add_theme_font_size_override("font_size", 36)
 	t.add_theme_color_override("font_color", Color(1.0, 0.45, 0.4))
 	box.add_child(t)
 	_destroyed_label = Label.new()
+	_destroyed_label.custom_minimum_size = Vector2(640, 0)
+	_destroyed_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(_destroyed_label)
 	box.add_child(_button("Заново на старт", func() -> void:
 		_destroyed_panel.hide()
@@ -507,7 +523,8 @@ func on_vessel_reset() -> void:
 	_set_hold("sas")
 
 
-func show_destroyed(reason: String) -> void:
+func show_destroyed(reason: String, title := "Ракета разрушена") -> void:
+	_destroyed_title.text = title
 	_destroyed_label.text = reason
 	_destroyed_panel.show()
 	_throttle.set_value_no_signal(0.0)
@@ -533,6 +550,11 @@ func _set_hold(mode: String) -> void:
 
 
 func _on_stage() -> void:
+	if flight.vessel.landed and _stage_confirm <= 0.0 and flight.vessel.stages.size() > 1:
+		_stage_confirm = 2.5
+		toast("Ракета на земле. Нажми ещё раз, чтобы сбросить ступень")
+		return
+	_stage_confirm = 0.0
 	if not flight.vessel.stage():
 		toast("Больше нет ступеней")
 
@@ -597,6 +619,7 @@ func _process(delta: float) -> void:
 	_chute_btn.visible = v.has_chute() and not v.chute_deployed and not v.landed \
 		and v.body.has_atmosphere() and v.altitude() < v.body.atmosphere_height
 
+	_stage_confirm = maxf(_stage_confirm - delta, 0.0)
 	if _toast_time > 0.0:
 		_toast_time -= delta
 		_toast.modulate.a = clampf(_toast_time, 0.0, 1.0)
@@ -622,11 +645,12 @@ func _update_texts() -> void:
 	var state := "на поверхности" if v.landed else ("в атмосфере" if alt < b.atmosphere_height else "в космосе")
 	state += " · " + b.name
 	_telemetry.text = "\n".join(PackedStringArray([
-		"Высота", "Скорость", "Над землёй", "Верт. скорость", "Апоцентр", "Перицентр",
+		"Высота", "Над рельефом", "Скорость", "Путевая скор.", "Верт. скорость", "Апоцентр", "Перицентр",
 		"Запас Δv ступени", "Запас Δv всего", "Тяга / вес", "Топливо ступени", "Где",
 	]))
 	_telemetry_values.text = "\n".join(PackedStringArray([
 		OrbitLine.fmt_dist(alt),
+		_agl_text(v, b),
 		"%d м/с" % int(v.vel.length()),
 		"%d м/с" % int(v.surface_velocity().length()),
 		"%+d м/с" % int(vs),
@@ -650,6 +674,59 @@ func _update_texts() -> void:
 		int(ProjectSettings.get_setting("starward/build/version_code")),
 		b.name, ll.x, ll.y, _fmt_time(flight.sim_time),
 	]
+
+
+func _agl_text(v: Vessel, b: CelestialBody) -> String:
+	if v.landed:
+		return "0 м"
+	if not flight.has_solid_surface(b) or v.altitude() > 100_000.0:
+		return "—"
+	return OrbitLine.fmt_dist(maxf(v.altitude_above_ground(flight.sim_time) - v.height_offset, 0.0))
+
+
+# --- Pause menu (Android "back") -------------------------------------------------
+
+func toggle_pause() -> void:
+	if _pause_layer == null:
+		_build_pause()
+	var on := not _pause_layer.visible
+	_pause_layer.visible = on
+	get_tree().paused = on
+
+
+func _build_pause() -> void:
+	# Own layer above everything, works while the tree is paused and while the
+	# flight HUD itself is hidden (EVA).
+	_pause_layer = CanvasLayer.new()
+	_pause_layer.layer = 20
+	_pause_layer.process_mode = Node.PROCESS_MODE_ALWAYS
+	_pause_layer.visible = false
+	get_parent().add_child(_pause_layer)
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.55)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_pause_layer.add_child(dim)
+	var p := _panel()
+	p.set_anchors_and_offsets_preset(Control.PRESET_CENTER, Control.PRESET_MODE_MINSIZE)
+	p.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	p.grow_vertical = Control.GROW_DIRECTION_BOTH
+	_pause_layer.add_child(p)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 12)
+	p.add_child(box)
+	var t := Label.new()
+	t.text = "Пауза"
+	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	t.add_theme_font_size_override("font_size", 34)
+	box.add_child(t)
+	box.add_child(_button("Продолжить", toggle_pause, 360))
+	box.add_child(_button("Заново на старт", func() -> void:
+		toggle_pause()
+		flight.reset_to_pad(), 360))
+	box.add_child(_button("На титульный экран", func() -> void:
+		get_tree().paused = false
+		get_tree().change_scene_to_file("res://scenes/boot.tscn"), 360))
+	box.add_child(_button("Выйти из игры", func() -> void: get_tree().quit(), 360))
 
 
 static func _fmt_time(t: float) -> String:

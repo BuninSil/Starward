@@ -42,10 +42,31 @@ func start(_ap: Autopilot, v: Vessel, t: float) -> void:
 	_task_id = WorkerThreadPool.add_task(job, false, "autopilot plan")
 
 
+## Abandoned planning tasks: never waited on the main thread while still
+## running (that froze the game for seconds); reaped once they finish.
+static var _zombies: Array = []   ## [task_id, ApPlan keeping its data alive]
+
+
 func stop(_v: Vessel) -> void:
 	if _task_id >= 0:
-		WorkerThreadPool.wait_for_task_completion(_task_id)
+		_zombies.append([_task_id, self])
 		_task_id = -1
+
+
+## Joins abandoned tasks that have finished (call every frame).
+static func reap() -> void:
+	for i in range(_zombies.size() - 1, -1, -1):
+		var id: int = _zombies[i][0]
+		if WorkerThreadPool.is_task_completed(id):
+			WorkerThreadPool.wait_for_task_completion(id)
+			_zombies.remove_at(i)
+
+
+## Blocks until every abandoned task is done (leaving the scene).
+static func wait_all() -> void:
+	for z in _zombies:
+		WorkerThreadPool.wait_for_task_completion(z[0])
+	_zombies.clear()
 
 
 func update(ap: Autopilot, v: Vessel, _t: float) -> int:

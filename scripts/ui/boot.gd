@@ -19,6 +19,12 @@ var _update_status: Label
 var _overlay_timer := 0.0
 
 
+func _notification(what: int) -> void:
+	# Android "back" on the title screen quits (quit_on_go_back is off globally).
+	if what == NOTIFICATION_WM_GO_BACK_REQUEST:
+		get_tree().quit()
+
+
 func _ready() -> void:
 	Log.info("Boot: %s v%s build %s (%s), renderer=%s, device=%s" % [
 		ProjectSettings.get_setting("application/config/name"),
@@ -31,9 +37,18 @@ func _ready() -> void:
 	mat.set_shader_parameter("sun_dir_world", _sun.global_transform.basis.z)
 	_build_ui()
 	Log.line_added.connect(func(_l: String, _lv: int) -> void: _update_console_button())
-	Updater.update_available.connect(_update_dialog.show_for)
+	Updater.update_available.connect(func(info: Dictionary) -> void:
+		Updater.offered_tag = str(info.tag)
+		_update_dialog.show_for(info))
 	Updater.check_finished.connect(func(_has: bool, msg: String) -> void: _update_status.text = msg)
 	Updater.check_on_startup()
+	# Back from a flight: the check already ran, show what it found.
+	var info: Dictionary = Updater.latest
+	if not info.is_empty() and int(info.version_code) > Updater.current_version_code() \
+			and str(info.apk_url) != "" and not Updater.is_downloading \
+			and Updater.offered_tag != str(info.tag):
+		Updater.offered_tag = str(info.tag)
+		_update_dialog.show_for(info)
 
 
 func _process(delta: float) -> void:

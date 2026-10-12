@@ -176,8 +176,7 @@ func _build_right() -> void:
 	top.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT, Control.PRESET_MODE_MINSIZE, 16)
 	top.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	_root.add_child(top)
-	top.add_child(_btn("Дебаг: к люку", func() -> void: flight.debug_eva_to_hatch(), 210))
-	top.add_child(_btn("Дебаг: тяга корабля 2 с", func() -> void: flight.debug_ship_kick(), 300))
+	top.add_child(_btn("II", func() -> void: flight.hud.toggle_pause(), 70))
 
 
 func _build_surface() -> void:

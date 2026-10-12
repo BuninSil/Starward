@@ -16,12 +16,13 @@ var _dist := 8.0
 var _label: Label
 var _views: Array = []
 var _drag := false
+var _root_body: CelestialBody
 
 
 func _ready() -> void:
 	_build_world()
-	var root := SolarSystem.build()
-	var earth := SolarSystem.find(root, "earth")
+	_root_body = SolarSystem.build()
+	var earth := SolarSystem.find(_root_body, "earth")
 	var x := 0.0
 	for design in ["moon", "orbit"]:
 		var v := Vessel.make(design, earth)
@@ -128,7 +129,7 @@ func _build_ui() -> void:
 	bar.add_theme_constant_override("separation", 16)
 	layer.add_child(bar)
 	for b in [["◀", func() -> void: _focus(_index - 1)], ["▶", func() -> void: _focus(_index + 1)],
-			["Люк", _toggle_hatch], ["Назад", func() -> void: get_tree().change_scene_to_file("res://scenes/flight.tscn")]]:
+			["Люк", _toggle_hatch], ["Назад", _back]]:
 		var btn := Button.new()
 		btn.text = b[0]
 		btn.custom_minimum_size = Vector2(150, 80)
@@ -141,6 +142,27 @@ func _build_ui() -> void:
 	_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_label.add_theme_font_size_override("font_size", 34)
 	layer.add_child(_label)
+
+
+func _back() -> void:
+	get_tree().change_scene_to_file("res://scenes/flight.tscn")
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_GO_BACK_REQUEST:
+		_back()
+
+
+func _exit_tree() -> void:
+	# Break parent <-> children reference cycles of the body tree (else it leaks).
+	var stack: Array = [_root_body]
+	while not stack.is_empty():
+		var b: CelestialBody = stack.pop_back()
+		if b == null:
+			continue
+		stack.append_array(b.children)
+		b.children.clear()
+		b.parent = null
 
 
 func _toggle_hatch() -> void:

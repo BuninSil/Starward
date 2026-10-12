@@ -144,7 +144,9 @@ func stage() -> bool:
 	# Small separation kick along the nose.
 	var kick := up_world() * STAGE_SEPARATION_DV
 	vel.add_scaled(DVec3.from_v3(kick), 1.0)
-	staged.emit(dropped)
+	staged.emit(dropped)   # (listeners place the debris relative to the old origin)
+	# The origin is the bottom of the lowest stage: it moves up to the new bottom.
+	pos.add_scaled(DVec3.from_v3(up_world() * float(dropped.length)), 1.0)
 	return true
 
 
@@ -264,7 +266,27 @@ func _step_attitude(dt: float) -> void:
 		ang_vel = Vector3.ZERO
 	var w := ang_vel.length()
 	if w > 1e-9:
+		# Turn about the centre of mass, not the origin at the tail: move the
+		# origin so the CoM stays where it was.
+		var c := Vector3(0.0, com_height(), 0.0)
+		var before := attitude * c
 		attitude = (Quaternion(ang_vel / w, w * dt) * attitude).normalized()
+		if not landed:
+			pos.add_scaled(DVec3.from_v3(before - attitude * c), 1.0)
+
+
+## Height of the centre of mass above the vessel origin (bottom of the lowest stage).
+func com_height() -> float:
+	var y := 0.0
+	var m := 0.0
+	var my := 0.0
+	for i in range(stages.size() - 1, -1, -1):
+		var s: Dictionary = stages[i]
+		var sm: float = s.dry_mass + s.fuel
+		my += sm * (y + float(s.length) * 0.5)
+		m += sm
+		y += float(s.length)
+	return my / m if m > 0.0 else 0.0
 
 
 func hold_direction() -> Vector3:

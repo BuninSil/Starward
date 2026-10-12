@@ -17,6 +17,7 @@ const RESUME_RECHECK_SEC := 600.0   ## re-check on app resume if the last check 
 
 ## Last found release: {tag, version_code, name, notes, apk_url, apk_size, html_url}
 var latest: Dictionary = {}
+var offered_tag := ""   ## release already shown in the update dialog this run
 var is_checking := false
 var is_downloading := false
 
