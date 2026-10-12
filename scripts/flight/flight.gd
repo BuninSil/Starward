@@ -109,8 +109,8 @@ func _ready() -> void:
 	add_child(fx)
 	_flame_light = OmniLight3D.new()
 	_flame_light.light_color = Color(1.0, 0.62, 0.3)
-	_flame_light.omni_range = 70.0
-	_flame_light.omni_attenuation = 1.3
+	_flame_light.omni_range = 110.0
+	_flame_light.omni_attenuation = 1.0
 	_flame_light.shadow_enabled = false
 	_flame_light.visible = false
 	add_child(_flame_light)
@@ -699,7 +699,7 @@ func _update_fx(delta: float) -> void:
 		# Near the ground, where the flame hits it: lights the pad and the clouds.
 		var up_f := v.pos.normalized().to_v3()
 		_flame_light.global_position = nozzle - up_f * maxf(agl_f - 6.0, 0.0) * 0.8
-		_flame_light.light_energy = thr_f * (1.0 - agl_f / 200.0) * randf_range(4.0, 5.0)
+		_flame_light.light_energy = sqrt(thr_f) * (1.0 - agl_f / 200.0) * randf_range(6.5, 8.0)
 	fx.step(delta * w, render_origin(), sim_time)
 
 
