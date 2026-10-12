@@ -29,14 +29,19 @@ func _gui_input(event: InputEvent) -> void:
 
 func _draw() -> void:
 	var r := Rect2(Vector2.ZERO, size)
-	draw_rect(r, Color(0.06, 0.09, 0.17, 0.75))
-	var h := size.y * value
-	var fill := Rect2(Vector2(0, size.y - h), Vector2(size.x, h))
-	draw_rect(fill, Color(1.0, 0.55, 0.2, 0.55).lerp(Color(1.0, 0.75, 0.3, 0.85), value))
-	draw_rect(r, Color(0.35, 0.55, 0.9, 0.8), false, 3.0)
+	var bg := StyleBoxFlat.new()
+	bg.bg_color = Color(0.03, 0.05, 0.09, 0.7)
+	bg.border_color = Color(1, 1, 1, 0.16)
+	bg.set_border_width_all(2)
+	bg.set_corner_radius_all(14)
+	draw_style_box(bg, r)
+	var h := (size.y - 8.0) * value
+	if h > 1.0:
+		var fill := StyleBoxFlat.new()
+		fill.bg_color = Color(1.0, 0.5, 0.18, 0.75).lerp(Color(1.0, 0.72, 0.3, 0.95), value)
+		fill.set_corner_radius_all(10)
+		draw_style_box(fill, Rect2(Vector2(4, size.y - 4.0 - h), Vector2(size.x - 8.0, h)))
 	for i in range(1, 4):
 		var y := size.y * i / 4.0
-		draw_line(Vector2(0, y), Vector2(14, y), Color(1, 1, 1, 0.35), 2.0)
-		draw_line(Vector2(size.x - 14, y), Vector2(size.x, y), Color(1, 1, 1, 0.35), 2.0)
-	var gy := size.y - h
-	draw_rect(Rect2(Vector2(-4, gy - 8), Vector2(size.x + 8, 16)), Color(1, 0.85, 0.55))
+		draw_line(Vector2(10, y), Vector2(24, y), Color(1, 1, 1, 0.35), 2.0)
+		draw_line(Vector2(size.x - 24, y), Vector2(size.x - 10, y), Color(1, 1, 1, 0.35), 2.0)

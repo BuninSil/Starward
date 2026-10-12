@@ -1,6 +1,9 @@
 extends CanvasLayer
-## Touch HUD for the flight scene: throttle, attitude joystick, staging, SAS modes,
-## time warp, map toggle, telemetry, debug overlay and debug menu.
+## Touch HUD for the flight scene. Layout: compact telemetry card top-left (tap
+## for details), time warp pill top-centre, map / debug / pause top-right,
+## throttle bottom-left, orientation mode + roll + joystick bottom-right,
+## autopilot + staging bottom-centre with context buttons (chute, EVA) above.
+## One theme for every button and panel (also the autopilot / maneuver panels).
 
 const JoystickScript := preload("res://scripts/ui/joystick.gd")
 const ThrottleScript := preload("res://scripts/ui/throttle_bar.gd")
@@ -8,6 +11,11 @@ const ConsoleScript := preload("res://scripts/ui/debug_console.gd")
 const OrbitLine := preload("res://scripts/flight/trajectory_view.gd")
 const AutopilotPanel := preload("res://scripts/flight/autopilot_panel.gd")
 const ManeuverPanel := preload("res://scripts/flight/maneuver_panel.gd")
+
+const ACCENT := Color(1.0, 0.62, 0.22)
+const TEXT := Color(0.93, 0.95, 1.0)
+const DIM := Color(0.6, 0.67, 0.8)
+const CYAN := Color(0.4, 0.88, 1.0)
 
 const HOLD_MODES := [
 	["sas", "Стабилизация"], ["prograde", "По ходу"], ["retrograde", "Против хода"],
@@ -18,13 +26,18 @@ const HOLD_MODES := [
 var flight: Node3D
 
 var _root: Control
+var _tele_alt: Label
+var _tele_speed: Label
+var _tele_line1: Label
+var _tele_line2: Label
+var _tele_where: Label
+var _details: PanelContainer
 var _telemetry: Label
 var _telemetry_values: Label
 var _overlay: Label
 var _throttle: ThrottleScript
 var _throttle_label: Label
-var _warp_label: Label
-var _warp_row: HBoxContainer
+var _warp_btn: Button
 var _stage_btn: Button
 var _map_btn: Button
 var _focus_btn: Button
@@ -37,6 +50,8 @@ var _ap_panel: PanelContainer
 var _mn_panel: PanelContainer
 var _ap_btn: Button
 var _ap_label: Label
+var _hold_btn: Button
+var _hold_menu: PanelContainer
 var _hold_buttons := {}
 var _joystick: JoystickScript
 var _roll := 0.0
@@ -51,12 +66,15 @@ var _stage_confirm := 0.0   ## seconds left to confirm staging while landed
 var _pause_layer: CanvasLayer
 var _inf_fuel_btn: CheckButton
 var _timer := 0.0
+var _throttle_box: Control
+var _stage_col: Control
 
 
 func _ready() -> void:
 	_root = Control.new()
 	_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_root.theme = make_theme()
 	add_child(_root)
 	_build_telemetry()
 	_build_top_right()
@@ -86,46 +104,128 @@ func _ready() -> void:
 
 # --- Builders -------------------------------------------------------------------
 
-func _panel() -> PanelContainer:
-	var p := PanelContainer.new()
+static func _box(bg: Color, border: Color, bw := 1, radius := 12, mx := 16, my := 8) -> StyleBoxFlat:
 	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.02, 0.04, 0.09, 0.6)
-	sb.set_corner_radius_all(10)
-	sb.set_content_margin_all(12)
-	p.add_theme_stylebox_override("panel", sb)
-	return p
+	sb.bg_color = bg
+	sb.border_color = border
+	sb.set_border_width_all(bw)
+	sb.set_corner_radius_all(radius)
+	sb.content_margin_left = mx
+	sb.content_margin_right = mx
+	sb.content_margin_top = my
+	sb.content_margin_bottom = my
+	return sb
+
+
+## Shared look: dark translucent buttons, orange outline when pressed/toggled.
+static func make_theme() -> Theme:
+	var t := Theme.new()
+	t.default_font_size = 22
+	var normal := _box(Color(0.05, 0.07, 0.12, 0.78), Color(1, 1, 1, 0.12))
+	var pressed := _box(Color(0.16, 0.13, 0.1, 0.92), ACCENT, 2)
+	var disabled := _box(Color(0.05, 0.07, 0.12, 0.4), Color(1, 1, 1, 0.05))
+	for type in ["Button", "CheckButton"]:
+		t.set_stylebox("normal", type, normal)
+		t.set_stylebox("hover", type, normal)
+		t.set_stylebox("pressed", type, pressed)
+		t.set_stylebox("hover_pressed", type, pressed)
+		t.set_stylebox("disabled", type, disabled)
+		t.set_stylebox("focus", type, StyleBoxEmpty.new())
+		t.set_color("font_color", type, TEXT)
+		t.set_color("font_hover_color", type, TEXT)
+		t.set_color("font_pressed_color", type, ACCENT)
+		t.set_color("font_hover_pressed_color", type, ACCENT)
+		t.set_color("font_disabled_color", type, Color(TEXT, 0.35))
+	t.set_stylebox("panel", "PanelContainer", _box(Color(0.03, 0.05, 0.09, 0.8), Color(1, 1, 1, 0.08), 1, 14, 14, 12))
+	t.set_color("font_color", "Label", TEXT)
+	return t
+
+
+## Solid coloured style for the key buttons (stage, autopilot).
+func _paint(b: Button, c: Color) -> void:
+	var n := _box(Color(c.darkened(0.55), 0.92), c, 2, 14)
+	var p := _box(Color(c.darkened(0.3), 0.95), c.lightened(0.3), 2, 14)
+	b.add_theme_stylebox_override("normal", n)
+	b.add_theme_stylebox_override("hover", n)
+	b.add_theme_stylebox_override("pressed", p)
+	b.add_theme_stylebox_override("hover_pressed", p)
+	for k in ["font_color", "font_hover_color", "font_pressed_color", "font_hover_pressed_color"]:
+		b.add_theme_color_override(k, TEXT)
+
+
+func _panel() -> PanelContainer:
+	return PanelContainer.new()
 
 
 func _button(text: String, cb: Callable, min_w := 0.0) -> Button:
 	var b := Button.new()
 	b.text = text
 	b.focus_mode = Control.FOCUS_NONE
-	b.custom_minimum_size = Vector2(min_w, 64)
+	b.custom_minimum_size = Vector2(min_w, 60)
 	b.pressed.connect(cb)
 	return b
 
 
-func _small_button(text: String, cb: Callable) -> Button:
-	var b := _button(text, cb)
-	b.add_theme_font_size_override("font_size", 21)
-	b.custom_minimum_size = Vector2(0, 58)
-	return b
+func _label(size: int, color: Color) -> Label:
+	var l := Label.new()
+	l.add_theme_font_size_override("font_size", size)
+	l.add_theme_color_override("font_color", color)
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return l
 
 
 func _build_telemetry() -> void:
-	var p := _panel()
-	p.position = Vector2(16, 16)
-	_root.add_child(p)
+	var col := VBoxContainer.new()
+	col.position = Vector2(16, 16)
+	col.add_theme_constant_override("separation", 8)
+	_root.add_child(col)
+	var card := PanelContainer.new()
+	card.mouse_filter = Control.MOUSE_FILTER_STOP
+	card.gui_input.connect(func(e: InputEvent) -> void:
+		if (e is InputEventScreenTouch and e.pressed) or (e is InputEventMouseButton and e.pressed):
+			_details.visible = not _details.visible)
+	col.add_child(card)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 2)
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	card.add_child(box)
+	var heads := HBoxContainer.new()
+	heads.add_theme_constant_override("separation", 0)
+	heads.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(heads)
+	var vals := HBoxContainer.new()
+	vals.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(vals)
+	for k in 2:
+		var h := _label(15, DIM)
+		h.text = ["ВЫСОТА", "СКОРОСТЬ"][k]
+		h.custom_minimum_size = Vector2(180, 0)
+		heads.add_child(h)
+		var v := _label(32, TEXT)
+		v.custom_minimum_size = Vector2(180, 0)
+		vals.add_child(v)
+		if k == 0:
+			_tele_alt = v
+		else:
+			_tele_speed = v
+	_tele_line1 = _label(18, TEXT)
+	box.add_child(_tele_line1)
+	_tele_line2 = _label(18, TEXT)
+	box.add_child(_tele_line2)
+	_tele_where = _label(16, ACCENT)
+	box.add_child(_tele_where)
+
+	# Details (tap the card): everything else, two columns.
+	_details = PanelContainer.new()
+	_details.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_details.hide()
+	col.add_child(_details)
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 14)
-	p.add_child(row)
-	_telemetry = Label.new()
-	_telemetry.add_theme_font_size_override("font_size", 18)
-	_telemetry.add_theme_color_override("font_color", Color(0.55, 0.68, 0.88))
+	_details.add_child(row)
+	_telemetry = _label(15, DIM)
 	row.add_child(_telemetry)
-	_telemetry_values = Label.new()
-	_telemetry_values.add_theme_font_size_override("font_size", 18)
-	_telemetry_values.add_theme_color_override("font_color", Color(0.92, 0.96, 1.0))
+	_telemetry_values = _label(15, TEXT)
 	row.add_child(_telemetry_values)
 
 
@@ -140,7 +240,11 @@ func _build_top_right() -> void:
 	row.alignment = BoxContainer.ALIGNMENT_END
 	row.add_theme_constant_override("separation", 8)
 	box.add_child(row)
-	# Map-only buttons live in their own row under the overlay.
+	_map_btn = _button("Карта", _on_map, 130)
+	row.add_child(_map_btn)
+	row.add_child(_button("Дебаг", func() -> void: _debug_menu.visible = not _debug_menu.visible, 110))
+	row.add_child(_button("II", toggle_pause, 64))
+	# Map-only buttons.
 	var map_row := HBoxContainer.new()
 	map_row.alignment = BoxContainer.ALIGNMENT_END
 	map_row.add_theme_constant_override("separation", 8)
@@ -156,42 +260,23 @@ func _build_top_right() -> void:
 	_focus_btn = _button("Фокус: тело", func() -> void: flight.cycle_map_focus(1), 190)
 	_focus_btn.visible = false
 	map_row.add_child(_focus_btn)
-	_eva_btn = _button("Выйти наружу", func() -> void: flight.start_eva(), 190)
-	row.add_child(_eva_btn)
-	_map_btn = _button("Карта", _on_map, 120)
-	row.add_child(_map_btn)
-	row.add_child(_button("Дебаг", func() -> void: _debug_menu.visible = not _debug_menu.visible, 110))
-	row.add_child(_button("II", toggle_pause, 64))
-	# Time warp under the buttons (centred it collided with them on 16:9 screens).
-	_warp_row = HBoxContainer.new()
-	_warp_row.alignment = BoxContainer.ALIGNMENT_END
-	_warp_row.add_theme_constant_override("separation", 8)
-	box.add_child(_warp_row)
-	var op := _panel()
-	op.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	op.size_flags_horizontal = Control.SIZE_SHRINK_END
-	box.add_child(op)
-	_overlay = Label.new()
-	_overlay.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	_overlay.add_theme_font_size_override("font_size", 16)
-	_overlay.add_theme_color_override("font_color", Color(0.6, 0.95, 0.7))
-	_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	op.add_child(_overlay)
 	box.add_child(map_row)
+	_overlay = _label(15, Color(0.6, 0.95, 0.7, 0.8))
+	_overlay.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	box.add_child(_overlay)
 
 
 func _build_warp() -> void:
-	var row := _warp_row
-	row.add_child(_small_button("◀◀", func() -> void: flight.set_warp(flight.warp_index - 1)))
-	var p := _panel()
-	_warp_label = Label.new()
-	_warp_label.custom_minimum_size = Vector2(150, 0)
-	_warp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_warp_label.add_theme_font_size_override("font_size", 22)
-	p.add_child(_warp_label)
-	row.add_child(p)
-	row.add_child(_small_button("▶▶", func() -> void: flight.set_warp(flight.warp_index + 1)))
-	row.add_child(_small_button("×1", func() -> void: flight.set_warp(0)))
+	# One pill: ◀◀  Время ×N  ▶▶ (tap the middle for ×1).
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 4)
+	row.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 16)
+	row.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_root.add_child(row)
+	row.add_child(_button("◀◀", func() -> void: flight.set_warp(flight.warp_index - 1), 64))
+	_warp_btn = _button("×1", func() -> void: flight.set_warp(0), 150)
+	row.add_child(_warp_btn)
+	row.add_child(_button("▶▶", func() -> void: flight.set_warp(flight.warp_index + 1), 64))
 
 
 func _build_throttle() -> void:
@@ -200,9 +285,8 @@ func _build_throttle() -> void:
 	box.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT, Control.PRESET_MODE_MINSIZE, 24)
 	box.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	_root.add_child(box)
-	_throttle_label = Label.new()
-	_throttle_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_throttle_label.add_theme_font_size_override("font_size", 24)
+	_throttle_box = box
+	_throttle_label = _label(22, TEXT)
 	_throttle_label.add_theme_constant_override("outline_size", 6)
 	_throttle_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
 	box.add_child(_throttle_label)
@@ -214,39 +298,46 @@ func _build_throttle() -> void:
 		flight.disengage_autopilot("ручной газ")
 		flight.vessel.throttle = v)
 	row.add_child(_throttle)
+	_throttle.custom_minimum_size = Vector2(96, 236)
 	var quick := VBoxContainer.new()
-	quick.alignment = BoxContainer.ALIGNMENT_CENTER
+	quick.alignment = BoxContainer.ALIGNMENT_END
 	quick.add_theme_constant_override("separation", 10)
 	row.add_child(quick)
-	quick.add_child(_button("Полный", func() -> void: _throttle.set_value(1.0), 120))
 	# (set_value emits changed -> also disengages the autopilot)
-	quick.add_child(_button("Выкл", func() -> void: _throttle.set_value(0.0), 120))
+	quick.add_child(_button("Полный", func() -> void: _throttle.set_value(1.0), 110))
+	quick.add_child(_button("Выкл", func() -> void: _throttle.set_value(0.0), 110))
 
 
 func _build_attitude() -> void:
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 8)
+	box.alignment = BoxContainer.ALIGNMENT_END
 	box.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_RIGHT, Control.PRESET_MODE_MINSIZE, 24)
 	box.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	box.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	_root.add_child(box)
 
+	# Orientation modes: a popup grid over the mode button.
+	_hold_menu = PanelContainer.new()
+	_hold_menu.hide()
+	box.add_child(_hold_menu)
 	var grid := GridContainer.new()
-	grid.columns = 3
+	grid.columns = 2
 	grid.add_theme_constant_override("h_separation", 6)
 	grid.add_theme_constant_override("v_separation", 6)
-	box.add_child(grid)
+	_hold_menu.add_child(grid)
 	for m in HOLD_MODES:
 		var b := Button.new()
 		b.text = m[1]
 		b.toggle_mode = true
 		b.focus_mode = Control.FOCUS_NONE
-		b.custom_minimum_size = Vector2(160, 54)
-		b.add_theme_font_size_override("font_size", 19)
+		b.custom_minimum_size = Vector2(180, 56)
+		b.add_theme_font_size_override("font_size", 20)
 		var mode: String = m[0]
 		b.pressed.connect(func() -> void:
 			flight.disengage_autopilot("ручная ориентация")
-			_set_hold(mode))
+			_set_hold(mode)
+			_hold_menu.hide())
 		grid.add_child(b)
 		_hold_buttons[mode] = b
 
@@ -254,14 +345,27 @@ func _build_attitude() -> void:
 	row.alignment = BoxContainer.ALIGNMENT_END
 	row.add_theme_constant_override("separation", 10)
 	box.add_child(row)
-	var roll_box := VBoxContainer.new()
-	roll_box.alignment = BoxContainer.ALIGNMENT_CENTER
-	roll_box.add_theme_constant_override("separation", 10)
-	row.add_child(roll_box)
-	roll_box.add_child(_hold_button("Крен влево", -1.0))
-	roll_box.add_child(_hold_button("Крен вправо", 1.0))
+	var side := VBoxContainer.new()
+	side.alignment = BoxContainer.ALIGNMENT_END
+	side.add_theme_constant_override("separation", 10)
+	row.add_child(side)
+	_hold_btn = Button.new()
+	_hold_btn.focus_mode = Control.FOCUS_NONE
+	_hold_btn.custom_minimum_size = Vector2(170, 70)
+	_hold_btn.add_theme_font_size_override("font_size", 19)
+	_hold_btn.pressed.connect(func() -> void: _hold_menu.visible = not _hold_menu.visible)
+	side.add_child(_hold_btn)
+	var rolls := HBoxContainer.new()
+	rolls.add_theme_constant_override("separation", 8)
+	side.add_child(rolls)
+	rolls.add_child(_hold_button("◀", -1.0))
+	rolls.add_child(_hold_button("▶", 1.0))
+	var roll_l := _label(15, DIM)
+	roll_l.text = "крен"
+	roll_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	side.add_child(roll_l)
 	_joystick = JoystickScript.new()
-	_joystick.radius = 105.0
+	_joystick.radius = 100.0
 	_joystick.changed.connect(func(val: Vector2) -> void:
 		if val.length() > 0.2:
 			flight.disengage_autopilot("джойстик"))
@@ -273,8 +377,8 @@ func _hold_button(text: String, dir: float) -> Button:
 	var b := Button.new()
 	b.text = text
 	b.focus_mode = Control.FOCUS_NONE
-	b.custom_minimum_size = Vector2(150, 64)
-	b.add_theme_font_size_override("font_size", 20)
+	b.custom_minimum_size = Vector2(81, 64)
+	b.add_theme_font_size_override("font_size", 26)
 	b.button_down.connect(func() -> void:
 		flight.disengage_autopilot("крен")
 		_roll = dir)
@@ -283,76 +387,63 @@ func _hold_button(text: String, dir: float) -> Button:
 
 
 func _build_stage() -> void:
-	_stage_btn = Button.new()
-	_stage_btn.text = "Сбросить ступень"
-	_stage_btn.focus_mode = Control.FOCUS_NONE
-	_stage_btn.custom_minimum_size = Vector2(280, 84)
-	_stage_btn.add_theme_font_size_override("font_size", 26)
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0.55, 0.16, 0.1, 0.9)
-	sb.set_corner_radius_all(14)
-	sb.border_color = Color(1.0, 0.5, 0.35)
-	sb.set_border_width_all(2)
-	_stage_btn.add_theme_stylebox_override("normal", sb)
-	_stage_btn.add_theme_stylebox_override("hover", sb)
-	_stage_btn.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 24)
-	_stage_btn.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	_stage_btn.grow_vertical = Control.GROW_DIRECTION_BEGIN
-	_stage_btn.pressed.connect(_on_stage)
-	_root.add_child(_stage_btn)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 10)
+	col.alignment = BoxContainer.ALIGNMENT_END
+	col.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 24)
+	col.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	col.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_root.add_child(col)
+	_stage_col = col
 
-	_chute_btn = _button("Парашют", _on_chute, 170)
-	_chute_btn.add_theme_font_size_override("font_size", 22)
-	_chute_btn.custom_minimum_size = Vector2(170, 70)
-	_chute_btn.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 24)
-	_chute_btn.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	_chute_btn.grow_vertical = Control.GROW_DIRECTION_BEGIN
-	_chute_btn.position.y -= 182
+	# Context actions: appear only when they make sense.
+	var ctx := HBoxContainer.new()
+	ctx.alignment = BoxContainer.ALIGNMENT_CENTER
+	ctx.add_theme_constant_override("separation", 10)
+	col.add_child(ctx)
+	_chute_btn = _button("Парашют", _on_chute, 190)
+	_paint(_chute_btn, Color(0.95, 0.85, 0.3))
 	_chute_btn.visible = false
-	_root.add_child(_chute_btn)
+	ctx.add_child(_chute_btn)
+	_eva_btn = _button("Выйти наружу", func() -> void: flight.start_eva(), 210)
+	_paint(_eva_btn, Color(0.5, 0.95, 0.55))
+	_eva_btn.visible = false
+	ctx.add_child(_eva_btn)
 
-	_ap_btn = _button("Автопилот на орбиту", _on_autopilot, 270)
-	_ap_btn.add_theme_font_size_override("font_size", 22)
-	_ap_btn.custom_minimum_size = Vector2(230, 70)
-	var apsb := StyleBoxFlat.new()
-	apsb.bg_color = Color(0.06, 0.3, 0.38, 0.9)
-	apsb.set_corner_radius_all(12)
-	apsb.border_color = Color(0.4, 0.9, 1.0)
-	apsb.set_border_width_all(2)
-	_ap_btn.add_theme_stylebox_override("normal", apsb)
-	_ap_btn.add_theme_stylebox_override("hover", apsb)
-	_ap_btn.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM, Control.PRESET_MODE_MINSIZE, 24)
-	_ap_btn.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	_ap_btn.grow_vertical = Control.GROW_DIRECTION_BEGIN
-	_ap_btn.position.y -= 96
-	_root.add_child(_ap_btn)
+	var main := HBoxContainer.new()
+	main.alignment = BoxContainer.ALIGNMENT_CENTER
+	main.add_theme_constant_override("separation", 10)
+	col.add_child(main)
+	_ap_btn = _button("Автопилот", _on_autopilot, 180)
+	_ap_btn.custom_minimum_size.y = 84
+	_paint(_ap_btn, CYAN)
+	main.add_child(_ap_btn)
+	_stage_btn = _button("Сбросить ступень", _on_stage, 260)
+	_stage_btn.custom_minimum_size.y = 84
+	_stage_btn.add_theme_font_size_override("font_size", 25)
+	_paint(_stage_btn, Color(1.0, 0.42, 0.3))
+	main.add_child(_stage_btn)
 
 
 func _build_toast() -> void:
-	_ap_label = Label.new()
+	_ap_label = _label(21, CYAN)
 	_ap_label.custom_minimum_size = Vector2(900, 0)
 	_ap_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_ap_label.add_theme_font_size_override("font_size", 22)
-	_ap_label.add_theme_color_override("font_color", Color(0.45, 0.9, 1.0))
 	_ap_label.add_theme_constant_override("outline_size", 6)
 	_ap_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
 	_ap_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_ap_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 84)
+	_ap_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 88)
 	_ap_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	_ap_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_root.add_child(_ap_label)
 
-	_toast = Label.new()
+	_toast = _label(25, Color(1.0, 0.85, 0.45))
 	_toast.custom_minimum_size = Vector2(900, 0)
 	_toast.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_toast.add_theme_font_size_override("font_size", 26)
-	_toast.add_theme_color_override("font_color", Color(1.0, 0.85, 0.45))
 	_toast.add_theme_constant_override("outline_size", 6)
 	_toast.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
 	_toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_toast.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 120)
+	_toast.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 124)
 	_toast.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	_toast.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_root.add_child(_toast)
 
 
@@ -545,9 +636,13 @@ func _set_hold(mode: String) -> void:
 	else:
 		v.sas = true
 		v.hold_mode = "" if v.hold_mode == mode else mode
+	var cur: String = v.hold_mode if v.hold_mode != "" else "sas"
 	for k in _hold_buttons:
 		var b: Button = _hold_buttons[k]
-		b.set_pressed_no_signal(k == (v.hold_mode if v.hold_mode != "" else "sas"))
+		b.set_pressed_no_signal(k == cur)
+	for m in HOLD_MODES:
+		if m[0] == cur:
+			_hold_btn.text = "Ориентация\n%s ▴" % m[1]
 
 
 func _on_stage() -> void:
@@ -627,11 +722,14 @@ func _process(delta: float) -> void:
 		var vt := v.chute_touchdown_speed(flight.sim_time)
 		if vt > Vessel.CRASH_SPEED:
 			_ap_label.text = "Парашют не держит: касание ~%d м/с > %d. Сбрось ступени или притормози двигателем" % [int(vt), int(Vessel.CRASH_SPEED)]
-	_ap_btn.text = "Стоп автопилот" if ap.active() else "Автопилот"
+	_ap_btn.text = "Стоп\nавтопилот" if ap.active() else "Автопилот"
 	_eva_btn.visible = flight.can_eva() == "" and not flight.map_mode
 	_chute_btn.visible = v.has_chute() and not v.chute_deployed and not v.landed \
 		and v.body.has_atmosphere() and v.altitude() < v.body.atmosphere_height
 
+	# The maneuver editor takes the lower left of the map: hide what it covers.
+	_throttle_box.visible = not _mn_panel.visible
+	_stage_col.visible = not _mn_panel.visible
 	_stage_confirm = maxf(_stage_confirm - delta, 0.0)
 	if _toast_time > 0.0:
 		_toast_time -= delta
@@ -655,37 +753,40 @@ func _update_texts() -> void:
 	if not stage.is_empty() and stage.fuel_max > 0.0:
 		fuel_pct = stage.fuel / stage.fuel_max * 100.0
 	var dvs := v.stage_delta_v()
-	var state := "на поверхности" if v.landed else ("в атмосфере" if alt < b.atmosphere_height else "в космосе")
-	state += " · " + b.name
+	var state := b.name
+	var low := alt < b.atmosphere_height * 0.5 or v.landed
+	_tele_alt.text = OrbitLine.fmt_dist(alt)
+	# Near the ground the speed over it matters, in space the orbital one.
+	_tele_speed.text = "%d м/с" % int(v.surface_velocity().length() if low else v.vel.length())
+	_tele_line1.text = "Верт. %+d м/с   Ап %s   Пе %s" % [int(vs),
+		"—" if v.landed else OrbitLine.fmt_dist(el.apoapsis - b.radius),
+		"—" if v.landed else OrbitLine.fmt_dist(el.periapsis - b.radius)]
+	_tele_line2.text = "Δv %d м/с   Т/В %.2f   топливо %d%%" % [int(v.total_delta_v()), v.twr(), int(fuel_pct)]
+	_tele_where.text = "%s · %s   ▾" % [b.name, "на поверхности" if v.landed else ("в атмосфере" if alt < b.atmosphere_height else "в космосе")]
+	var fixed := b.inertial_to_fixed(v.pos, flight.sim_time)
+	var ll := CelestialBody.lat_lon(fixed)
 	_telemetry.text = "\n".join(PackedStringArray([
-		"Высота", "Над рельефом", "Скорость", "Путевая скор.", "Верт. скорость", "Апоцентр", "Перицентр",
-		"Запас Δv ступени", "Запас Δv всего", "Тяга / вес", "Топливо ступени", "Где",
+		"Над рельефом", "Орбитальная скор.", "Путевая скор.", "Запас Δv ступени", "Ступеней",
+		"Сфера влияния", "Координаты", "Время полёта",
 	]))
 	_telemetry_values.text = "\n".join(PackedStringArray([
-		OrbitLine.fmt_dist(alt),
 		_agl_text(v, b),
 		"%d м/с" % int(v.vel.length()),
 		"%d м/с" % int(v.surface_velocity().length()),
-		"%+d м/с" % int(vs),
-		"—" if v.landed else OrbitLine.fmt_dist(el.apoapsis - b.radius),
-		"—" if v.landed else OrbitLine.fmt_dist(el.periapsis - b.radius),
 		"%d м/с" % int(dvs[dvs.size() - 1] if dvs.size() > 0 else 0.0),
-		"%d м/с" % int(v.total_delta_v()),
-		"%.2f" % v.twr(),
-		"%d%%  (ступеней %d)" % [int(fuel_pct), v.stages.size()],
+		"%d" % v.stages.size(),
 		state,
+		"%.4f°, %.4f°" % [ll.x, ll.y],
+		_fmt_time(flight.sim_time),
 	]))
-	_warp_label.text = "Время ×%d" % flight.warp()
-	_warp_label.add_theme_color_override("font_color", Color(1, 0.75, 0.35) if flight.is_rails() else Color(0.9, 0.95, 1))
+	_warp_btn.text = "Время ×%d" % flight.warp()
+	_warp_btn.add_theme_color_override("font_color", ACCENT if flight.warp() > 1 else TEXT)
 	_stage_btn.disabled = v.stages.size() <= 1
 
-	var fixed := b.inertial_to_fixed(v.pos, flight.sim_time)
-	var ll := CelestialBody.lat_lon(fixed)
-	_overlay.text = "FPS %d · v%s (%d)\nСфера влияния: %s\nШир. %.4f°, долг. %.4f°\nВремя полёта %s" % [
+	_overlay.text = "FPS %d · v%s (%d)" % [
 		Engine.get_frames_per_second(),
 		ProjectSettings.get_setting("application/config/version"),
 		int(ProjectSettings.get_setting("starward/build/version_code")),
-		b.name, ll.x, ll.y, _fmt_time(flight.sim_time),
 	]
 
 
@@ -720,6 +821,7 @@ func _build_pause() -> void:
 	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_pause_layer.add_child(dim)
 	var p := _panel()
+	p.theme = make_theme()
 	p.set_anchors_and_offsets_preset(Control.PRESET_CENTER, Control.PRESET_MODE_MINSIZE)
 	p.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	p.grow_vertical = Control.GROW_DIRECTION_BOTH

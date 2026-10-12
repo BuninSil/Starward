@@ -31,6 +31,7 @@ var _timer := 0.0
 func _ready() -> void:
 	layer = 2
 	_root = Control.new()
+	_root.theme = preload("res://scripts/flight/flight_hud.gd").make_theme()
 	_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_root)
