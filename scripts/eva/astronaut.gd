@@ -58,56 +58,15 @@ func _ready() -> void:
 	_build_model()
 
 
+const ModelScript := preload("res://scripts/eva/astronaut_model.gd")
+var model: Node3D
+
+
 func _build_model() -> void:
-	var white := StandardMaterial3D.new()
-	white.albedo_color = Color(0.93, 0.93, 0.92)
-	white.roughness = 0.8
-	var body := MeshInstance3D.new()
-	var bm := CapsuleMesh.new()
-	bm.radius = 0.32
-	bm.height = 1.3
-	body.mesh = bm
-	body.material_override = white
-	body.position.y = -0.15
-	add_child(body)
-	var helmet := MeshInstance3D.new()
-	var hm := SphereMesh.new()
-	hm.radius = 0.24
-	hm.height = 0.48
-	helmet.mesh = hm
-	helmet.material_override = white
-	helmet.position.y = 0.68
-	add_child(helmet)
-	var visor := MeshInstance3D.new()
-	var vm := SphereMesh.new()
-	vm.radius = 0.18
-	vm.height = 0.3
-	visor.mesh = vm
-	var gold := StandardMaterial3D.new()
-	gold.albedo_color = Color(0.95, 0.7, 0.25)
-	gold.metallic = 1.0
-	gold.roughness = 0.15
-	visor.material_override = gold
-	visor.position = Vector3(0, 0.7, -0.12)
-	add_child(visor)
-	var pack := MeshInstance3D.new()
-	var pm := BoxMesh.new()
-	pm.size = Vector3(0.55, 0.75, 0.3)
-	pack.mesh = pm
-	var grey := StandardMaterial3D.new()
-	grey.albedo_color = Color(0.55, 0.57, 0.6)
-	pack.material_override = grey
-	pack.position = Vector3(0, 0.15, 0.32)
-	add_child(pack)
-	for limb in [Vector3(-0.42, 0.05, 0), Vector3(0.42, 0.05, 0), Vector3(-0.15, -0.95, 0), Vector3(0.15, -0.95, 0)]:
-		var m := MeshInstance3D.new()
-		var lm := CapsuleMesh.new()
-		lm.radius = 0.1
-		lm.height = 0.7
-		m.mesh = lm
-		m.material_override = white
-		m.position = limb
-		add_child(m)
+	# Animated suit (feet at the bottom of the collision capsule).
+	model = ModelScript.new()
+	model.position.y = -0.925
+	add_child(model)
 	# Thruster puffs (visible while firing).
 	var puff_mat := StandardMaterial3D.new()
 	puff_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -120,7 +79,7 @@ func _build_model() -> void:
 		sm.height = 0.16
 		p.mesh = sm
 		p.material_override = puff_mat
-		p.position = Vector3(0, 0.15, 0.32) + dir * 0.45
+		p.position = Vector3(0, 0.35, 0.36) + dir * 0.4
 		p.visible = false
 		p.set_meta("dir", dir)
 		add_child(p)
@@ -135,6 +94,7 @@ func has_propellant() -> bool:
 func physics_tick(dt: float, ship_accel: Vector3) -> void:
 	if not breathable:
 		oxygen = maxf(oxygen - dt, 0.0)
+	_update_animation()
 	if surface_mode:
 		_walk_tick(dt)
 		return
@@ -175,6 +135,25 @@ func physics_tick(dt: float, ship_accel: Vector3) -> void:
 		var dir: Vector3 = p.get_meta("dir")
 		# A nozzle pointing along `dir` fires when thrust pushes opposite to it.
 		p.visible = force_local.dot(-dir) > THRUST * 0.2 or (torque_local.length() > TORQUE * 0.3 and (dir == Vector3.UP or dir == Vector3.DOWN))
+
+
+## Picks the suit animation from the motion state.
+func _update_animation() -> void:
+	if model == null:
+		return
+	if not surface_mode:
+		model.play("float")
+		return
+	var v_h := linear_velocity - up_dir * linear_velocity.dot(up_dir)
+	var sp := v_h.length()
+	if not on_ground:
+		model.play("jump")
+	elif sp > 2.6:
+		model.play("run", clampf(sp / 4.0, 0.6, 1.4))
+	elif sp > 0.25:
+		model.play("walk", clampf(sp / 1.6, 0.5, 1.6))
+	else:
+		model.play("idle")
 
 
 func set_surface_mode(on: bool, up: Vector3, g: float, air: bool) -> void:

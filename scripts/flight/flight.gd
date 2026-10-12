@@ -698,6 +698,7 @@ func start_eva() -> void:
 	vessel.throttle = 0.0
 	vessel.sas = true
 	vessel.hold_mode = ""
+	rocket.set_hatch_open(true)
 	astronaut = AstronautScript.new()
 	add_child(astronaut)
 	if vessel.landed:
@@ -821,6 +822,7 @@ func end_eva(forced_reason := "") -> void:
 	tether = null
 	eva_hud = null
 	eva_mode = false
+	rocket.set_hatch_open(false)
 	hud.visible = true
 	if forced_reason != "":
 		Log.warn("EVA: " + forced_reason)

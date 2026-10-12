@@ -20,3 +20,6 @@
 Карты скачиваются и уменьшаются workflow `.github/workflows/fetch-planet-maps.yml` (`tools/fetch_planet_maps.py`).
 
 Движок: [Godot Engine](https://godotengine.org) — MIT.
+
+## Космонавт
+- `assets/astronaut/astronaut.glb` — «Astronaut» из пака **Ultimate Space Kit** by Quaternius (quaternius.com), лицензия **CC0** (https://opengameart.org/content/ultimate-space-kit-by-quaternius). Голова оригинала скрыта, шлем, визор и ранец — свои (код).
