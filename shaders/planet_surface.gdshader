@@ -327,6 +327,9 @@ void fragment() {
 
 	// The Blue Marble ocean is very dark: brighten it, keeping the bathymetry
 	// shading of the map (shallow shelves lighter), and lift it toward sea blue.
+	// The water mask is coarser than the colour map: along coasts it covers bright
+	// beach/land pixels, which must not get the ocean boost and gloss (white fringe).
+	water *= 1.0 - smoothstep(0.08, 0.2, dot(col, vec3(0.2126, 0.7152, 0.0722)));
 	float shelf = clamp(dot(col, vec3(0.33)) * 5.0, 0.0, 1.0);
 	vec3 sea = col * 1.9 + mix(water_deep, water_shallow, shelf) * 0.6;
 	col = mix(col, sea, water);

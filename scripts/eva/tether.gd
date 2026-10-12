@@ -79,22 +79,27 @@ func attach(dist: float) -> void:
 
 
 ## Visual side: Verlet chain between anchor and astronaut, rendered as a ribbon.
+## Simulated relative to the anchor, so floating-origin shifts of the scene do
+## not kick the rope.
 func update_visual(anchor: Vector3, astro: Vector3, cam_pos: Vector3, dt: float) -> void:
 	_mesh.clear_surfaces()
 	_mi.visible = attached and not broken
 	if not _mi.visible:
 		return
+	var tip := astro - anchor
 	if _pts.size() != SEGMENTS + 1:
-		reset_chain(anchor, astro)
+		reset_chain(Vector3.ZERO, tip)
 	var seg := length / SEGMENTS
 	for i in range(1, SEGMENTS):
 		var p := _pts[i]
-		var v := (p - _prev[i]) * 0.97   # light damping, no gravity in orbit
+		var v := (p - _prev[i]) * 0.94   # damping, no gravity in orbit
 		_prev[i] = p
-		_pts[i] = p + v
+		# Slack drifts back towards the straight line instead of piling up.
+		var chord := tip * (float(i) / SEGMENTS)
+		_pts[i] = p + v + (chord - p) * minf(dt * 0.6, 0.05)
 	for _it in 12:
-		_pts[0] = anchor
-		_pts[SEGMENTS] = astro
+		_pts[0] = Vector3.ZERO
+		_pts[SEGMENTS] = tip
 		for i in SEGMENTS:
 			var a := _pts[i]
 			var b := _pts[i + 1]
@@ -113,7 +118,7 @@ func update_visual(anchor: Vector3, astro: Vector3, cam_pos: Vector3, dt: float)
 				_pts[i + 1] = b - corr
 	_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLE_STRIP)
 	for i in SEGMENTS + 1:
-		var p := _pts[i]
+		var p := anchor + _pts[i]
 		var tangent := (_pts[mini(i + 1, SEGMENTS)] - _pts[maxi(i - 1, 0)]).normalized()
 		var side := tangent.cross((cam_pos - p).normalized()).normalized() * 0.025
 		_mesh.surface_add_vertex(p - side)

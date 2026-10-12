@@ -45,6 +45,8 @@ func build(v: Vessel) -> void:
 	_stage_nodes.clear()
 	_flames.clear()
 	_bell_mats.clear()
+	_chute_lines.clear()
+	_chute_collapse = 0.0
 	hatch_pivot = null
 	var y := 0.0
 	# Bottom to top.
@@ -672,38 +674,107 @@ func _build_collider() -> void:
 		collider.add_child(cs)
 
 
+const CHUTE_GORES := 12
+const CHUTE_R := 7.5     ## skirt radius, m
+const CHUTE_H := 4.6     ## canopy depth (apex above the skirt), m
+const CHUTE_L := 12.0    ## suspension line length to the skirt, m
+
+var _canopy: MeshInstance3D
+var _chute_mat: ShaderMaterial
+var _chute_lines: Array[MeshInstance3D] = []
+var _chute_collapse := 0.0
+var _chute_wind := 0.0   ## yaw the canopy falls towards
+
+
 func _build_chute() -> void:
 	_chute = Node3D.new()
-	var canopy := MeshInstance3D.new()
-	var cm := SphereMesh.new()
-	cm.radius = 8.0
-	cm.height = 8.0
-	cm.is_hemisphere = true
-	cm.radial_segments = 24
-	cm.rings = 8
-	canopy.mesh = cm
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(1.0, 0.45, 0.15)
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mat.roughness = 0.8
-	canopy.material_override = mat
-	canopy.position.y = 14.0
-	_chute.add_child(canopy)
-	for k in 8:
+	# Canopy: a shallow dome of gores, alternately orange and white.
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var rings := 12
+	var per := 6   # segments across one gore
+	var orange := Color(1.0, 0.45, 0.07)   # linear
+	var white := Color(0.82, 0.82, 0.78)
+	for g in CHUTE_GORES:
+		var col := orange if g % 2 == 0 else white
+		for k in per:
+			var a0 := TAU * (g * per + k) / float(CHUTE_GORES * per)
+			var a1 := TAU * (g * per + k + 1) / float(CHUTE_GORES * per)
+			for ri in rings:
+				var pts: Array[Vector3] = []
+				for q in [[ri, a0], [ri + 1, a0], [ri + 1, a1], [ri, a1]]:
+					var u: float = float(q[0]) / rings          # 0 apex .. 1 skirt
+					var rr := CHUTE_R * sin(u * PI * 0.5)
+					var y := CHUTE_H * cos(u * PI * 0.5)
+					pts.append(Vector3(cos(q[1]) * rr, y, sin(q[1]) * rr))
+				st.set_color(col)
+				for idx in [0, 2, 1, 0, 3, 2]:
+					st.add_vertex(pts[idx])
+	st.generate_normals()
+	_canopy = MeshInstance3D.new()
+	_canopy.mesh = st.commit()
+	_chute_mat = ShaderMaterial.new()
+	_chute_mat.shader = load("res://shaders/chute.gdshader")
+	_chute_mat.set_shader_parameter("gores", float(CHUTE_GORES))
+	_chute_mat.set_shader_parameter("radius", CHUTE_R)
+	_canopy.material_override = _chute_mat
+	_chute.add_child(_canopy)
+	var lm := CylinderMesh.new()
+	lm.top_radius = 0.025
+	lm.bottom_radius = 0.025
+	lm.height = 1.0
+	lm.radial_segments = 4
+	lm.rings = 1
+	var line_mat := StandardMaterial3D.new()
+	line_mat.albedo_color = Color(0.85, 0.85, 0.82)
+	line_mat.roughness = 0.9
+	for k in CHUTE_GORES:
 		var line := MeshInstance3D.new()
-		var lm := CylinderMesh.new()
-		lm.top_radius = 0.03
-		lm.bottom_radius = 0.03
-		lm.height = 14.0
 		line.mesh = lm
-		var ang := TAU * k / 8.0
-		var top := Vector3(cos(ang) * 7.5, 14.0, sin(ang) * 7.5)
-		line.position = top * 0.5
-		line.look_at_from_position(top * 0.5, Vector3.ZERO, Vector3.FORWARD if absf(top.normalized().y) > 0.99 else Vector3.UP)
-		line.rotate_object_local(Vector3.RIGHT, PI * 0.5)
+		line.material_override = line_mat
+		line.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		_chute.add_child(line)
+		_chute_lines.append(line)
 	add_child(_chute)
 	_chute.visible = false
+
+
+## Canopy pose: inflated overhead, or (collapse -> 1) falling over downwind
+## and lying flat and crumpled on the ground. Lines run from the attach point
+## (chute node origin) to the skirt.
+func _update_chute(delta: float, attach_y: float) -> void:
+	var c := _chute_collapse
+	if vessel.landed:
+		c = move_toward(c, 1.0, delta / 4.0)
+	else:
+		c = move_toward(c, 0.0, delta / 1.5)
+	if c > 0.0 and _chute_collapse == 0.0:
+		_chute_wind = randf() * TAU
+	_chute_collapse = c
+	_chute.position.y = attach_y
+	_chute.rotation.y = _chute_wind
+	# 0..0.6: deflates and tips over; 0.6..1: settles flat on the ground.
+	var tip := smoothstep(0.0, 0.7, c)
+	var settle := smoothstep(0.45, 1.0, c)
+	var ang := tip * deg_to_rad(90.0)
+	var b := Basis(Vector3.RIGHT, ang)
+	var sc := Vector3(lerpf(1.0, 0.75, tip), lerpf(1.0, 1.3, settle), lerpf(1.0, 0.06, settle))
+	var centre := b * Vector3(0, CHUTE_L * lerpf(1.0, 0.85, tip), 0)
+	# Lying on the ground: the vessel origin is the ground under the attach point.
+	centre.y = lerpf(centre.y, 0.25 - attach_y, settle)
+	_canopy.transform = Transform3D(b.scaled_local(sc), centre)
+	_chute_mat.set_shader_parameter("collapse", c)
+	for k in _chute_lines.size():
+		var a := TAU * k / float(_chute_lines.size())
+		var skirt := _canopy.transform * Vector3(cos(a) * CHUTE_R, 0, sin(a) * CHUTE_R)
+		var line := _chute_lines[k]
+		var d := skirt.length()
+		if d < 0.01:
+			continue
+		var dir := skirt / d
+		var side := dir.cross(Vector3.UP if absf(dir.y) < 0.99 else Vector3.RIGHT).normalized()
+		var basis := Basis(side, dir, side.cross(dir)).scaled_local(Vector3(1, d, 1))
+		line.transform = Transform3D(basis, skirt * 0.5)
 
 
 ## Drops the visual of the bottom stage; returns it re-parented for debris.
@@ -729,8 +800,11 @@ func detach_bottom_stage() -> Node3D:
 func update_visual(delta: float) -> void:
 	if _chute and not _stage_nodes.is_empty():
 		_chute.visible = vessel.chute_deployed
-		var top: Node3D = _stage_nodes[0]
-		_chute.position.y = top.position.y + float(vessel.stages[0].length)
+		if vessel.chute_deployed:
+			var top: Node3D = _stage_nodes[0]
+			_update_chute(delta, top.position.y + float(vessel.stages[0].length))
+		else:
+			_chute_collapse = 0.0
 	# Hatch animation (eased swing about the hinge line).
 	if hatch_pivot and not is_equal_approx(_hatch_open, _hatch_target):
 		_hatch_open = move_toward(_hatch_open, _hatch_target, delta / 1.6)

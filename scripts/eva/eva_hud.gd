@@ -180,7 +180,15 @@ func _build_right() -> void:
 	top.add_child(_btn("II", func() -> void: flight.hud.toggle_pause(), 70))
 
 
+func _build_pause_button() -> void:
+	var b := _btn("II", func() -> void: flight.hud.toggle_pause(), 70)
+	b.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT, Control.PRESET_MODE_MINSIZE, 16)
+	b.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	_root.add_child(b)
+
+
 func _build_surface() -> void:
+	_build_pause_button()
 	var box := HBoxContainer.new()
 	box.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT, Control.PRESET_MODE_MINSIZE, 24)
 	box.grow_vertical = Control.GROW_DIRECTION_BEGIN

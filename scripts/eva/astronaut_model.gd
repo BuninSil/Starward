@@ -271,8 +271,11 @@ func _process(delta: float) -> void:
 	match _state:
 		"walk", "run":
 			var run := _state == "run"
-			var hop := low_gravity and run
-			_phase += delta * (5.2 if run else 4.2) * _speed * (0.75 if low_gravity else 1.0)
+			# Low gravity: an Apollo-style lope (alternating legs, long slow strides,
+			# a short float between steps) rather than a two-footed hop, which on
+			# loop looked like flying.
+			var hop := false
+			_phase += delta * (5.2 if run else 4.2) * _speed * (0.6 if low_gravity else 1.0)
 			for side in [-1.0, 1.0]:
 				var ph := _phase + (0.0 if hop else (PI if side > 0.0 else 0.0))
 				var swing := sin(ph) * (0.25 if hop else (0.55 if run else 0.38))
@@ -282,7 +285,7 @@ func _process(delta: float) -> void:
 				target["sh%d" % side] = -sin(ph) * (0.15 if hop else (0.45 if run else 0.3)) + (0.25 if hop else 0.0)
 				target["el%d" % side] = 0.35 + (0.5 if run else 0.2)
 				target["abd%d" % side] = 0.12
-			bob = absf(sin(_phase)) * (0.12 if hop else (0.05 if run else 0.025))
+			bob = absf(sin(_phase)) * (0.07 if low_gravity and run else (0.05 if run else 0.025))
 			lean = 0.18 if hop else (0.12 if run else 0.05)
 		"jump":
 			for side in [-1.0, 1.0]:

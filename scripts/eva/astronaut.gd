@@ -37,6 +37,9 @@ var on_ground := false
 const WALK_SPEED := 4.0           ## m/s on Earth (brisk jog)
 const WALK_SPEED_LOW_G := 3.2     ## m/s in low gravity (bounding gait)
 const JUMP_SPEED := 2.2
+
+var _air_time := 0.0     ## seconds off the ground
+var _since_jump := 10.0  ## seconds since the last jump
 var _puffs: Array[MeshInstance3D] = []
 
 
@@ -146,7 +149,7 @@ func _update_animation() -> void:
 		return
 	var v_h := linear_velocity - up_dir * linear_velocity.dot(up_dir)
 	var sp := v_h.length()
-	if not on_ground:
+	if not on_ground and (_since_jump < 1.5 or _air_time > 0.35):
 		model.play("jump")
 	elif sp > 2.6:
 		model.play("run", clampf(sp / 4.0, 0.6, 1.4))
@@ -175,9 +178,20 @@ func _walk_tick(dt: float) -> void:
 	apply_central_force(-up_dir * gravity * mass)
 	# Ground check: short ray down from the body centre.
 	var space := get_world_3d().direct_space_state
-	var q := PhysicsRayQueryParameters3D.create(global_position, global_position - up_dir * 1.05)
+	var q := PhysicsRayQueryParameters3D.create(global_position, global_position - up_dir * 1.7)
 	q.exclude = [get_rid()]
-	on_ground = not space.intersect_ray(q).is_empty()
+	var hit := space.intersect_ray(q)
+	var gap := (global_position - (hit.position as Vector3)).dot(up_dir) if not hit.is_empty() else INF
+	on_ground = gap <= 1.05
+	_air_time = 0.0 if on_ground else _air_time + dt
+	_since_jump += dt
+	# Walking over bumps / downhill: stay on the ground instead of sailing off it
+	# (in 1/6 g every small kick turns into a long float). Not after a jump.
+	if not on_ground and gap < 1.7 and _since_jump > 0.4 and linear_velocity.dot(up_dir) < 1.2:
+		global_position -= up_dir * (gap - 0.98)
+		linear_velocity -= up_dir * maxf(linear_velocity.dot(up_dir), 0.0)
+		on_ground = true
+		_air_time = 0.0
 	# Heading from the camera, projected on the horizon.
 	var fwd := cam_forward - up_dir * cam_forward.dot(up_dir)
 	fwd = fwd.normalized() if fwd.length() > 1e-3 else up_dir.cross(Vector3.RIGHT).normalized()
@@ -192,6 +206,9 @@ func _walk_tick(dt: float) -> void:
 		v_h = v_h.move_toward(target, accel * dt)
 		if jump_requested:
 			v_up = JUMP_SPEED if gravity < 3.0 else JUMP_SPEED * 1.3
+			_since_jump = 0.0
+		elif v_up > 0.0:
+			v_up = 0.0   # the ground plane re-tilting under the feet must not launch us
 		jump_requested = false
 		linear_velocity = v_h + up_dir * v_up
 	else:

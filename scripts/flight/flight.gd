@@ -750,7 +750,7 @@ func start_eva() -> void:
 	tether = TetherScript.new()
 	add_child(tether)
 	tether.length = 12.0
-	tether.reset_chain(hatch, astronaut.global_position)
+	tether.reset_chain(Vector3.ZERO, astronaut.global_position - hatch)
 	eva_mode = true
 	_tether_broken_reported = false
 	hud.visible = false
@@ -909,7 +909,7 @@ func debug_eva_to_hatch() -> void:
 	astronaut.linear_velocity = Vector3.ZERO
 	astronaut.angular_velocity = Vector3.ZERO
 	tether.attach(3.0)
-	tether.reset_chain(hatch_world(), astronaut.global_position)
+	tether.reset_chain(Vector3.ZERO, astronaut.global_position - hatch_world())
 	_tether_broken_reported = false
 
 
@@ -1023,6 +1023,15 @@ func refresh_trajectory() -> void:
 			_update_preview()
 
 
+## Ambient colour a sunlit body casts on things orbiting low above it (albedo-ish).
+const PLANET_SHINE := {
+	"earth": Color(0.2, 0.25, 0.34), "moon": Color(0.11, 0.11, 0.11), "mars": Color(0.24, 0.15, 0.1),
+	"venus": Color(0.4, 0.37, 0.3), "mercury": Color(0.11, 0.105, 0.1),
+	"jupiter": Color(0.3, 0.27, 0.22), "saturn": Color(0.3, 0.28, 0.22),
+	"uranus": Color(0.22, 0.3, 0.32), "neptune": Color(0.18, 0.24, 0.36),
+}
+
+
 func _update_sky() -> void:
 	var alt := vessel.altitude()
 	var up := vessel.pos.normalized().to_v3()
@@ -1056,6 +1065,14 @@ func _update_sky() -> void:
 		# Apollo photos); the eye adapts to the bright ground, the stars fade.
 		airless_day = near * daylight
 		amb = amb.lerp(Color(0.012, 0.012, 0.013), airless_day)
+	# Planet-shine in orbit: the sunlit body below fills much of the sky and
+	# lights everything from beneath (else a backlit astronaut is pitch black).
+	if not map_mode and not body.is_star:
+		var r := vessel.pos.length()
+		var cover := 1.0 - sqrt(maxf(1.0 - pow(body.radius / r, 2.0), 0.0))
+		var space := smoothstep(5000.0, 60_000.0, agl)
+		var shine: Color = PLANET_SHINE.get(body.id, Color(0.2, 0.2, 0.2))
+		amb += shine * cover * space * smoothstep(-0.2, 0.3, sun_elev)
 	env.ambient_light_color = amb
 	sky_mat.set_shader_parameter("star_gain", lerpf(1.0, 0.4, airless_day))
 	# Camera exposure for a low sun on airless ground (no sky light to help).
@@ -1063,6 +1080,13 @@ func _update_sky() -> void:
 	env.tonemap_exposure = lerpf(1.0, expo, airless_day)
 	# No atmosphere: full sunlight (Earth's surface gets ~1.5 after the air).
 	sun.light_energy = 2.6 if not body.has_atmosphere() and not body.is_star else 1.5
+	# The light does not know about the planet: near the ground after sunset it
+	# would shine up through it (lit rocket, glowing slopes). Fade it with the
+	# local sun elevation; from orbit the night side is already dark by itself.
+	if not map_mode and not body.is_star:
+		var ground_w := 1.0 - smoothstep(2000.0, 30_000.0, agl)
+		sun.light_energy *= lerpf(1.0, smoothstep(-0.05, 0.03, sun_elev), ground_w)
+	sun.visible = sun.light_energy > 0.001
 	# Sun shadows (rocks, rocket, crater walls) only near the ground, high preset.
 	var shadows := Graphics.quality == Graphics.HIGH and agl < 3000.0 and not map_mode
 	if shadows != sun.shadow_enabled:
