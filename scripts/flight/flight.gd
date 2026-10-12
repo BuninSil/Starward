@@ -710,8 +710,13 @@ func _update_fx(delta: float) -> void:
 	if _flame_light.visible:
 		# Near the ground, where the flame hits it: lights the pad and the clouds.
 		var up_f := v.pos.normalized().to_v3()
-		_flame_light.global_position = nozzle - up_f * maxf(agl_f - 6.0, 0.0) * 0.8
-		_flame_light.light_energy = sqrt(thr_f) * (1.0 - agl_f / 200.0) * randf_range(6.5, 8.0)
+		# Never under the terrain (near touchdown the nozzle point is below it).
+		var nozzle_agl := agl_f - 3.0
+		_flame_light.global_position = nozzle - up_f * maxf(agl_f - 6.0, 0.0) * 0.8 + up_f * maxf(2.5 - nozzle_agl, 0.0)
+		# A burning engine is about as bright at any throttle; dark regolith needs more.
+		var dark_ground := 1.0 if b.has_atmosphere() else 3.2
+		_flame_light.omni_range = 110.0 if b.has_atmosphere() else 150.0
+		_flame_light.light_energy = lerpf(0.65, 1.0, thr_f) * (1.0 - agl_f / 200.0) * randf_range(6.5, 8.0) * dark_ground
 	fx.step(delta * w, render_origin(), sim_time)
 
 
