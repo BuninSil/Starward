@@ -48,6 +48,7 @@ func build(v: Vessel) -> void:
 	_chute_lines.clear()
 	_nav.clear()
 	_floods.clear()
+	_fill = null
 	_chute_collapse = 0.0
 	hatch_pivot = null
 	var y := 0.0
@@ -785,6 +786,7 @@ func _update_chute(delta: float, attach_y: float) -> void:
 var night := 0.0   ## 0 in daylight .. 1 in the dark; set by the flight scene
 var _nav: Array = []   ## {bulb: MeshInstance3D, light: OmniLight3D, strobe: bool, energy: float}
 var _floods: Array[SpotLight3D] = []
+var _fill: OmniLight3D
 var _blink := 0.0
 
 
@@ -844,10 +846,10 @@ func _build_lights() -> void:
 	for a in [deg_to_rad(-40.0), deg_to_rad(220.0)]:
 		var f := SpotLight3D.new()
 		f.light_color = Color(1.0, 0.9, 0.76)
-		f.spot_range = 45.0
-		f.spot_angle = 24.0
-		f.spot_attenuation = 0.8
-		f.spot_angle_attenuation = 2.0
+		f.spot_range = 60.0
+		f.spot_angle = 44.0
+		f.spot_attenuation = 1.4          # gentle fade with distance
+		f.spot_angle_attenuation = 0.35   # soft edge of the cone
 		f.light_energy = 0.0
 		f.shadow_enabled = false
 		var dir := Vector3(cos(a), 0, sin(a))
@@ -856,6 +858,16 @@ func _build_lights() -> void:
 		f.basis = Basis.looking_at(Vector3.DOWN - dir * 0.12, dir)
 		node.add_child(f)
 		_floods.append(f)
+	# Soft warm fill around the ship, so lit and unlit parts blend instead of a
+	# hard line between light and dark.
+	var fill := OmniLight3D.new()
+	fill.light_color = Color(1.0, 0.88, 0.72)
+	fill.omni_range = 22.0
+	fill.omni_attenuation = 2.0
+	fill.shadow_enabled = false
+	fill.position = Vector3(0, -2.0, 0)
+	node.add_child(fill)
+	_fill = fill
 
 
 static var _halo: Shader
@@ -892,8 +904,11 @@ func _update_lights(delta: float) -> void:
 		(e.light as OmniLight3D).light_energy = (e.energy as float) * n if lit else 0.0
 		(e.light as OmniLight3D).visible = n > 0.01 and lit
 	for f in _floods:
-		f.light_energy = 4.0 * n
+		f.light_energy = 5.0 * n
 		f.visible = n > 0.01
+	if _fill:
+		_fill.light_energy = 0.9 * n
+		_fill.visible = n > 0.01
 
 
 ## Drops the visual of the bottom stage; returns it re-parented for debris.

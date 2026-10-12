@@ -188,7 +188,18 @@ func _build_torso() -> void:
 		_mesh(_torso, RV._lathe(PackedVector2Array([Vector2(0.02, 0.0), Vector2(0.02, 0.0), Vector2(0.035, 0.05), Vector2(0.035, 0.05)]), 10), _dark, c)
 
 
+var lamps := 0.0   ## helmet lights 0..1 (set by the flight scene in the dark)
+var _lamp_lights: Array[SpotLight3D] = []
+var _lens_mat: StandardMaterial3D
+
+
 func _build_helmet() -> void:
+	_lens_mat = StandardMaterial3D.new()
+	_lens_mat.albedo_color = Color(1.0, 0.98, 0.9)
+	_lens_mat.roughness = 0.1
+	_lens_mat.emission_enabled = true
+	_lens_mat.emission = Color(1.0, 0.92, 0.75)
+	_lens_mat.emission_energy_multiplier = 0.0
 	# White protective shell (back), gold sun visor (front), lamps.
 	var sph := PackedVector2Array()
 	for k in 13:
@@ -212,8 +223,22 @@ func _build_helmet() -> void:
 	_head.add_child(inner)
 	for sx in [-1.0, 1.0]:
 		var lamp := _mesh(_head, RV._lathe(RV._bevel_cyl(0.03, -0.05, 0.05, 0.012), 12), _grey, Vector3(sx * 0.2, 0.25, -0.02))
-		lamp.rotation.x = PI * 0.5
-		_mesh(lamp, RV._lathe(PackedVector2Array([Vector2(0.0, 0.05), Vector2(0.024, 0.05)]), 12), _paint(Color(1.0, 0.98, 0.9), 0.0, 0.1))
+		lamp.rotation.x = -PI * 0.5   # lens towards the front (-Z)
+		_mesh(lamp, RV._lathe(PackedVector2Array([Vector2(0.0, 0.05), Vector2(0.024, 0.05)]), 12), _lens_mat)
+		# EMU helmet lights: a wide, soft warm beam where the astronaut looks.
+		var l := SpotLight3D.new()
+		l.light_color = Color(1.0, 0.93, 0.82)
+		l.spot_range = 22.0
+		l.spot_angle = 34.0
+		l.spot_attenuation = 1.3
+		l.spot_angle_attenuation = 0.6
+		l.light_energy = 0.0
+		l.shadow_enabled = false
+		l.visible = false
+		l.position = Vector3(sx * 0.2, 0.25, -0.08)
+		l.rotation.x = deg_to_rad(-8.0)
+		_head.add_child(l)
+		_lamp_lights.append(l)
 
 
 func _build_arm(side: float) -> Array:
@@ -263,7 +288,17 @@ func play(state: String, speed := 1.0) -> void:
 	_speed = speed
 
 
+func _update_lamps() -> void:
+	var n := clampf(lamps, 0.0, 1.0)
+	for l in _lamp_lights:
+		l.light_energy = 2.2 * n
+		l.visible = n > 0.01
+	if _lens_mat:
+		_lens_mat.emission_energy_multiplier = 6.0 * n
+
+
 func _process(delta: float) -> void:
+	_update_lamps()
 	_t += delta
 	var target := {}
 	var bob := 0.0
