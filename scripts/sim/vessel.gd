@@ -154,6 +154,16 @@ func has_chute() -> bool:
 	return not stages.is_empty() and stages[0].get("parachute", false)
 
 
+## Steady descent speed under the open chute at the ground below (terminal velocity).
+func chute_touchdown_speed(t: float) -> float:
+	var rho := body.density_at(maxf(ground_height(t), 0.0))
+	if rho <= 0.0:
+		return INF
+	var area := PI * pow(_max_diameter() * 0.5, 2)
+	var g := body.mu / pow(body.radius + ground_height(t), 2)
+	return sqrt(2.0 * mass() * g / (rho * (0.5 * area + CHUTE_CDA)))
+
+
 ## Opens the parachute. Returns "" on success or the reason it did not open.
 func deploy_chute() -> String:
 	if chute_deployed:

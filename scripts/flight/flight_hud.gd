@@ -581,8 +581,16 @@ func on_maneuver_changed() -> void:
 
 
 func _on_chute() -> void:
-	var err: String = flight.vessel.deploy_chute()
-	toast("Парашют раскрыт" if err == "" else err)
+	var v: Vessel = flight.vessel
+	var err: String = v.deploy_chute()
+	if err != "":
+		toast(err)
+		return
+	var vt := v.chute_touchdown_speed(flight.sim_time)
+	if vt > Vessel.CRASH_SPEED:
+		toast("Парашют раскрыт, но ракета тяжёлая: сядет на %d м/с (безопасно до %d). Сбрось ступени" % [int(vt), int(Vessel.CRASH_SPEED)])
+	else:
+		toast("Парашют раскрыт, касание ~%d м/с" % int(vt))
 
 
 func on_autopilot_finished() -> void:
@@ -614,6 +622,10 @@ func _process(delta: float) -> void:
 	_throttle_label.text = "Газ %d%%" % int(round(v.throttle * 100.0))
 	var ap: Autopilot = flight.autopilot
 	_ap_label.text = "Автопилот · " + ap.status() if ap.active() else ""
+	if not ap.active() and v.chute_deployed and not v.landed and not v.destroyed_flag:
+		var vt := v.chute_touchdown_speed(flight.sim_time)
+		if vt > Vessel.CRASH_SPEED:
+			_ap_label.text = "Парашют не держит: касание ~%d м/с > %d. Сбрось ступени или притормози двигателем" % [int(vt), int(Vessel.CRASH_SPEED)]
 	_ap_btn.text = "Стоп автопилот" if ap.active() else "Автопилот"
 	_eva_btn.visible = flight.can_eva() == "" and not flight.map_mode
 	_chute_btn.visible = v.has_chute() and not v.chute_deployed and not v.landed \
