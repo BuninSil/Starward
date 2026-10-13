@@ -557,6 +557,8 @@ var _prof_panel: PanelContainer = null
 var _prof_timer := 0.0
 var _prof_hid_rocket := false
 const PROF_FEATURES := [["shadows", "Тени"], ["ground", "Детальный грунт"], ["globe", "Шар планеты"],
+	["g_detail", "Грунт: детали вблизи"], ["g_craters", "Грунт: мелкие кратеры"],
+	["g_light", "Грунт: свет реголита"], ["g_hd", "Грунт: HD-снимки (Земля)"],
 	["rocks", "Камни и галька"], ["fx", "Дым и пыль"], ["glow", "Свечение (glow)"],
 	["rocket", "Ракета и космонавт"], ["lights", "Ночные фонари"], ["sky", "Небо"]]
 const PROF_SCALES := [1.0, 0.75, 0.6, 0.5]
@@ -604,6 +606,18 @@ func _show_profiler() -> void:
 	_prof_panel.show()
 
 
+## Profiler: a shader parameter forced to `value` while `on`, restored after.
+func _prof_param(m: ShaderMaterial, name: String, value: Variant, on: bool) -> void:
+	var key := "prof_" + name
+	if on:
+		if not m.has_meta(key):
+			m.set_meta(key, m.get_shader_parameter(name))
+		m.set_shader_parameter(name, value)
+	elif m.has_meta(key):
+		m.set_shader_parameter(name, m.get_meta(key))
+		m.remove_meta(key)
+
+
 ## Re-applied a few times a second: the flight scene rebuilds / re-shows things.
 func _prof_apply() -> void:
 	_prof_timer -= get_process_delta_time()
@@ -613,8 +627,7 @@ func _prof_apply() -> void:
 	var off: Dictionary = flight.prof_off
 	flight.fx.visible = not off.has("fx")
 	flight.env.glow_enabled = not off.has("glow")
-	flight.env.background_mode = Environment.BG_COLOR if off.has("sky") else Environment.BG_SKY
-	flight.env.background_color = Color.BLACK
+	flight.sky_quad.visible = not off.has("sky")
 	if off.has("rocket") or _prof_hid_rocket:
 		# Hide; on the way back restore only what we hid ourselves.
 		var h := off.has("rocket")
@@ -630,6 +643,12 @@ func _prof_apply() -> void:
 			(l as Light3D).light_cull_mask = 0 if off.has("lights") else int(l.get_meta("mask"))
 	for b in flight.planets:
 		var pv: Node = flight.planets[b]
+		var pm = pv.get("_patch_material")
+		if pm is ShaderMaterial:
+			_prof_param(pm, "detail_level", 0, off.has("g_detail"))
+			_prof_param(pm, "crater_decals", 0.0, off.has("g_craters"))
+			_prof_param(pm, "regolith", 0.0, off.has("g_light"))
+			_prof_param(pm, "hd_rect", Vector4.ZERO, off.has("g_hd"))
 		pv.get("_surface").visible = not off.has("globe")
 		var site: Node = pv.get("_site")
 		if site == null:

@@ -8,7 +8,7 @@ const SoundFxScript := preload("res://scripts/flight/sound_fx.gd")
 const FxScript := preload("res://scripts/flight/fx_particles.gd")
 const TrajectoryView := preload("res://scripts/flight/trajectory_view.gd")
 const HudScript := preload("res://scripts/flight/flight_hud.gd")
-const SKY_SHADER := preload("res://shaders/starfield.gdshader")
+const SKY_SHADER := preload("res://shaders/sky_quad.gdshader")
 const AstronautScript := preload("res://scripts/eva/astronaut.gd")
 const TetherScript := preload("res://scripts/eva/tether.gd")
 const EvaHudScript := preload("res://scripts/eva/eva_hud.gd")
@@ -57,6 +57,7 @@ var camera: Camera3D
 var sun: DirectionalLight3D
 var env: Environment
 var sky_mat: ShaderMaterial
+var sky_quad: MeshInstance3D
 
 # Flight camera, relative to the vessel attitude.
 var cam_yaw := 0.35
@@ -163,14 +164,19 @@ func _set_morning_at_site() -> void:
 
 
 func _build_environment() -> void:
+	# The sky is a full-screen quad, not a Sky resource (see sky_quad.gdshader).
 	sky_mat = ShaderMaterial.new()
 	sky_mat.shader = SKY_SHADER
-	var sky := Sky.new()
-	sky.sky_material = sky_mat
-	sky.radiance_size = Sky.RADIANCE_SIZE_32
+	sky_mat.render_priority = -128   # last among opaque objects: only bare pixels are shaded
+	sky_quad = MeshInstance3D.new()
+	sky_quad.mesh = QuadMesh.new()
+	sky_quad.material_override = sky_mat
+	sky_quad.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	sky_quad.custom_aabb = AABB(Vector3(-1e12, -1e12, -1e12), Vector3(2e12, 2e12, 2e12))
+	add_child(sky_quad)
 	env = Environment.new()
-	env.background_mode = Environment.BG_SKY
-	env.sky = sky
+	env.background_mode = Environment.BG_COLOR
+	env.background_color = Color.BLACK
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.06, 0.07, 0.1)
 	env.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
@@ -1481,6 +1487,8 @@ func _update_sky() -> void:
 		day = 0.0
 	sky_mat.set_shader_parameter("day_amount", day)
 	sky_mat.set_shader_parameter("local_up", up)
+	sky_mat.set_shader_parameter("sun_dir", sun_dir())
+	sky_mat.set_shader_parameter("sun_on", sun.visible)
 	var sky: Array = SKY_COLORS.get(body.id, SKY_COLORS["earth"])
 	sky_mat.set_shader_parameter("day_zenith", sky[0])
 	sky_mat.set_shader_parameter("day_horizon", sky[1])
