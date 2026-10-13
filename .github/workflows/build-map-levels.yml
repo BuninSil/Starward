@@ -1,0 +1,40 @@
+name: Build orbit tile level (from published HD tiles)
+
+# Manual: downloads the full-resolution tiles of `maps-<body>-v1`, makes the
+# coarse level for the view from orbit (tools/build_tile_levels.py) and adds it
+# to the same prerelease. No NASA downloads needed.
+on:
+  workflow_dispatch:
+    inputs:
+      body:
+        description: "earth | moon | mars"
+        default: "earth"
+
+permissions:
+  contents: write
+
+jobs:
+  levels:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BODY: ${{ github.event.inputs.body }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools
+        run: pip install --quiet pillow
+
+      - name: Download full tiles
+        run: gh release download "maps-$BODY-v1" --dir "$RUNNER_TEMP/tiles" --pattern "${BODY}_*"
+
+      - name: Build level 1
+        run: python tools/build_tile_levels.py --body "$BODY" --tiles "$RUNNER_TEMP/tiles" --out "$RUNNER_TEMP/l1" && ls "$RUNNER_TEMP/l1" | wc -l && du -sh "$RUNNER_TEMP/l1"
+
+      - name: Upload to the prerelease
+        run: gh release upload "maps-$BODY-v1" "$RUNNER_TEMP"/l1/*.jpg --clobber

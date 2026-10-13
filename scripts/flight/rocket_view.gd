@@ -700,6 +700,23 @@ func _build_collider() -> void:
 		collider.add_child(cs)
 
 
+## Stage bodies for the tether to slide around: [global Transform3D of the
+## centre (Y = axis), bottom radius, half height, top radius] (the capsule is
+## a cone).
+func rope_obstacles() -> Array:
+	var out: Array = []
+	for i in mini(_stage_nodes.size(), vessel.stages.size()):
+		var s: Dictionary = vessel.stages[i]
+		var node: Node3D = _stage_nodes[i]
+		if not is_instance_valid(node) or not node.visible:
+			continue
+		var d: float = s.diameter
+		var L: float = s.length
+		var xf := node.global_transform * Transform3D(Basis(), Vector3(0, L * 0.5, 0))
+		out.append([xf, d * 0.5, L * 0.5, d * 0.17 if i == 0 else d * 0.5])
+	return out
+
+
 const CHUTE_GORES := 12
 const CHUTE_R := 7.5     ## skirt radius, m
 const CHUTE_H := 4.6     ## canopy depth (apex above the skirt), m

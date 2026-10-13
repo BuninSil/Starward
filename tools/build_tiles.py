@@ -4,7 +4,8 @@
 Builds an equirectangular colour map of `--width` pixels (north up, longitude
 -180..180) for one body, applies the same colour treatment as the global map
 (tools/fetch_planet_maps.py) and cuts it into TILE x TILE JPEG tiles:
-  out/<id>_<col>_<row>.jpg, out/<id>_tiles.json
+  out/<id>_<col>_<row>.jpg, out/<id>_tiles.json,
+plus the coarse level for the view from orbit (tools/build_tile_levels.py).
 The workflow .github/workflows/build-map-tiles.yml publishes them as a
 prerelease `maps-<id>-v1` (never "latest", so the in-game updater ignores it).
 """
@@ -19,6 +20,7 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(__file__))
 import fetch_planet_maps as fpm  # noqa: E402
+import build_tile_levels  # noqa: E402
 
 Image.MAX_IMAGE_PIXELS = None
 TILE = 1024
@@ -154,6 +156,7 @@ def main():
         for c in range(cols):
             tile = img.crop((c * TILE, r * TILE, (c + 1) * TILE, (r + 1) * TILE))
             tile.save(os.path.join(a.out, "%s_%d_%d.jpg" % (a.body, c, r)), quality=84, optimize=True)
+    build_tile_levels.write_l1(lambda x, y, bw, bh: img.crop((x, y, x + bw, y + bh)), a.body, w, TILE, a.out)
     meta = {"id": a.body, "width": w, "height": h, "tile": TILE, "cols": cols, "rows": rows,
             "rows_order": "north_to_south", "cols_order": "lon_-180_to_180"}
     with open(os.path.join(a.out, "%s_tiles.json" % a.body), "w") as f:

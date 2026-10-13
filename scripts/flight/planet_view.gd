@@ -729,13 +729,24 @@ func _apply_patch(res: Dictionary) -> void:
 var _patch_material: Material = null
 
 
-## High-resolution colour block for the ground patch (from HdTiles).
-func set_hd(tex: Texture2D, rect: Rect2) -> void:
+## High-resolution colour block (from HdTiles) on the globe and the ground
+## patch: level 0 under the vessel, level 1 the coarser one to the horizon.
+func set_hd(tex: Texture2D, rect: Rect2, level := 0) -> void:
 	if _patch_material == null:
 		_patch_material = _make_patch_material()
-	if _patch_material is ShaderMaterial:
-		(_patch_material as ShaderMaterial).set_shader_parameter("hd_tex", tex)
-		(_patch_material as ShaderMaterial).set_shader_parameter("hd_rect", Vector4(rect.position.x, rect.position.y, rect.size.x, rect.size.y))
+	var pre := "hd_" if level == 0 else "hd2_"
+	# Mip level of the block whose texel matches the global map's.
+	var lod := 0.0
+	var gm = (_surface.material_override as ShaderMaterial).get_shader_parameter("albedo_tex") if _surface.material_override is ShaderMaterial else null
+	if gm is Texture2D:
+		lod = maxf(log(float(tex.get_width()) / (rect.size.x * float((gm as Texture2D).get_width()))) / log(2.0), 0.0)
+	for m in [_patch_material, _surface.material_override]:
+		if m is ShaderMaterial:
+			(m as ShaderMaterial).set_shader_parameter(pre + "tex", tex)
+			(m as ShaderMaterial).set_shader_parameter(pre + "rect", Vector4(rect.position.x, rect.position.y, rect.size.x, rect.size.y))
+			(m as ShaderMaterial).set_shader_parameter(pre + "lod", lod)
+
+
 static var _rocks: Array[ArrayMesh] = []
 static var _rock_arrays: Array = []   ## per variant: [vertices, normals], unindexed (for baking)
 const ROCK_CHUNK := 70.0

@@ -102,8 +102,8 @@ func _ready() -> void:
 	add_child(hd_tiles)
 	sfx = SoundFxScript.new()
 	add_child(sfx)
-	hd_tiles.tiles_ready.connect(func(b: CelestialBody, tex: Texture2D, rect: Rect2) -> void:
-		(planets[b] as Node3D).call("set_hd", tex, rect))
+	hd_tiles.tiles_ready.connect(func(b: CelestialBody, tex: Texture2D, rect: Rect2, level: int) -> void:
+		(planets[b] as Node3D).call("set_hd", tex, rect, level))
 	rocket = RocketView.new()
 	add_child(rocket)
 	fx = FxScript.new()
@@ -986,7 +986,14 @@ func _process_frame(delta: float) -> void:
 	if agl < 12_000.0:
 		var fixed_n := vessel.body.inertial_to_fixed(vessel.pos, sim_time).normalized()
 		(planets[vessel.body] as Node3D).call("ensure_patch", fixed_n, agl)
-		hd_tiles.call("want", vessel.body, fixed_n)
+	# Sharper surface colour streamed around the vessel: the full tiles below,
+	# the coarse level out to the horizon (from orbit).
+	var alt := vessel.altitude()
+	if alt < 4.0 * vessel.body.radius:
+		var dir_n := vessel.body.inertial_to_fixed(vessel.pos, sim_time).normalized()
+		if alt < 0.5 * vessel.body.radius:
+			hd_tiles.call("want", vessel.body, dir_n, 0)
+		hd_tiles.call("want", vessel.body, dir_n, 1)
 	for b in bodies:
 		var rel := b.absolute_position(sim_time).sub(vabs)
 		(planets[b] as Node3D).call("update_view", rel, sim_time, 1.0 if map_mode else _view_scale(rel.length(), b.radius))
@@ -1014,7 +1021,7 @@ func _process_frame(delta: float) -> void:
 	elif eva_mode:
 		_update_eva_camera()
 		if not is_surface_eva():
-			tether.update_visual(hatch_world(), _astro_xf * Vector3(0, 0.15, 0.32), camera.global_position, delta)
+			tether.update_visual(hatch_world(), _astro_xf * Vector3(0, 0.15, 0.32), camera.global_position, delta, rocket.rope_obstacles())
 	else:
 		_update_flight_camera()
 	traj_view.visible = map_mode

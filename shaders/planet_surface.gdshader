@@ -70,9 +70,16 @@ uniform vec2 wind_dir = vec2(0.8, 0.6);
 uniform vec3 detail_tint = vec3(1.0);   // e.g. greener land on Earth
 
 uniform float land_roughness = 0.9;
-// High-resolution colour block (downloaded tiles) over a UV rectangle of the map.
+// High-resolution colour blocks (downloaded tiles, hd_tiles.gd) over UV
+// rectangles of the map: hd = full resolution under the vessel, hd2 = coarser
+// level out to the horizon. hd_lod: the mip level of the block that matches
+// the global map's texel (the block only adds detail finer than that).
 uniform sampler2D hd_tex : source_color, filter_linear_mipmap_anisotropic, repeat_disable;
 uniform vec4 hd_rect = vec4(0.0, 0.0, 0.0, 0.0);   // u0, v0, du, dv (du = 0: none)
+uniform float hd_lod = 3.0;
+uniform sampler2D hd2_tex : source_color, filter_linear_mipmap_anisotropic, repeat_disable;
+uniform vec4 hd2_rect = vec4(0.0, 0.0, 0.0, 0.0);
+uniform float hd2_lod = 1.0;
 uniform bool use_slope = false;   // patch: COLOR.r slope, COLOR.g ejecta, COLOR.b crater rims
 uniform vec3 sun_local = vec3(0.0, 1.0, 0.0);   // patch: toward the sun, patch axes
 // Regolith reflectance (0 = Lambert): Lommel–Seeliger + opposition surge, the
@@ -196,27 +203,36 @@ vec4 crater_layer(vec2 uv, float cell, float fill, float seed, vec2 sun_h, float
 	return vec4(grad, shade * smoothstep(1.4, 1.0, x), bright);
 }
 
+// Detail of a downloaded block over the global map colour. The tiles come
+// from other sources than the global map (different stretch / brightness), so
+// they are used as relative detail: tile / its mean at the map's texel size.
+// Only where the screen resolves texels finer than the map (lod < lod_match):
+// coarser than that the ratio is 1 anyway and would only alias.
+LP vec3 hd_apply(LP vec3 col, sampler2D t, vec4 r, float lod_match, vec2 uv) {
+	float du = uv.x - r.x;
+	du -= floor(du);                       // wrap across the date line
+	vec2 hu = vec2(du / r.z, (uv.y - r.y) / r.w);
+	vec2 sz = vec2(textureSize(t, 0));
+	vec2 gx = dFdx(hu) * sz;
+	vec2 gy = dFdy(hu) * sz;
+	float lod = 0.5 * log2(max(max(dot(gx, gx), dot(gy, gy)), 1e-8));
+	vec2 e = min(hu, 1.0 - hu);
+	float w = smoothstep(0.0, 0.08, min(e.x, e.y)) * clamp(lod_match - lod, 0.0, 1.0);
+	if (w <= 0.0) {
+		return col;
+	}
+	LP vec3 hd = texture(t, hu).rgb;
+	LP vec3 hd_mean = textureLod(t, hu, lod_match).rgb;
+	return mix(col, col * clamp(hd / max(hd_mean, vec3(0.02)), vec3(0.5), vec3(1.6)), w);
+}
+
 void fragment() {
 	LP vec3 col = texture(albedo_tex, UV).rgb;
-	float view_d = length(VERTEX);
-	if (hd_rect.z > 0.0 && view_d < 8000.0) {
-		float du = UV.x - hd_rect.x;
-		du -= floor(du);                       // wrap across the date line
-		vec2 hu = vec2(du / hd_rect.z, (UV.y - hd_rect.y) / hd_rect.w);
-		if (hu.x >= 0.0 && hu.x <= 1.0 && hu.y >= 0.0 && hu.y <= 1.0) {
-			// Fade in from the block edges so the seam to the global map is soft.
-			vec2 e = min(hu, 1.0 - hu);
-			float edge = smoothstep(0.0, 0.08, min(e.x, e.y));
-			// The tiles come from other sources than the global map (different
-			// stretch / brightness): use them as relative detail over the map's
-			// own brightness (tile / its local mean from a small mip level).
-			LP vec3 hd = texture(hd_tex, hu).rgb;
-			LP vec3 hd_mean = textureLod(hd_tex, hu, 6.0).rgb;
-			// Only near the camera: from far away and at grazing angles the
-			// ratio aliases into streaks.
-			edge *= 1.0 - smoothstep(3000.0, 8000.0, view_d);
-			col = mix(col, col * clamp(hd / max(hd_mean, vec3(0.02)), vec3(0.5), vec3(1.6)), edge);
-		}
+	if (hd2_rect.z > 0.0) {
+		col = hd_apply(col, hd2_tex, hd2_rect, hd2_lod, UV);
+	}
+	if (hd_rect.z > 0.0) {
+		col = hd_apply(col, hd_tex, hd_rect, hd_lod, UV);
 	}
 	if (albedo_target > 0.0) {
 		// Relative brightness, compressed (real albedo contrasts are ~2:1).
