@@ -63,6 +63,8 @@ func build(v: Vessel) -> void:
 		_stage_nodes.push_front(node)
 		var upper_d: float = float(v.stages[i - 1].diameter) if i > 0 else 0.0
 		build_stage(node, s, i, v.stages.size(), upper_d, _shroud_height(v, i))
+		# Rigid hull panels of the stage: one mesh per paint (draw calls, shadows).
+		MeshMerge.merge(node, HULL_SHADER, false)
 		y += s.length
 	_build_flames()
 	_build_chute()

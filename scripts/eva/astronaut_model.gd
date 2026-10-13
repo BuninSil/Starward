@@ -49,6 +49,10 @@ func _ready() -> void:
 	for side in [-1.0, 1.0]:
 		_arm[side] = _build_arm(side)
 		_leg[side] = _build_leg(side)
+	# Rigid pieces on each joint: one mesh per material (draw calls, shadows).
+	for n in find_children("*", "Node3D", true, false):
+		MeshMerge.merge(n as Node3D, null, false)
+	MeshMerge.merge(self, null, false)
 
 
 # --- Materials & mesh helpers -----------------------------------------------------

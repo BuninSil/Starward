@@ -79,10 +79,19 @@ static func _segment(r: DVec3, v: DVec3, b: CelestialBody, t0: float) -> Diction
 	var prev_t := 0.0
 	var pts := PackedVector3Array()
 	pts.append(r.to_v3())
+	var ell := _Ellipse.new(r, v, b.mu)
 	for i in range(1, SAMPLES + 1):
 		var tt := minf(dt * i, impact_limit)
-		var rv := OrbitMath.propagate(r, v, b.mu, tt)
-		var p: DVec3 = rv[0]
+		var p: DVec3
+		var spd: float
+		if ell.ok:
+			# Closed orbit: Kepler's equation in plain floats (hot path).
+			p = ell.at(tt)
+			spd = ell.speed
+		else:
+			var rv := OrbitMath.propagate(r, v, b.mu, tt)
+			p = rv[0]
+			spd = (rv[1] as DVec3).length()
 		# Surface impact
 		if p.length() < b.radius or (impact_limit < horizon and tt >= impact_limit):
 			var ti := _bisect(r, v, b, prev_t, tt, func(q: DVec3, _t: float) -> bool: return q.length() < b.radius)
@@ -100,7 +109,7 @@ static func _segment(r: DVec3, v: DVec3, b: CelestialBody, t0: float) -> Diction
 			if d < c.soi_radius:
 				entered = c
 				break
-			var step_len := (rv[1] as DVec3).length() * (tt - prev_t) * 1.5 + c.soi_radius
+			var step_len := spd * (tt - prev_t) * 1.5 + c.soi_radius
 			if d < step_len:
 				var hit := _fine_entry(r, v, b, c, t0, prev_t, tt)
 				if hit >= 0.0:
@@ -120,6 +129,74 @@ static func _segment(r: DVec3, v: DVec3, b: CelestialBody, t0: float) -> Diction
 		prev_t = tt
 	seg.points = pts
 	return seg
+
+
+## Elliptic orbit sampled by time without the universal-variable solver: the
+## perifocal frame once, then Kepler's equation per sample, warm-started from
+## the previous one (samples come in increasing time).
+class _Ellipse:
+	var ok := false
+	var a := 0.0
+	var e := 0.0
+	var bq := 0.0      ## semi-minor axis
+	var n := 0.0       ## mean motion
+	var m0 := 0.0
+	var mu := 0.0
+	var px := 0.0
+	var py := 0.0
+	var pz := 0.0
+	var qx := 0.0
+	var qy := 0.0
+	var qz := 0.0
+	var ea := 0.0      ## last eccentric anomaly
+	var speed := 0.0   ## at the last sample
+
+	func _init(r: DVec3, v: DVec3, gm: float) -> void:
+		mu = gm
+		var rl := r.length()
+		var inv_a := 2.0 / rl - v.length_squared() / mu
+		if inv_a <= 0.0:
+			return
+		a = 1.0 / inv_a
+		var h := r.cross(v)
+		var hl := h.length()
+		if hl <= 0.0:
+			return
+		var ev := v.cross(h).mul(1.0 / mu).sub(r.mul(1.0 / rl))
+		e = ev.length()
+		if e > 0.97:
+			return   # near-parabolic: leave it to the universal solver
+		var pv := ev.mul(1.0 / e) if e > 1e-9 else r.mul(1.0 / rl)
+		var qv := h.cross(pv).mul(1.0 / hl)
+		px = pv.x
+		py = pv.y
+		pz = pv.z
+		qx = qv.x
+		qy = qv.y
+		qz = qv.z
+		bq = a * sqrt(1.0 - e * e)
+		n = sqrt(mu / (a * a * a))
+		# Eccentric anomaly now, from the position in the perifocal frame.
+		var x0 := r.dot(pv)
+		var y0 := r.dot(qv)
+		ea = atan2(y0 / bq, x0 / a + e)
+		m0 = ea - e * sin(ea)
+		ok = true
+
+	func at(t: float) -> DVec3:
+		var m := m0 + n * t
+		var E := ea
+		for _i in 30:
+			var d := (E - e * sin(E) - m) / (1.0 - e * cos(E))
+			E -= d
+			if absf(d) < 1e-12:
+				break
+		ea = E
+		var x := a * (cos(E) - e)
+		var y := bq * sin(E)
+		var rad := sqrt(x * x + y * y)
+		speed = sqrt(maxf(mu * (2.0 / rad - 1.0 / a), 0.0))
+		return DVec3.new(px * x + qx * y, py * x + qy * y, pz * x + qz * y)
 
 
 ## First sub-sample time in (lo, hi] inside child c's SOI, or -1.

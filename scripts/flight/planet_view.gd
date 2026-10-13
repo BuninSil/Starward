@@ -15,6 +15,8 @@ var site_lon := 0.0
 
 var _spin: Node3D          ## rotates with the planet, centred on it
 var _surface: MeshInstance3D
+var _globe_hi: ArrayMesh
+var _globe_lo: ArrayMesh
 var _atmosphere: MeshInstance3D
 var _atmo_mat: ShaderMaterial
 var _site: Node3D          ## ground patch, positioned in double precision
@@ -36,7 +38,11 @@ func setup(b: CelestialBody, with_site: bool, lat: float, lon: float, sun_dir: V
 	add_child(_spin)
 
 	_surface = MeshInstance3D.new()
-	_surface.mesh = _build_globe(_globe_segments())
+	_globe_hi = _build_globe(_globe_segments())
+	# A few pixels across (most bodies, most of the time): a light sphere looks
+	# the same and costs ~1/20 of the triangles.
+	_globe_lo = _build_globe(64) if _globe_segments() > 64 else _globe_hi
+	_surface.mesh = _globe_hi
 	_surface.material_override = _make_star_material() if b.is_star else (
 		_make_gas_material() if _is_gas_giant() else _make_surface_material())
 	_surface.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -229,8 +235,17 @@ func update_view(origin_rel: DVec3, t: float, view_scale := 1.0) -> void:
 	position = origin_rel.mul(view_scale).to_v3()
 	scale = Vector3.ONE * view_scale
 	_spin.basis = Basis(Vector3.UP, body.rotation_angle(t))
+	var vcam := get_viewport().get_camera_3d()
+	if vcam != null and _globe_lo != _globe_hi:
+		# Apparent radius in pixels (with a margin for zooming in).
+		var d := maxf(vcam.global_position.distance_to(position), 1e-6)
+		var px := body.radius * view_scale / d * get_viewport().get_visible_rect().size.y * 0.5 \
+			/ tan(deg_to_rad(vcam.fov) * 0.5)
+		var want := _globe_lo if px < (70.0 if _surface.mesh == _globe_lo else 55.0) else _globe_hi
+		if _surface.mesh != want:
+			_surface.mesh = want
 	if _clouds:
-		var cam := get_viewport().get_camera_3d()
+		var cam := vcam
 		var cam_d := cam.global_position.distance_to(position) / maxf(view_scale, 1e-12) if cam else origin_rel.length()
 		_clouds.visible = cam_d > _cloud_top
 	if _atmo_mat:
@@ -412,6 +427,7 @@ func ensure_patch(fixed_normal: DVec3, height := 0.0) -> bool:
 		return false
 	var near_pad := _has_launch_pad and _launch_normal_fixed.dot(fixed_normal) > cos(maxf(keep, 300.0) / body.radius)
 	var centre := _launch_normal_fixed if near_pad else fixed_normal.normalized()
+	_rock_meshes()   # the worker bakes rocks from these: build them here, on the main thread
 	_patch_result = {}
 	_patch_task = WorkerThreadPool.add_task(func() -> void: _patch_result = _compute_patch(centre, near_pad))
 	return true
@@ -528,7 +544,7 @@ func _compute_patch(centre: DVec3, with_pad: bool) -> Dictionary:
 			k += 1
 	return {"centre": up_f, "with_pad": with_pad, "h0": body.surface_height(up_f),
 		"verts": verts, "normals": normals, "tangents": tangents, "uvs": uvs, "uv2s": uv2s, "idx": idx,
-		"colors": cols, "scatter": _compute_rocks(up_f, east_f, south_f, with_pad)}
+		"colors": cols, "scatter": _with_rock_chunks(_compute_rocks(up_f, east_f, south_f, with_pad))}
 
 
 ## Scattered rocks around the patch centre (deterministic from its position),
@@ -711,6 +727,8 @@ func set_hd(tex: Texture2D, rect: Rect2) -> void:
 		(_patch_material as ShaderMaterial).set_shader_parameter("hd_tex", tex)
 		(_patch_material as ShaderMaterial).set_shader_parameter("hd_rect", Vector4(rect.position.x, rect.position.y, rect.size.x, rect.size.y))
 static var _rocks: Array[ArrayMesh] = []
+static var _rock_arrays: Array = []   ## per variant: [vertices, normals], unindexed (for baking)
+const ROCK_CHUNK := 70.0              ## metres: rock batches, culled one by one
 static var _pebble_mesh: ArrayMesh = null
 static var _drift_mesh: ArrayMesh = null
 const ROCK_VARIANTS := 7
@@ -729,6 +747,7 @@ static func _rock_meshes() -> Array[ArrayMesh]:
 		Vector3(1.0, 0.6, 1.3), Vector3(1.3, 0.9, 1.2), Vector3(0.8, 0.55, 0.9)]
 	for variant in ROCK_VARIANTS:
 		_rocks.append(_make_rock(2, shapes[variant], 6 + variant, rng))
+		_rock_arrays.append(_unindexed(_rocks[variant]))
 	_pebble_mesh = _make_rock(1, Vector3(1.1, 0.7, 1.0), 4, rng)
 	# Dust drift: a low smooth mound, long along local +z.
 	var sm := SphereMesh.new()
@@ -740,6 +759,86 @@ static func _rock_meshes() -> Array[ArrayMesh]:
 	_drift_mesh = ArrayMesh.new()
 	_drift_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, sm.get_mesh_arrays())
 	return _rocks
+
+
+static func _unindexed(m: ArrayMesh) -> Array:
+	var a := m.surface_get_arrays(0)
+	var v: PackedVector3Array = a[Mesh.ARRAY_VERTEX]
+	var n: PackedVector3Array = a[Mesh.ARRAY_NORMAL]
+	var ix = a[Mesh.ARRAY_INDEX]
+	if ix == null or (ix as PackedInt32Array).is_empty():
+		return [v, n]
+	var ov := PackedVector3Array()
+	var on := PackedVector3Array()
+	for k in ix:
+		ov.append(v[k])
+		on.append(n[k])
+	return [ov, on]
+
+
+## Boulders baked into static meshes per ROCK_CHUNK cell (worker thread): the
+## same rocks as one MultiMesh per shape, but cells behind the camera or beyond
+## the shadow distance are skipped (a MultiMesh is drawn whole, shadows too).
+## The rock shader reads the object-space position / normal from CUSTOM0/1.
+static func _with_rock_chunks(sc: Dictionary) -> Dictionary:
+	if _rock_arrays.is_empty():
+		_rock_meshes()   # synchronous builds run on the main thread
+	var rocks: Array = sc.rocks
+	var cells := {}
+	for i in rocks.size():
+		var o: Vector3 = (rocks[i] as Transform3D).origin
+		var key := Vector2i(floori(o.x / ROCK_CHUNK), floori(o.z / ROCK_CHUNK))
+		if not cells.has(key):
+			cells[key] = []
+		cells[key].append(i)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = rocks.size()
+	var chunks := []
+	for key in cells:
+		var c := Vector3((key.x + 0.5) * ROCK_CHUNK, 0.0, (key.y + 0.5) * ROCK_CHUNK)
+		var verts := PackedVector3Array()
+		var normals := PackedVector3Array()
+		var colors := PackedColorArray()
+		var c0 := PackedFloat32Array()
+		var c1 := PackedFloat32Array()
+		for i in cells[key]:
+			var src: Array = _rock_arrays[i % _rock_arrays.size()]
+			var sv: PackedVector3Array = src[0]
+			var sn: PackedVector3Array = src[1]
+			var xf: Transform3D = rocks[i]
+			xf.origin -= c
+			var nb := xf.basis.inverse().transposed()
+			var k := rng.randf_range(0.75, 1.15)
+			var tint := Color(k, k * rng.randf_range(0.96, 1.02), k * rng.randf_range(0.94, 1.03))
+			var base := verts.size()
+			verts.resize(base + sv.size())
+			normals.resize(base + sv.size())
+			colors.resize(base + sv.size())
+			c0.resize((base + sv.size()) * 4)
+			c1.resize((base + sv.size()) * 4)
+			for j in sv.size():
+				var p := sv[j]
+				var n := sn[j]
+				verts[base + j] = xf * p
+				normals[base + j] = (nb * n).normalized()
+				colors[base + j] = tint
+				var q := (base + j) * 4
+				c0[q] = p.x
+				c0[q + 1] = p.y
+				c0[q + 2] = p.z
+				c1[q] = n.x
+				c1[q + 1] = n.y
+				c1[q + 2] = n.z
+		var arr := []
+		arr.resize(Mesh.ARRAY_MAX)
+		arr[Mesh.ARRAY_VERTEX] = verts
+		arr[Mesh.ARRAY_NORMAL] = normals
+		arr[Mesh.ARRAY_COLOR] = colors
+		arr[Mesh.ARRAY_CUSTOM0] = c0
+		arr[Mesh.ARRAY_CUSTOM1] = c1
+		chunks.append({"centre": c, "arrays": arr})
+	sc["rock_chunks"] = chunks
+	return sc
 
 
 static func _make_rock(level: int, stretch: Vector3, cuts: int, rng: RandomNumberGenerator) -> ArrayMesh:
@@ -792,7 +891,7 @@ static func _make_rock(level: int, stretch: Vector3, cuts: int, rng: RandomNumbe
 func _add_scatter(sc: Dictionary) -> void:
 	var style := surface_style()
 	_ground_textures()
-	var meshes := _rock_meshes()
+	_rock_meshes()
 	var vrng := RandomNumberGenerator.new()
 	vrng.seed = sc.rocks.size()
 	var mat := func(rock: Color, dust: Color, fade: float) -> ShaderMaterial:
@@ -822,12 +921,20 @@ func _add_scatter(sc: Dictionary) -> void:
 			else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		_site.add_child(mmi)
 	var rock_m: ShaderMaterial = mat.call(style.rock_color, style.dust_color, 0.0)
-	var rocks: Array = sc.rocks
-	for v in meshes.size():
-		var mine := []
-		for i in range(v, rocks.size(), meshes.size()):
-			mine.append(rocks[i])
-		add.call(meshes[v], mine, rock_m, true)
+	rock_m.set_shader_parameter("baked", true)
+	rock_m.render_priority = 2   # before the ground: the ground behind rocks is not shaded
+	var fmt := (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT) \
+		| (Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM1_SHIFT)
+	for ch in sc.get("rock_chunks", []):
+		var am := ArrayMesh.new()
+		am.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, ch.arrays, [], {}, fmt)
+		var mi := MeshInstance3D.new()
+		mi.mesh = am
+		mi.material_override = rock_m
+		mi.position = ch.centre
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if Graphics.quality == Graphics.HIGH \
+			else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		_site.add_child(mi)
 	add.call(_pebble_mesh, sc.pebbles, mat.call(style.rock_color, style.dust_color, 30.0), false)
 	add.call(_drift_mesh, sc.drifts, mat.call(style.dust_color, style.dust_color, 0.0), false)
 
@@ -840,6 +947,10 @@ func _make_patch_material() -> Material:
 	if not m is ShaderMaterial:
 		return m
 	var sm := m as ShaderMaterial
+	# Drawn before the globe (opaque objects with a higher priority go first):
+	# the globe under the patch then fails the depth test instead of being
+	# shaded and overdrawn (the mobile renderer has no depth prepass).
+	sm.render_priority = 1
 	_ground_textures()
 	sm.set_shader_parameter("use_normal_tex", false)   # real geometry here
 	sm.set_shader_parameter("normal_strength", 1.0)

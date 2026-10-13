@@ -22,6 +22,7 @@ static func build(parent: Node3D, pad_radius: float, ground_y: float, noise: Tex
 	pad_mat.shader = PAD_SHADER
 	pad_mat.set_shader_parameter("noise_tex", noise)
 	pad_mat.set_shader_parameter("radius", pad_radius)
+	pad_mat.render_priority = 2   # before the ground patch (it lies flush with it: no z-fighting)
 	var pad := _mi(root, pm, pad_mat, Vector3(0, -0.5, 0))
 	pad.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	# Flame trench: dark slot along x under the rocket.
@@ -96,6 +97,8 @@ static func build(parent: Node3D, pad_radius: float, ground_y: float, noise: Tex
 	sp.rings = 12
 	_mi(root, sp, _mat(Color(0.9, 0.9, 0.88), 0.4, 0.6), Vector3(-20.0, 2.6, -16.0))
 	_mi(root, sp, _mat(Color(0.9, 0.9, 0.88), 0.4, 0.6), Vector3(-25.0, 2.6, -12.0))
+	# ~130 boxes and beams -> one mesh per material.
+	MeshMerge.merge(root, null, true, true)
 
 
 static func _mat(c: Color, rough: float, spec := 0.4) -> StandardMaterial3D:

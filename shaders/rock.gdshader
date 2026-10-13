@@ -7,14 +7,15 @@ shader_type spatial;
 uniform vec3 rock_color = vec3(0.07);   // linear
 uniform vec3 dust_color = vec3(0.12);   // linear
 uniform sampler2D ground_pack : hint_default_white, filter_linear_mipmap, repeat_enable;
-uniform float fade_end = 0.0;   // > 0: instances shrink away beyond this camera distance (pebbles)
+uniform float fade_end = 0.0;
+uniform bool baked = false;     // rocks baked into one mesh per cell: object space in CUSTOM0/1   // > 0: instances shrink away beyond this camera distance (pebbles)
 
 varying vec3 obj_pos;
 varying vec3 obj_n;
 
 void vertex() {
-	obj_pos = VERTEX;
-	obj_n = NORMAL;
+	obj_pos = baked ? CUSTOM0.xyz : VERTEX;
+	obj_n = baked ? CUSTOM1.xyz : NORMAL;
 	if (fade_end > 0.0) {
 		vec3 origin = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 		float d = distance(origin, (INV_VIEW_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz);

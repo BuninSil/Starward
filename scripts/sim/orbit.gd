@@ -96,23 +96,18 @@ static func _stumpff_s(z: float) -> float:
 	return 1.0 / 6.0 - z / 120.0
 
 
-## Propagates (r0, v0) by dt seconds on a pure Kepler orbit. Returns [r, v].
-static func propagate(r0: DVec3, v0: DVec3, mu: float, dt: float) -> Array:
+## Propagates (r0, v0) by dt seconds on a pure Kepler orbit. Returns [r, v, chi].
+## chi0: optional initial guess of the universal anomaly (e.g. extrapolated from
+## the previous sample of a series), saves most Newton steps.
+static func propagate(r0: DVec3, v0: DVec3, mu: float, dt: float, chi0 := NAN) -> Array:
 	if dt == 0.0:
-		return [r0.copy(), v0.copy()]
+		return [r0.copy(), v0.copy(), 0.0]
 	var smu := sqrt(mu)
 	var r0l := r0.length()
 	var vr0 := r0.dot(v0) / r0l
 	var alpha := 2.0 / r0l - v0.length_squared() / mu  # 1/a
 
 	# Universal Kepler equation F(chi) = 0; F is monotonic in chi.
-	var kep := func(x: float) -> Array:   # [F, dF/dchi] as 64-bit floats
-		var z := alpha * x * x
-		var c := _stumpff_c(z)
-		var s := _stumpff_s(z)
-		var f := r0l * vr0 / smu * x * x * c + (1.0 - alpha * r0l) * x * x * x * s + r0l * x - smu * dt
-		var fp := r0l * vr0 / smu * x * (1.0 - alpha * x * x * s) + (1.0 - alpha * r0l) * x * x * c + r0l
-		return [f, fp]
 	# Initial guess (Vallado): elliptic / hyperbolic.
 	var chi := smu * absf(alpha) * dt
 	if alpha < -1e-12:
@@ -122,6 +117,8 @@ static func propagate(r0: DVec3, v0: DVec3, mu: float, dt: float) -> Array:
 		chi = sg * sqrt(-a_h) * log(arg) if arg > 0.0 else smu * dt / r0l
 	elif absf(alpha) < 1e-12 or chi == 0.0:
 		chi = smu * dt / r0l
+	if is_finite(chi0):
+		chi = chi0
 	var ok := false
 	for _i in 60:
 		# Inline Newton step (hot path; the lambda is only for the fallback).
@@ -139,6 +136,13 @@ static func propagate(r0: DVec3, v0: DVec3, mu: float, dt: float) -> Array:
 			break
 	if not ok:
 		# Newton wandered off (long hyperbolic arcs): bracket and bisect instead.
+		var kep := func(x: float) -> Array:   # [F, dF/dchi] as 64-bit floats
+			var z := alpha * x * x
+			var c := _stumpff_c(z)
+			var s := _stumpff_s(z)
+			var f := r0l * vr0 / smu * x * x * c + (1.0 - alpha * r0l) * x * x * x * s + r0l * x - smu * dt
+			var fp := r0l * vr0 / smu * x * (1.0 - alpha * x * x * s) + (1.0 - alpha * r0l) * x * x * c + r0l
+			return [f, fp]
 		var lo := 0.0
 		var hi := smu * absf(dt) / r0l + 1.0
 		if dt < 0.0:
@@ -172,7 +176,7 @@ static func propagate(r0: DVec3, v0: DVec3, mu: float, dt: float) -> Array:
 	var fdot := smu / (rl * r0l) * (alpha * chi * chi * chi * s2 - chi)
 	var gdot := 1.0 - chi * chi / rl * c2
 	var v := r0.mul(fdot).add(v0.mul(gdot))
-	return [r, v]
+	return [r, v, chi]
 
 
 ## Points of the orbit (relative to body centre) for drawing, in the orbit plane.

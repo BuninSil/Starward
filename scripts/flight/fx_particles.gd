@@ -8,8 +8,14 @@ const MAX := 520
 
 class P:
 	var body: CelestialBody
-	var pos: DVec3        ## relative to the body centre, inertial axes
-	var vel: DVec3
+	## Position / velocity relative to the body centre, inertial axes (doubles,
+	## plain floats: no per-frame vector allocations).
+	var px := 0.0
+	var py := 0.0
+	var pz := 0.0
+	var vx := 0.0
+	var vy := 0.0
+	var vz := 0.0
 	var age := 0.0
 	var life := 1.0
 	var size0 := 1.0
@@ -19,9 +25,12 @@ class P:
 	var drag := 0.0       ## 1/s: relaxes toward the air (body rotation) velocity
 	var gravity := false
 	var lift := 0.0       ## ground cloud: raised by this fraction of its size
+	var tone := 0.0       ## per-puff shape / tone variation
 
 var _ps: Array[P] = []
 var _mm: MultiMesh
+var _buf := PackedFloat32Array()   ## 20 floats per instance: 3x4 transform, colour, custom
+var _seed := 0
 
 
 func _ready() -> void:
@@ -35,6 +44,7 @@ func _ready() -> void:
 	_mm.instance_count = MAX
 	_mm.visible_instance_count = 0
 	multimesh = _mm
+	_buf.resize(MAX * 20)
 	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var m := ShaderMaterial.new()
 	m.shader = _shader()
@@ -86,8 +96,12 @@ func emit(body: CelestialBody, pos: DVec3, vel: DVec3, life: float, size0: float
 		_ps.pop_front()
 	var p := P.new()
 	p.body = body
-	p.pos = pos
-	p.vel = vel
+	p.px = pos.x
+	p.py = pos.y
+	p.pz = pos.z
+	p.vx = vel.x
+	p.vy = vel.y
+	p.vz = vel.z
 	p.life = life
 	p.size0 = size0
 	p.size1 = size1
@@ -96,51 +110,98 @@ func emit(body: CelestialBody, pos: DVec3, vel: DVec3, life: float, size0: float
 	p.gravity = gravity
 	p.glow = glow
 	p.lift = lift
+	_seed = (_seed + 1) % 7
+	p.tone = float(_seed) / 7.0
 	_ps.append(p)
 
 
 ## dt: simulated seconds (time warp included). origin: absolute position drawn
 ## at the scene origin; t: simulation time.
 func step(dt: float, origin: DVec3, t: float) -> void:
-	var cam := get_viewport().get_camera_3d()
-	var i := 0
-	var cache := {}
-	while i < _ps.size():
-		var p := _ps[i]
+	# Dead particles out in one pass (order kept: draw order stays stable).
+	var alive: Array[P] = []
+	var dead := false
+	for p in _ps:
 		p.age += dt
 		if p.age >= p.life:
-			_ps.remove_at(i)
-			continue
-		if p.drag > 0.0:
-			var omega := DVec3.new(0, p.body.angular_velocity(), 0)
-			var air := omega.cross(p.pos)
-			var k := minf(p.drag * dt, 1.0)
-			p.vel = p.vel.add(air.sub(p.vel).mul(k))
-		if p.gravity:
-			var r2 := p.pos.length_squared()
-			p.vel.add_scaled(p.pos, -p.body.mu / (r2 * sqrt(r2)) * dt)
-		p.pos.add_scaled(p.vel, dt)
-		i += 1
-	_mm.visible_instance_count = _ps.size()
-	if _ps.is_empty() or cam == null:
+			dead = true
+	if dead:
+		for p in _ps:
+			if p.age < p.life:
+				alive.append(p)
+		_ps = alive
+	var n := _ps.size()
+	_mm.visible_instance_count = n
+	var cam := get_viewport().get_camera_3d()
+	if n == 0 or cam == null:
 		return
+	# Per body: spin rate, mu and its centre in scene coordinates (doubles).
+	var bodies := {}
+	for p in _ps:
+		if not bodies.has(p.body):
+			var c := p.body.absolute_position(t)
+			bodies[p.body] = [p.body.angular_velocity(), p.body.mu, c.x - origin.x, c.y - origin.y, c.z - origin.z]
 	var cb := cam.global_transform.basis
-	for k in _ps.size():
+	var bx := cb.x
+	var by := cb.y
+	var bz := cb.z
+	var buf := _buf
+	var o := 0
+	for k in n:
 		var p := _ps[k]
-		var centre: DVec3 = cache.get(p.body, null)
-		if centre == null:
-			centre = p.body.absolute_position(t).sub(origin)
-			cache[p.body] = centre
+		var bd: Array = bodies[p.body]
+		if p.drag > 0.0:
+			# Relax toward the air turning with the body: omega (0, w, 0) x pos.
+			var w: float = bd[0]
+			var kk := minf(p.drag * dt, 1.0)
+			p.vx += (w * p.pz - p.vx) * kk
+			p.vy += (0.0 - p.vy) * kk
+			p.vz += (-w * p.px - p.vz) * kk
+		if p.gravity:
+			var r2 := p.px * p.px + p.py * p.py + p.pz * p.pz
+			var g: float = -float(bd[1]) / (r2 * sqrt(r2)) * dt
+			p.vx += p.px * g
+			p.vy += p.py * g
+			p.vz += p.pz * g
+		p.px += p.vx * dt
+		p.py += p.vy * dt
+		p.pz += p.vz * dt
 		var x := p.age / p.life
-		var size := lerpf(p.size0, p.size1, 1.0 - pow(1.0 - x, 2.0))
-		var at := centre.add(p.pos).to_v3()
+		var size := lerpf(p.size0, p.size1, 1.0 - (1.0 - x) * (1.0 - x))
+		var ax: float = float(bd[2]) + p.px
+		var ay: float = float(bd[3]) + p.py
+		var az: float = float(bd[4]) + p.pz
 		if p.lift > 0.0:
 			# Keep the growing puff standing on the ground instead of sinking in.
-			at += p.pos.normalized().to_v3() * size * p.lift
-		_mm.set_instance_transform(k, Transform3D(cb.scaled(Vector3(size, size, size)), at))
-		var a := p.color.a * smoothstep(0.0, 0.08, x) * (1.0 - smoothstep(0.55, 1.0, x))
-		_mm.set_instance_color(k, Color(p.color.r, p.color.g, p.color.b, a))
-		_mm.set_instance_custom_data(k, Color(p.glow * maxf(1.0 - x * 2.5, 0.0), float(k % 7) / 7.0, 1.0 if p.lift > 0.0 else 0.0, 0))
+			var lr := size * p.lift / sqrt(p.px * p.px + p.py * p.py + p.pz * p.pz)
+			ax += p.px * lr
+			ay += p.py * lr
+			az += p.pz * lr
+		# Row-major 3x4: camera basis scaled by size, then the origin.
+		buf[o] = bx.x * size
+		buf[o + 1] = by.x * size
+		buf[o + 2] = bz.x * size
+		buf[o + 3] = ax
+		buf[o + 4] = bx.y * size
+		buf[o + 5] = by.y * size
+		buf[o + 6] = bz.y * size
+		buf[o + 7] = ay
+		buf[o + 8] = bx.z * size
+		buf[o + 9] = by.z * size
+		buf[o + 10] = bz.z * size
+		buf[o + 11] = az
+		var c := p.color
+		buf[o + 12] = c.r
+		buf[o + 13] = c.g
+		buf[o + 14] = c.b
+		buf[o + 15] = c.a * smoothstep(0.0, 0.08, x) * (1.0 - smoothstep(0.55, 1.0, x))
+		buf[o + 16] = p.glow * maxf(1.0 - x * 2.5, 0.0)
+		buf[o + 17] = p.tone
+		buf[o + 18] = 1.0 if p.lift > 0.0 else 0.0
+		buf[o + 19] = 0.0
+		o += 20
+	_buf = buf
+	RenderingServer.multimesh_set_buffer(_mm.get_rid(), _buf)
 
 
 static var _sh: Shader

@@ -351,10 +351,15 @@ void light() {
 	float ndv = clamp(dot(NORMAL, VIEW), 0.05, 1.0);
 	// Lommel–Seeliger, normalised to Lambert at the zenith; opposition surge
 	// when the sun is behind the viewer.
-	float ls = 2.0 * ndl / (ndl + ndv);
-	float phase = acos(clamp(dot(LIGHT, VIEW), -1.0, 1.0));
-	float surge = 1.0 + 0.5 * exp(-phase / 0.12);
-	float diff = mix(ndl, ls * surge * smoothstep(0.0, 0.05, ndl), regolith);
+	float diff = ndl;
+	if (regolith > 0.0) {
+		float ls = 2.0 * ndl / (ndl + ndv);
+		// Phase angle ~ sqrt(2 (1 - cos)): exact where the surge matters (small
+		// angles), and the surge is ~0 where it is not.
+		float phase = sqrt(max(2.0 - 2.0 * dot(LIGHT, VIEW), 0.0));
+		float surge = 1.0 + 0.5 * exp(-phase / 0.12);
+		diff = mix(ndl, ls * surge * smoothstep(0.0, 0.05, ndl), regolith);
+	}
 	DIFFUSE_LIGHT += LIGHT_COLOR * ATTENUATION * diff * (1.0 - 0.9 * v_shade) / PI;
 	// Glossy highlight (water): normalised Blinn-Phong from the roughness.
 	if (ROUGHNESS < 0.5) {
