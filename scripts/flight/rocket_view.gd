@@ -826,6 +826,7 @@ func _update_chute(delta: float, attach_y: float) -> void:
 # --- Ship lights (night) ---------------------------------------------------------
 
 var night := 0.0   ## 0 in daylight .. 1 in the dark; set by the flight scene
+var ground_agl := INF   ## metres above the ground, set by the flight scene
 var _nav: Array = []   ## {bulb: MeshInstance3D, light: OmniLight3D, strobe: bool, energy: float}
 var _floods: Array[SpotLight3D] = []
 var _fill: OmniLight3D
@@ -884,7 +885,19 @@ func _build_lights() -> void:
 		l.light_energy = 0.0
 		l.position = (sp[0] as Vector3) * 1.08
 		node.add_child(l)
-		_nav.append({"bulb": bulb, "light": l, "strobe": sp[2], "energy": sp[3]})
+		# Coloured spill on the ground near touchdown: a second, wide light
+		# that only reaches the ground layer (the hull keeps its small one).
+		var g := OmniLight3D.new()
+		g.light_color = sp[1]
+		g.omni_range = 16.0
+		g.omni_attenuation = 0.3   # nearly flat: an even tint around the lander, fading at the range
+		g.light_energy = 0.0
+		g.light_cull_mask = 2   # PlanetView.GROUND_LAYER: ground patch and rocks only
+		g.shadow_enabled = false
+		g.visible = false
+		g.position = l.position
+		node.add_child(g)
+		_nav.append({"bulb": bulb, "light": l, "spill": g, "strobe": sp[2], "energy": sp[3]})
 	# Floodlights: just outside the base ring, aimed down along the hull.
 	for a in [deg_to_rad(-40.0), deg_to_rad(220.0)]:
 		var f := SpotLight3D.new()
@@ -937,6 +950,10 @@ void fragment() {
 	return _halo
 
 
+const SPILL_GAIN := 4.0   ## ground glow of a nav light relative to its hull light
+const SPILL_MAX := 0.6    ## the strobe flash on the ground stays soft
+
+
 func _update_lights(delta: float) -> void:
 	_blink = fmod(_blink + delta, 1.4)
 	var on_flash := _blink < 0.05 or (_blink > 0.17 and _blink < 0.22)
@@ -946,6 +963,10 @@ func _update_lights(delta: float) -> void:
 		(e.bulb as MeshInstance3D).visible = lit
 		(e.light as OmniLight3D).light_energy = (e.energy as float) * n if lit else 0.0
 		(e.light as OmniLight3D).visible = n > 0.01 and lit
+		var near := 1.0 - smoothstep(10.0, 25.0, ground_agl)
+		var spill := e.spill as OmniLight3D
+		spill.light_energy = minf((e.energy as float) * SPILL_GAIN, SPILL_MAX) * n * near if lit else 0.0
+		spill.visible = spill.light_energy > 0.001
 	for f in _floods:
 		f.light_energy = 8.0 * n
 		f.visible = n > 0.01

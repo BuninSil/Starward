@@ -934,6 +934,7 @@ func _add_scatter(sc: Dictionary) -> void:
 		mi.mesh = am
 		mi.material_override = rock_m
 		mi.position = ch.centre
+		mi.layers = 1 | GROUND_LAYER   # also lit by the lamps that only reach the ground
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if Graphics.quality == Graphics.HIGH \
 			else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		_site.add_child(mi)
