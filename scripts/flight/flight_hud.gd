@@ -556,6 +556,7 @@ var _teleport_menu: PanelContainer = null
 var _prof_panel: PanelContainer = null
 var _prof_timer := 0.0
 var _prof_hid_rocket := false
+var _prof_stats: Label
 const PROF_FEATURES := [["shadows", "Тени"], ["ground", "Детальный грунт"], ["globe", "Шар планеты"],
 	["g_detail", "Грунт: детали вблизи"], ["g_craters", "Грунт: мелкие кратеры"],
 	["g_light", "Грунт: свет реголита"], ["g_fp32", "Грунт: полная точность (вкл = медленнее)"], ["g_hd", "Грунт: HD-снимки (Земля)"],
@@ -566,42 +567,69 @@ const PROF_SCALES := [1.0, 0.75, 0.6, 0.5]
 
 func _show_profiler() -> void:
 	if _prof_panel == null:
+		# Own layer: stays on top of the flight and EVA panels.
+		var layer := CanvasLayer.new()
+		layer.layer = 100
+		add_child(layer)
 		_prof_panel = PanelContainer.new()
-		_prof_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_RIGHT, Control.PRESET_MODE_MINSIZE)
+		_prof_panel.theme = make_theme()
+		_prof_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT, Control.PRESET_MODE_MINSIZE, 12)
 		_prof_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
-		_prof_panel.grow_vertical = Control.GROW_DIRECTION_BOTH
-		_root.add_child(_prof_panel)
+		layer.add_child(_prof_panel)
 		var box := VBoxContainer.new()
-		box.add_theme_constant_override("separation", 4)
+		box.add_theme_constant_override("separation", 6)
 		_prof_panel.add_child(box)
+		var top := HBoxContainer.new()
+		top.add_theme_constant_override("separation", 8)
+		box.add_child(top)
+		_prof_stats = Label.new()
+		_prof_stats.add_theme_font_size_override("font_size", 24)
+		_prof_stats.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+		_prof_stats.custom_minimum_size = Vector2(330, 0)
+		top.add_child(_prof_stats)
+		var list := ScrollContainer.new()
+		list.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+		list.custom_minimum_size = Vector2(0, get_viewport().get_visible_rect().size.y * 0.45)
+		var items := VBoxContainer.new()
+		items.add_theme_constant_override("separation", 2)
+		list.add_child(items)
+		var fold := _button("Свернуть", func() -> void: pass)
+		fold.custom_minimum_size = Vector2(150, 52)
+		fold.pressed.connect(func() -> void:
+			list.visible = not list.visible
+			fold.text = "Свернуть" if list.visible else "Галочки")
+		top.add_child(fold)
+		var close := _button("✕", func() -> void:
+			_prof_panel.hide()
+			RenderingServer.viewport_set_measure_render_time(get_viewport().get_viewport_rid(), false))
+		close.custom_minimum_size = Vector2(60, 52)
+		top.add_child(close)
+		box.add_child(list)
 		var t := Label.new()
-		t.text = "Профайлер: выключить"
-		t.add_theme_font_size_override("font_size", 22)
-		box.add_child(t)
+		t.text = "Выключить:"
+		t.add_theme_font_size_override("font_size", 18)
+		items.add_child(t)
 		for fe in PROF_FEATURES:
 			var key: String = fe[0]
 			var cb := CheckButton.new()
 			cb.text = fe[1]
 			cb.focus_mode = Control.FOCUS_NONE
-			cb.add_theme_font_size_override("font_size", 20)
+			cb.add_theme_font_size_override("font_size", 19)
 			cb.toggled.connect(func(on: bool) -> void:
 				if on:
 					flight.prof_off[key] = true
 				else:
 					flight.prof_off.erase(key)
 				_prof_timer = 0.0)
-			box.add_child(cb)
-		var sc := _button("Разрешение 75%", func() -> void: pass)
+			items.add_child(cb)
+		var sc := _button("Разрешение", func() -> void: pass)
 		sc.pressed.connect(func() -> void:
 			var vp := get_viewport()
 			var i := (PROF_SCALES.find(snappedf(vp.scaling_3d_scale, 0.05)) + 1) % PROF_SCALES.size()
 			vp.scaling_3d_scale = PROF_SCALES[i]
 			sc.text = "Разрешение %d%%" % int(PROF_SCALES[i] * 100.0))
 		sc.text = "Разрешение %d%%" % int(get_viewport().scaling_3d_scale * 100.0)
-		box.add_child(sc)
-		box.add_child(_button("Закрыть", func() -> void:
-			_prof_panel.hide()
-			RenderingServer.viewport_set_measure_render_time(get_viewport().get_viewport_rid(), false)))
+		items.add_child(sc)
 	RenderingServer.viewport_set_measure_render_time(get_viewport().get_viewport_rid(), true)
 	_prof_panel.show()
 
@@ -942,7 +970,8 @@ func _update_texts() -> void:
 	]
 	if _prof_panel != null and _prof_panel.visible:
 		var vp := get_viewport().get_viewport_rid()
-		_overlay.text += "\nCPU %.1f мс · GPU %.1f мс · draw %d · %dk треуг." % [
+		_prof_stats.text = "FPS %d\nCPU %.1f мс · GPU %.1f мс\ndraw %d · %dk треуг." % [
+			Engine.get_frames_per_second(),
 			RenderingServer.viewport_get_measured_render_time_cpu(vp) + Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
 			RenderingServer.viewport_get_measured_render_time_gpu(vp),
 			int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)),
