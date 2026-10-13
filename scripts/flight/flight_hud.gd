@@ -532,6 +532,9 @@ func _build_debug_menu() -> void:
 	grid.add_child(_button("Витрина деталей", func() -> void:
 		preload("res://scripts/flight/parts_showcase.gd").return_scene = "res://scenes/flight.tscn"
 		get_tree().change_scene_to_file("res://scenes/parts_showcase.tscn")))
+	grid.add_child(_button("Профайлер", func() -> void:
+		_debug_menu.hide()
+		_show_profiler()))
 	grid.add_child(_button("Консоль", func() -> void: _console.visible = not _console.visible))
 	grid.add_child(_button("Скопировать лог", Log.copy_to_clipboard))
 	grid.add_child(_button("Проверить обновление", func() -> void:
@@ -546,6 +549,97 @@ func _build_debug_menu() -> void:
 
 
 var _teleport_menu: PanelContainer = null
+
+
+# --- Profiler (debug): switch features off on the phone and watch FPS / GPU ms ---
+
+var _prof_panel: PanelContainer = null
+var _prof_timer := 0.0
+var _prof_hid_rocket := false
+const PROF_FEATURES := [["shadows", "Тени"], ["ground", "Детальный грунт"], ["globe", "Шар планеты"],
+	["rocks", "Камни и галька"], ["fx", "Дым и пыль"], ["glow", "Свечение (glow)"],
+	["rocket", "Ракета и космонавт"], ["lights", "Ночные фонари"], ["sky", "Небо"]]
+const PROF_SCALES := [1.0, 0.75, 0.6, 0.5]
+
+
+func _show_profiler() -> void:
+	if _prof_panel == null:
+		_prof_panel = PanelContainer.new()
+		_prof_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_RIGHT, Control.PRESET_MODE_MINSIZE)
+		_prof_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+		_prof_panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+		_root.add_child(_prof_panel)
+		var box := VBoxContainer.new()
+		box.add_theme_constant_override("separation", 4)
+		_prof_panel.add_child(box)
+		var t := Label.new()
+		t.text = "Профайлер: выключить"
+		t.add_theme_font_size_override("font_size", 22)
+		box.add_child(t)
+		for fe in PROF_FEATURES:
+			var key: String = fe[0]
+			var cb := CheckButton.new()
+			cb.text = fe[1]
+			cb.focus_mode = Control.FOCUS_NONE
+			cb.add_theme_font_size_override("font_size", 20)
+			cb.toggled.connect(func(on: bool) -> void:
+				if on:
+					flight.prof_off[key] = true
+				else:
+					flight.prof_off.erase(key)
+				_prof_timer = 0.0)
+			box.add_child(cb)
+		var sc := _button("Разрешение 75%", func() -> void: pass)
+		sc.pressed.connect(func() -> void:
+			var vp := get_viewport()
+			var i := (PROF_SCALES.find(snappedf(vp.scaling_3d_scale, 0.05)) + 1) % PROF_SCALES.size()
+			vp.scaling_3d_scale = PROF_SCALES[i]
+			sc.text = "Разрешение %d%%" % int(PROF_SCALES[i] * 100.0))
+		sc.text = "Разрешение %d%%" % int(get_viewport().scaling_3d_scale * 100.0)
+		box.add_child(sc)
+		box.add_child(_button("Закрыть", func() -> void:
+			_prof_panel.hide()
+			RenderingServer.viewport_set_measure_render_time(get_viewport().get_viewport_rid(), false)))
+	RenderingServer.viewport_set_measure_render_time(get_viewport().get_viewport_rid(), true)
+	_prof_panel.show()
+
+
+## Re-applied a few times a second: the flight scene rebuilds / re-shows things.
+func _prof_apply() -> void:
+	_prof_timer -= get_process_delta_time()
+	if _prof_timer > 0.0:
+		return
+	_prof_timer = 0.3
+	var off: Dictionary = flight.prof_off
+	flight.fx.visible = not off.has("fx")
+	flight.env.glow_enabled = not off.has("glow")
+	flight.env.background_mode = Environment.BG_COLOR if off.has("sky") else Environment.BG_SKY
+	flight.env.background_color = Color.BLACK
+	if off.has("rocket") or _prof_hid_rocket:
+		# Hide; on the way back restore only what we hid ourselves.
+		var h := off.has("rocket")
+		if h or not flight.map_mode:
+			flight.rocket.visible = not h
+		if flight.astronaut != null and is_instance_valid(flight.astronaut):
+			flight.astronaut.visible = not h
+		_prof_hid_rocket = h
+	for l in flight.find_children("*", "Light3D", true, false):
+		if not (l is DirectionalLight3D):
+			(l as Light3D).light_cull_mask = 0 if off.has("lights") else 0xFFFFF
+	for b in flight.planets:
+		var pv: Node = flight.planets[b]
+		pv.get("_surface").visible = not off.has("globe")
+		var site: Node = pv.get("_site")
+		if site == null:
+			continue
+		for g in site.find_children("*", "GeometryInstance3D", true, false):
+			var m: Material = (g as GeometryInstance3D).material_override
+			if m == null:
+				continue
+			if m == pv.get("_patch_material"):
+				g.visible = not off.has("ground")
+			elif m is ShaderMaterial and (m as ShaderMaterial).shader == preload("res://shaders/rock.gdshader"):
+				g.visible = not off.has("rocks")
 
 
 ## Debug: every body with "orbit" and (if solid) "surface" buttons.
@@ -822,6 +916,14 @@ func _update_texts() -> void:
 		ProjectSettings.get_setting("application/config/version"),
 		int(ProjectSettings.get_setting("starward/build/version_code")),
 	]
+	if _prof_panel != null and _prof_panel.visible:
+		var vp := get_viewport().get_viewport_rid()
+		_overlay.text += "\nCPU %.1f мс · GPU %.1f мс · draw %d · %dk треуг." % [
+			RenderingServer.viewport_get_measured_render_time_cpu(vp) + Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
+			RenderingServer.viewport_get_measured_render_time_gpu(vp),
+			int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)),
+			int(Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME) / 1000.0)]
+		_prof_apply()
 
 
 func _agl_text(v: Vessel, b: CelestialBody) -> String:

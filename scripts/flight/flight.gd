@@ -631,6 +631,7 @@ func _apply_autopilot_warp() -> void:
 
 
 var fx: Node   ## smoke / dust / sparks
+var prof_off := {}   ## debug profiler: features switched off ("shadows", ...)
 var _fx_acc := 0.0
 var _trail_acc := 0.0
 var _smoke_acc := 0.0
@@ -1536,7 +1537,7 @@ func _update_sky() -> void:
 		astronaut.model.lamps = rocket.night
 	sun.visible = sun.light_energy > 0.001
 	# Sun shadows (rocks, rocket, crater walls) only near the ground, high preset.
-	var shadows := Graphics.quality == Graphics.HIGH and agl < 3000.0 and not map_mode
+	var shadows := Graphics.quality == Graphics.HIGH and agl < 3000.0 and not map_mode and not prof_off.has("shadows")
 	if shadows != sun.shadow_enabled:
 		sun.shadow_enabled = shadows
 	_update_reflection_env(up, sun_elev, day, agl)
