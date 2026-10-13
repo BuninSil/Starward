@@ -3,6 +3,10 @@ package com.buninsil.starward.updater
 import android.content.Intent
 import android.os.Build
 import android.util.Log
+import android.view.Surface
+import android.view.SurfaceView
+import android.view.View
+import android.view.ViewGroup
 import androidx.core.content.FileProvider
 import org.godotengine.godot.Godot
 import org.godotengine.godot.plugin.GodotPlugin
@@ -76,6 +80,16 @@ class StarwardUpdaterPlugin(godot: Godot) : GodotPlugin(godot) {
                 lp.preferredDisplayModeId = best.modeId
                 lp.preferredRefreshRate = best.refreshRate
                 act.window.attributes = lp
+                // Some vendor skins (MIUI) only listen to the rendering surface itself.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    for (sv in surfaceViews(act.window.decorView)) {
+                        try {
+                            sv.holder.surface.setFrameRate(best.refreshRate, Surface.FRAME_RATE_COMPATIBILITY_DEFAULT)
+                        } catch (e: Exception) {
+                            Log.w(TAG, "setFrameRate failed", e)
+                        }
+                    }
+                }
             }
             Log.i(TAG, "Display mode ${best.modeId}: ${best.refreshRate} Hz (max $maxHz)")
             best.refreshRate
@@ -83,6 +97,22 @@ class StarwardUpdaterPlugin(godot: Godot) : GodotPlugin(godot) {
             Log.e(TAG, "requestRefreshRate failed", e)
             0f
         }
+    }
+
+    private fun surfaceViews(v: View): List<SurfaceView> {
+        if (v is SurfaceView) return listOf(v)
+        if (v !is ViewGroup) return emptyList()
+        val out = ArrayList<SurfaceView>()
+        for (i in 0 until v.childCount) out.addAll(surfaceViews(v.getChildAt(i)))
+        return out
+    }
+
+    /** The refresh rate the display runs at right now. */
+    @UsedByGodot
+    fun currentRefreshRate(): Float {
+        val act = activity ?: return 0f
+        @Suppress("DEPRECATION")
+        return act.windowManager.defaultDisplay.refreshRate
     }
 
     /** The highest refresh rate the screen has. */

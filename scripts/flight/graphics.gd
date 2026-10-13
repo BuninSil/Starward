@@ -72,7 +72,17 @@ static func apply_fps() -> void:
 	if hz <= 0.0:
 		hz = 60.0
 	screen_hz = minf(hz, want_hz)
-	Engine.max_fps = 30 if fps_mode == FPS_30 else int(round(screen_hz))
+	# Auto: no cap of our own, vsync holds it to whatever the screen runs at.
+	Engine.max_fps = 30 if fps_mode == FPS_30 else (60 if fps_mode == FPS_60 else 0)
+
+
+## Refresh rate the display runs at right now (0 if unknown).
+static func current_hz() -> float:
+	if Engine.has_singleton("StarwardUpdater"):
+		var plugin := Engine.get_singleton("StarwardUpdater")
+		if plugin.has_method("currentRefreshRate"):
+			return float(plugin.call("currentRefreshRate"))
+	return DisplayServer.screen_get_refresh_rate()
 
 
 static func fps_label() -> String:

@@ -558,7 +558,8 @@ var _prof_timer := 0.0
 var _prof_hid_rocket := false
 var _prof_stats: Label
 const PROF_FEATURES := [["shadows", "Тени"], ["ground", "Детальный грунт"], ["globe", "Шар планеты"],
-	["g_detail", "Грунт: детали вблизи"], ["g_craters", "Грунт: мелкие кратеры"],
+	["g_detail", "Грунт: детали вблизи (всё)"], ["g_near", "  · ближняя текстура"],
+	["g_mid", "  · средние нормали"], ["g_craters", "  · мелкие кратеры"], ["g_micro", "  · микротени"],
 	["g_light", "Грунт: свет реголита"], ["g_fp32", "Грунт: полная точность (вкл = медленнее)"], ["g_hd", "Грунт: HD-снимки (Земля)"],
 	["rocks", "Камни и галька"], ["fx", "Дым и пыль"], ["glow", "Свечение (glow)"],
 	["rocket", "Ракета и космонавт"], ["lights", "Ночные фонари"], ["sky", "Небо"]]
@@ -675,6 +676,9 @@ func _prof_apply() -> void:
 		if pm is ShaderMaterial:
 			_prof_param(pm, "detail_level", 0, off.has("g_detail"))
 			_prof_param(pm, "crater_decals", 0.0, off.has("g_craters"))
+			_prof_param(pm, "near_layer", false, off.has("g_near"))
+			_prof_param(pm, "mid_normals", false, off.has("g_mid"))
+			_prof_param(pm, "micro_shadows", false, off.has("g_micro"))
 			_prof_param(pm, "regolith", 0.0, off.has("g_light"))
 			_prof_param(pm, "hd_rect", Vector4.ZERO, off.has("g_hd"))
 			var want: Shader = pv.call("surface_shader_fp32") if off.has("g_fp32") else pv.get("SURFACE_SHADER")
@@ -970,8 +974,8 @@ func _update_texts() -> void:
 	]
 	if _prof_panel != null and _prof_panel.visible:
 		var vp := get_viewport().get_viewport_rid()
-		_prof_stats.text = "FPS %d\nCPU %.1f мс · GPU %.1f мс\ndraw %d · %dk треуг." % [
-			Engine.get_frames_per_second(),
+		_prof_stats.text = "FPS %d · экран %d Гц\nCPU %.1f мс · GPU %.1f мс\ndraw %d · %dk треуг." % [
+			Engine.get_frames_per_second(), int(round(maxf(Graphics.current_hz(), 0.0))),
 			RenderingServer.viewport_get_measured_render_time_cpu(vp) + Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
 			RenderingServer.viewport_get_measured_render_time_gpu(vp),
 			int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)),

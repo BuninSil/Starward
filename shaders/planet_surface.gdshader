@@ -60,6 +60,9 @@ uniform vec4 mat_amount = vec4(1.0, 0.5, 0.5, 0.6);  // fine, smooth/ripples, gr
 uniform vec3 rock_tint = vec3(0.8);         // multipliers
 uniform vec3 gravel_tint = vec3(0.9);
 uniform float crater_decals = 0.0;
+uniform bool near_layer = true;     // debug profiler switches (parts of the close-up detail)
+uniform bool mid_normals = true;
+uniform bool micro_shadows = true;
 uniform vec2 wind_dir = vec2(0.8, 0.6);
 uniform vec3 detail_tint = vec3(1.0);   // e.g. greener land on Earth
 
@@ -207,7 +210,7 @@ void fragment() {
 		vec2 near_off_b = vec2(0.0);
 		LP float near_mix = 0.0;
 		// Within 25 m the near layer fully replaces the mid-scale normals.
-		if (detail_level > 0 && dist < 2500.0 && fade_near < 1.0) {
+		if (detail_level > 0 && mid_normals && dist < 2500.0 && fade_near < 1.0) {
 			// Mid-scale normals, rotated back to the patch axes.
 			LP vec4 mn1 = textureGrad(ground_pack_normal, umid, mdx, mdy) * 2.0 - 1.0;
 			LP vec4 mn2 = textureGrad(ground_pack_normal2, umid, mdx, mdy) * 2.0 - 1.0;
@@ -215,7 +218,7 @@ void fragment() {
 			n1 = vec4(back * mn1.xy, back * mn1.zw) * 0.5 + 0.5;
 			n2 = vec4(back * mn2.xy, back * mn2.zw) * 0.5 + 0.5;
 		}
-		if (detail_level > 0 && dist < 120.0) {
+		if (detail_level > 0 && near_layer && dist < 120.0) {
 			// Near scale, stochastically tiled (3.2 m texture repeat).
 			float l = pm.b * 9.0;
 			float ia = floor(l);
@@ -326,7 +329,7 @@ void fragment() {
 		bn.xy += vec2(-g.x, g.y) * 2.0;
 
 		// Micro shadows of grains / pebbles / rock ridges near the camera.
-		if (detail_level > 0 && dist < 25.0 && tan_e > 0.0) {
+		if (detail_level > 0 && micro_shadows && dist < 25.0 && tan_e > 0.0) {
 			vec2 un = UV2 / 3.2 + sun_h * (0.05 / 3.2);
 			LP vec4 s = near_mix <= 0.0 ? textureGrad(ground_pack, un + near_off_a, ddx / 3.2, ddy / 3.2)
 				: (near_mix >= 1.0 ? textureGrad(ground_pack, un + near_off_b, ddx / 3.2, ddy / 3.2)
