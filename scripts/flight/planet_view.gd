@@ -702,6 +702,7 @@ func _apply_patch(res: Dictionary) -> void:
 	if _patch_material == null:
 		_patch_material = _make_patch_material()
 	mi.material_override = _patch_material
+	mi.layers = GROUND_LAYER
 	# The ground only receives shadows (casting it into the shadow map is too
 	# costly on phones; crater shading comes from the shader).
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -728,7 +729,8 @@ func set_hd(tex: Texture2D, rect: Rect2) -> void:
 		(_patch_material as ShaderMaterial).set_shader_parameter("hd_rect", Vector4(rect.position.x, rect.position.y, rect.size.x, rect.size.y))
 static var _rocks: Array[ArrayMesh] = []
 static var _rock_arrays: Array = []   ## per variant: [vertices, normals], unindexed (for baking)
-const ROCK_CHUNK := 70.0              ## metres: rock batches, culled one by one
+const ROCK_CHUNK := 70.0
+const GROUND_LAYER := 2               ## render layer of the ground patch: tiny lamps skip it              ## metres: rock batches, culled one by one
 static var _pebble_mesh: ArrayMesh = null
 static var _drift_mesh: ArrayMesh = null
 const ROCK_VARIANTS := 7

@@ -48,6 +48,7 @@ func _ready() -> void:
 	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var m := ShaderMaterial.new()
 	m.shader = _shader()
+	m.set_shader_parameter("lattice", _lattice())
 	material_override = m
 	# Bounds are wherever the particles are: never cull the whole batch.
 	custom_aabb = AABB(Vector3(-1e5, -1e5, -1e5), Vector3(2e5, 2e5, 2e5))
@@ -205,6 +206,22 @@ func step(dt: float, origin: DVec3, t: float) -> void:
 
 
 static var _sh: Shader
+static var _lat: ImageTexture
+
+
+## Random values on a 64x64 integer lattice (wrapping). Read with one bilinear
+## tap at floor(p) + smoothstep(fract(p)), this is the same value noise as
+## hashing four corners, for the price of one texture read.
+static func _lattice() -> ImageTexture:
+	if _lat == null:
+		var img := Image.create(64, 64, false, Image.FORMAT_RF)
+		var rng := RandomNumberGenerator.new()
+		rng.seed = 7
+		for y in 64:
+			for x in 64:
+				img.set_pixel(x, y, Color(rng.randf(), 0, 0))
+		_lat = ImageTexture.create_from_image(img)
+	return _lat
 
 
 static func _shader() -> Shader:
@@ -221,6 +238,7 @@ uniform float flame_power = 0.0;      // 0..1
 uniform float flame_reach = 40.0;
 uniform vec3 lamp_pos = vec3(0.0);     // ship floodlights (night)
 uniform float lamp_power = 0.0;
+uniform sampler2D lattice : filter_linear, repeat_enable;
 varying vec3 v_world;
 varying vec4 v_col;
 varying vec4 v_cus;
@@ -229,10 +247,9 @@ void vertex() {
 	v_cus = INSTANCE_CUSTOM;
 	v_world = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
 }
-float h21(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 float vnoise(vec2 p) {
 	vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
-	return mix(mix(h21(i), h21(i + vec2(1, 0)), f.x), mix(h21(i + vec2(0, 1)), h21(i + vec2(1, 1)), f.x), f.y);
+	return texture(lattice, (i + f + 0.5) / 64.0).r;
 }
 void fragment() {
 	vec2 p = UV - 0.5;

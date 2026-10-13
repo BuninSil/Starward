@@ -196,7 +196,8 @@ void fragment() {
 		vec2 near_off_a = vec2(0.0);
 		vec2 near_off_b = vec2(0.0);
 		float near_mix = 0.0;
-		if (detail_level > 0 && dist < 2500.0) {
+		// Within 25 m the near layer fully replaces the mid-scale normals.
+		if (detail_level > 0 && dist < 2500.0 && fade_near < 1.0) {
 			// Mid-scale normals, rotated back to the patch axes.
 			vec4 mn1 = textureGrad(ground_pack_normal, umid, mdx, mdy) * 2.0 - 1.0;
 			vec4 mn2 = textureGrad(ground_pack_normal2, umid, mdx, mdy) * 2.0 - 1.0;
@@ -219,8 +220,19 @@ void fragment() {
 			vec4 p_near = mix(a, b, near_mix);
 			near_w = fade_near;
 			pn = mix(pm, p_near, near_w);
-			vec4 q1 = stoch(ground_pack_normal, un, ndx, ndy, near_off_a, near_off_b, near_mix);
-			vec4 q2 = stoch(ground_pack_normal2, un, ndx, ndy, near_off_a, near_off_b, near_mix);
+			// Outside the blend band one read per texture is enough.
+			vec4 q1;
+			vec4 q2;
+			if (near_mix <= 0.0) {
+				q1 = textureGrad(ground_pack_normal, un + near_off_a, ndx, ndy);
+				q2 = textureGrad(ground_pack_normal2, un + near_off_a, ndx, ndy);
+			} else if (near_mix >= 1.0) {
+				q1 = textureGrad(ground_pack_normal, un + near_off_b, ndx, ndy);
+				q2 = textureGrad(ground_pack_normal2, un + near_off_b, ndx, ndy);
+			} else {
+				q1 = stoch(ground_pack_normal, un, ndx, ndy, near_off_a, near_off_b, near_mix);
+				q2 = stoch(ground_pack_normal2, un, ndx, ndy, near_off_a, near_off_b, near_mix);
+			}
 			n1 = mix(n1, q1, near_w);
 			n2 = mix(n2, q2, near_w);
 		}
@@ -306,8 +318,10 @@ void fragment() {
 		// Micro shadows of grains / pebbles / rock ridges near the camera.
 		if (detail_level > 0 && dist < 25.0 && tan_e > 0.0) {
 			vec2 un = UV2 / 3.2 + sun_h * (0.05 / 3.2);
-			vec4 s = mix(textureGrad(ground_pack, un + near_off_a, ddx / 3.2, ddy / 3.2),
-				textureGrad(ground_pack, un + near_off_b, ddx / 3.2, ddy / 3.2), near_mix);
+			vec4 s = near_mix <= 0.0 ? textureGrad(ground_pack, un + near_off_a, ddx / 3.2, ddy / 3.2)
+				: (near_mix >= 1.0 ? textureGrad(ground_pack, un + near_off_b, ddx / 3.2, ddy / 3.2)
+				: mix(textureGrad(ground_pack, un + near_off_a, ddx / 3.2, ddy / 3.2),
+					textureGrad(ground_pack, un + near_off_b, ddx / 3.2, ddy / 3.2), near_mix));
 			vec4 hb0 = vec4(hf, hs, hg, hr);
 			vec4 hb1 = vec4(s.r * 0.4 + s.b * 0.6, s.b, s.a, s.g);
 			float dh = dot(hb1 - hb0, w);

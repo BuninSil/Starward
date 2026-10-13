@@ -625,7 +625,9 @@ func _prof_apply() -> void:
 		_prof_hid_rocket = h
 	for l in flight.find_children("*", "Light3D", true, false):
 		if not (l is DirectionalLight3D):
-			(l as Light3D).light_cull_mask = 0 if off.has("lights") else 0xFFFFF
+			if not l.has_meta("mask"):
+				l.set_meta("mask", (l as Light3D).light_cull_mask)
+			(l as Light3D).light_cull_mask = 0 if off.has("lights") else int(l.get_meta("mask"))
 	for b in flight.planets:
 		var pv: Node = flight.planets[b]
 		pv.get("_surface").visible = not off.has("globe")

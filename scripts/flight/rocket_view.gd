@@ -879,6 +879,7 @@ func _build_lights() -> void:
 		var l := OmniLight3D.new()
 		l.light_color = sp[1]
 		l.omni_range = 1.4
+		l.light_cull_mask = 1   # lights the hull only, never reaches the ground (layer 2)
 		l.omni_attenuation = 1.6
 		l.light_energy = 0.0
 		l.position = (sp[0] as Vector3) * 1.08
