@@ -38,9 +38,7 @@ func _ready() -> void:
 	_mm.transform_format = MultiMesh.TRANSFORM_3D
 	_mm.use_colors = true
 	_mm.use_custom_data = true
-	var q := QuadMesh.new()
-	q.size = Vector2(1, 1)
-	_mm.mesh = q
+	_mm.mesh = _octagon()
 	_mm.instance_count = MAX
 	_mm.visible_instance_count = 0
 	multimesh = _mm
@@ -48,7 +46,7 @@ func _ready() -> void:
 	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var m := ShaderMaterial.new()
 	m.shader = _shader()
-	m.set_shader_parameter("lattice", _lattice())
+	m.set_shader_parameter("atlas", _atlas())
 	material_override = m
 	# Bounds are wherever the particles are: never cull the whole batch.
 	custom_aabb = AABB(Vector3(-1e5, -1e5, -1e5), Vector3(2e5, 2e5, 2e5))
@@ -206,22 +204,103 @@ func step(dt: float, origin: DVec3, t: float) -> void:
 
 
 static var _sh: Shader
-static var _lat: ImageTexture
+static var _atl: ImageTexture
+const TILE := 96        ## atlas tile size (px); 7 puff variants side by side
+const VARIANTS := 7
 
 
-## Random values on a 64x64 integer lattice (wrapping). Read with one bilinear
-## tap at floor(p) + smoothstep(fract(p)), this is the same value noise as
-## hashing four corners, for the price of one texture read.
-static func _lattice() -> ImageTexture:
-	if _lat == null:
-		var img := Image.create(64, 64, false, Image.FORMAT_RF)
-		var rng := RandomNumberGenerator.new()
-		rng.seed = 7
-		for y in 64:
-			for x in 64:
-				img.set_pixel(x, y, Color(rng.randf(), 0, 0))
-		_lat = ImageTexture.create_from_image(img)
-	return _lat
+## The puff shapes, computed once: for each of the 7 variants the lumpy edge
+## mask (R), the "lit from above" term (G) and the volume shading (B), exactly
+## what the shader used to work out per pixel from value noise. The fragment
+## shader now reads one texel instead of four noise lookups and the maths.
+static var _atl_task := -1
+static var _atl_mutex := Mutex.new()
+
+
+## Starts building the atlas in the background (called at game start).
+static func prepare() -> void:
+	if _atl == null and _atl_task < 0:
+		_atl_task = WorkerThreadPool.add_task(_atlas)
+
+
+static func _atlas() -> ImageTexture:
+	if _atl_task >= 0 and not WorkerThreadPool.is_task_completed(_atl_task) \
+			and OS.get_thread_caller_id() == OS.get_main_thread_id():
+		WorkerThreadPool.wait_for_task_completion(_atl_task)
+		_atl_task = -1
+	_atl_mutex.lock()
+	if _atl != null:
+		_atl_mutex.unlock()
+		return _atl
+	var lat := PackedFloat32Array()
+	lat.resize(64 * 64)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 7
+	for i in 64 * 64:
+		lat[i] = rng.randf()
+	var vnoise := func(x: float, y: float) -> float:
+		var ix := floori(x)
+		var iy := floori(y)
+		var fx := x - ix
+		var fy := y - iy
+		fx = fx * fx * (3.0 - 2.0 * fx)
+		fy = fy * fy * (3.0 - 2.0 * fy)
+		var x0 := posmod(ix, 64)
+		var y0 := posmod(iy, 64)
+		var x1 := (x0 + 1) % 64
+		var y1 := (y0 + 1) % 64
+		var a := lerpf(lat[y0 * 64 + x0], lat[y0 * 64 + x1], fx)
+		var b := lerpf(lat[y1 * 64 + x0], lat[y1 * 64 + x1], fx)
+		return lerpf(a, b, fy)
+	var data := PackedByteArray()
+	data.resize(TILE * VARIANTS * TILE * 4)
+	for k in VARIANTS:
+		var sd := float(k) / VARIANTS
+		var tone := lerpf(0.82, 1.06, fposmod(sd * 7.31, 1.0))
+		for y in TILE:
+			for x in TILE:
+				var px := (x + 0.5) / TILE - 0.5
+				var py := (y + 0.5) / TILE - 0.5
+				var r := sqrt(px * px + py * py) * 2.0
+				var lump: float = vnoise.call(px * 4.0 + sd * 23.0, py * 4.0 + sd * 23.0) * 0.5 \
+					+ vnoise.call(px * 9.0 + sd * 5.0, py * 9.0 + sd * 5.0) * 0.3
+				var mask := 1.0 - smoothstep(0.55, 0.8, r + lump * 0.5 - 0.2)
+				var bulge := sqrt(maxf(1.0 - r * r, 0.0))
+				var top := clampf(0.5 - py * 1.2 + (lump - 0.4) * 0.6, 0.0, 1.0)
+				var shade := lerpf(0.42, 1.15, top * 0.65 + bulge * 0.35) * tone
+				var o := (y * TILE * VARIANTS + k * TILE + x) * 4
+				data[o] = int(round(mask * 255.0))
+				data[o + 1] = int(round(top * 255.0))
+				data[o + 2] = int(round(clampf(shade / 1.25, 0.0, 1.0) * 255.0))
+				data[o + 3] = 255
+	var img := Image.create_from_data(TILE * VARIANTS, TILE, false, Image.FORMAT_RGBA8, data)
+	img.generate_mipmaps()
+	_atl = ImageTexture.create_from_image(img)
+	_atl_mutex.unlock()
+	return _atl
+
+
+## Billboard octagon around the unit puff (the quad's corners are always
+## transparent but still cost fill rate). UV as on a QuadMesh.
+static func _octagon() -> ArrayMesh:
+	var verts := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	var R := 0.5 / cos(PI / 8.0)
+	var ring: Array[Vector3] = []
+	for i in 8:
+		var ang := PI / 8.0 + TAU * i / 8.0
+		ring.append(Vector3(cos(ang) * R, sin(ang) * R, 0.0))
+	for i in 8:
+		for v in [Vector3.ZERO, ring[i], ring[(i + 1) % 8]]:
+			verts.append(v)
+			uvs.append(Vector2(v.x + 0.5, 0.5 - v.y))
+	var arr := []
+	arr.resize(Mesh.ARRAY_MAX)
+	arr[Mesh.ARRAY_VERTEX] = verts
+	arr[Mesh.ARRAY_TEX_UV] = uvs
+	var m := ArrayMesh.new()
+	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+	return m
 
 
 static func _shader() -> Shader:
@@ -233,48 +312,42 @@ uniform float light = 1.0;
 uniform vec3 ground_p = vec3(0.0);   // ground plane under the ship (scene)
 uniform vec3 ground_n = vec3(0.0, 1.0, 0.0);
 uniform float ground_on = 0.0;
-uniform vec3 flame_pos = vec3(0.0);   // view... world position of the engine flame
+uniform vec3 flame_pos = vec3(0.0);   // world position of the engine flame
 uniform float flame_power = 0.0;      // 0..1
 uniform float flame_reach = 40.0;
 uniform vec3 lamp_pos = vec3(0.0);     // ship floodlights (night)
 uniform float lamp_power = 0.0;
-uniform sampler2D lattice : filter_linear, repeat_enable;
-varying vec3 v_world;
+uniform sampler2D atlas : filter_linear_mipmap, repeat_disable;
 varying vec4 v_col;
-varying vec4 v_cus;
+varying float v_glow;
+varying float v_tile;
+varying float v_fl;      // flame light reaching this puff
+varying float v_lp;      // floodlight reaching this puff
+varying float v_gh;      // height above the local ground plane
 void vertex() {
 	v_col = COLOR;
-	v_cus = INSTANCE_CUSTOM;
-	v_world = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-}
-float vnoise(vec2 p) {
-	vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
-	return texture(lattice, (i + f + 0.5) / 64.0).r;
+	v_glow = INSTANCE_CUSTOM.x;
+	v_tile = floor(INSTANCE_CUSTOM.y * 7.0 + 0.5);
+	vec3 centre = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	v_fl = flame_power * exp(-length(centre - flame_pos) / flame_reach);
+	v_lp = lamp_power * exp(-length(centre - lamp_pos) / 28.0);
+	vec3 wp = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	v_gh = dot(wp - ground_p, ground_n);
 }
 void fragment() {
-	vec2 p = UV - 0.5;
-	float r = length(p) * 2.0;
-	// Puffy edge: a little noise per particle (seed in custom.y).
-	float n = vnoise(p * 5.0 + v_cus.y * 17.0) * 0.35 + vnoise(p * 11.0 - v_cus.y * 9.0) * 0.15;
-	// Cauliflower puff: lumpy edge, a rounded "volume" lit from above and
-	// darker underneath, every puff a little different in tone.
-	float lump = vnoise(p * 4.0 + v_cus.y * 23.0) * 0.5 + vnoise(p * 9.0 + v_cus.y * 5.0) * 0.3;
-	float a = (1.0 - smoothstep(0.55, 0.8, r + lump * 0.5 - 0.2)) * v_col.a;
-	float bulge = sqrt(max(1.0 - r * r, 0.0));
-	float top = clamp(0.5 - p.y * 1.2 + (lump - 0.4) * 0.6, 0.0, 1.0);
-	float shade = mix(0.42, 1.15, top * 0.65 + bulge * 0.35) * mix(0.82, 1.06, fract(v_cus.y * 7.31));
+	// Puff shape from the atlas: R edge mask, G lit-from-above, B volume shading.
+	vec4 t = texture(atlas, vec2((v_tile + clamp(UV.x, 0.0, 1.0)) / 7.0, UV.y));
+	float a = t.r * v_col.a;
+	float top = t.g;
+	float shade = t.b * 1.25;
 	// Unshaded (a lit billboard goes black against the sun); brightness follows
-	// the scene light, glowing bits add on top.
-	// The engine flame lights the clouds orange from below / inside.
-	float fl = flame_power * exp(-length(v_world - flame_pos) / flame_reach) * (0.6 + 0.8 * (1.0 - top));
-	float lp = lamp_power * exp(-length(v_world - lamp_pos) / 28.0);
-	ALBEDO = v_col.rgb * (light * shade * (1.0 - 0.35 * fl) + vec3(1.0, 0.88, 0.72) * lp * 1.4 * shade)
-		+ vec3(1.0, 0.5, 0.16) * (fl * 1.8 + v_cus.x * 1.5);
-	// Soft contact with the ground (no depth texture on the mobile renderer):
-	// the puff fades out over the last metres above the local ground plane.
+	// the scene light, the engine flame lights the clouds orange from below.
+	float fl = v_fl * (0.6 + 0.8 * (1.0 - top));
+	ALBEDO = v_col.rgb * (light * shade * (1.0 - 0.35 * fl) + vec3(1.0, 0.88, 0.72) * v_lp * 1.4 * shade)
+		+ vec3(1.0, 0.5, 0.16) * (fl * 1.8 + v_glow * 1.5);
+	// Soft contact with the ground (no depth texture on the mobile renderer).
 	if (ground_on > 0.5) {
-		vec3 wp = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
-		a *= smoothstep(0.0, 3.0, dot(wp - ground_p, ground_n));
+		a *= smoothstep(0.0, 3.0, v_gh);
 	}
 	ALPHA = a;
 }

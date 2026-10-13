@@ -23,6 +23,8 @@ func _ready() -> void:
 	_fresh_inventories()
 	# Refresh rate / frame cap from the settings (auto: the screen's top rate).
 	Graphics.apply_fps()
+	# Smoke puff atlas: built in the background while the menu is up.
+	preload("res://scripts/flight/fx_particles.gd").prepare()
 	Log.info("Game: display %.0f Hz, max_fps %d" % [Graphics.screen_hz, Engine.max_fps])
 
 
