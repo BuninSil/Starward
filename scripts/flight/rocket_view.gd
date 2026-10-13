@@ -633,6 +633,11 @@ func hatch_local() -> Vector3:
 	return cap.position + Vector3(0, L * HATCH_HEIGHT, hr + 0.35)
 
 
+## The hatch point on the hull itself (where the tether reel sits).
+func hatch_hull_local() -> Vector3:
+	return hatch_local() - Vector3(0, 0, 0.33)
+
+
 # --- Exhaust, chute, collider ---------------------------------------------------
 
 func _build_flames() -> void:
@@ -1029,14 +1034,7 @@ var _char_shown: Dictionary = {}  ## stage node -> last char value pushed to sha
 
 
 func _build_plasma() -> void:
-	var cm := CylinderMesh.new()
-	cm.top_radius = 1.0
-	cm.bottom_radius = 1.9
-	cm.height = 1.0
-	cm.radial_segments = 24
-	cm.rings = 6
-	cm.cap_top = false
-	cm.cap_bottom = false
+	var cm := _bow_shock_mesh()
 	_plasma = MeshInstance3D.new()
 	_plasma.mesh = cm
 	_plasma_mat = ShaderMaterial.new()
@@ -1047,6 +1045,45 @@ func _build_plasma() -> void:
 	_plasma.top_level = true
 	_plasma.visible = false
 	add_child(_plasma)
+
+
+## Bow shock shell in unit space: closed blunt apex at y = +0.5 (ahead of the
+## leading end), widening downstream to radius 1.9 at y = -0.5 (open there,
+## where the shader fades it out). No open rim in front: that showed as a hard
+## glowing edge.
+static func _bow_shock_mesh() -> ArrayMesh:
+	const RINGS := 20
+	const SEGS := 24
+	var verts := PackedVector3Array()
+	var norms := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	var idx := PackedInt32Array()
+	for i in RINGS + 1:
+		var t := float(i) / RINGS
+		var d := t * t                        # denser near the apex
+		var r := 1.9 * pow(d, 0.2)
+		# Slope dr/dy for the normal (r = 1.9 d^0.2, y = 0.5 - d).
+		var dr := 1.9 * 0.2 * pow(maxf(d, 1e-4), -0.8)
+		for k in SEGS + 1:
+			var a := TAU * k / SEGS
+			var dir := Vector3(cos(a), 0.0, sin(a))
+			verts.append(dir * r + Vector3(0, 0.5 - d, 0))
+			norms.append((dir + Vector3(0, 1.0 / dr, 0)).normalized())
+			uvs.append(Vector2(float(k) / SEGS, t))
+	for i in RINGS:
+		for k in SEGS:
+			var a := i * (SEGS + 1) + k
+			var b := a + SEGS + 1
+			idx.append_array([a, b, a + 1, a + 1, b, b + 1])
+	var arr := []
+	arr.resize(Mesh.ARRAY_MAX)
+	arr[Mesh.ARRAY_VERTEX] = verts
+	arr[Mesh.ARRAY_NORMAL] = norms
+	arr[Mesh.ARRAY_TEX_UV] = uvs
+	arr[Mesh.ARRAY_INDEX] = idx
+	var m := ArrayMesh.new()
+	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+	return m
 
 
 func _collect_hull_mats() -> void:

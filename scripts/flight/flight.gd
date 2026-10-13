@@ -1021,7 +1021,7 @@ func _process_frame(delta: float) -> void:
 	elif eva_mode:
 		_update_eva_camera()
 		if not is_surface_eva():
-			tether.update_visual(hatch_world(), _astro_xf * Vector3(0, 0.15, 0.32), camera.global_position, delta, rocket.rope_obstacles())
+			tether.update_visual(rocket.global_transform * rocket.hatch_hull_local(), _astro_xf * Vector3(0, 0.15, 0.32), camera.global_position, delta, rocket.rope_obstacles())
 	else:
 		_update_flight_camera()
 	traj_view.visible = map_mode
