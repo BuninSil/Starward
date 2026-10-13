@@ -732,10 +732,16 @@ func _build_chute() -> void:
 					var rr := CHUTE_R * sin(u * PI * 0.5)
 					var y := CHUTE_H * cos(u * PI * 0.5)
 					pts.append(Vector3(cos(q[1]) * rr, y, sin(q[1]) * rr))
-				st.set_color(col)
-				for idx in [0, 2, 1, 0, 3, 2]:
-					st.add_vertex(pts[idx])
-	st.generate_normals()
+				# The apex ring is a point: one triangle there (a degenerate one
+				# gives a NaN normal = a black spot on some GPUs). Normals are the
+				# dome's analytic ones (outward), not generated.
+				var idxs := [0, 2, 1] if ri == 0 else [0, 2, 1, 0, 3, 2]
+				for idx in idxs:
+					var pv: Vector3 = pts[idx]
+					var nrm := Vector3(pv.x / CHUTE_R, pv.y / CHUTE_H, pv.z / CHUTE_R)
+					st.set_color(col)
+					st.set_normal(nrm.normalized() if nrm.length() > 1e-4 else Vector3.UP)
+					st.add_vertex(pv)
 	_canopy = MeshInstance3D.new()
 	_canopy.mesh = st.commit()
 	_chute_mat = ShaderMaterial.new()
