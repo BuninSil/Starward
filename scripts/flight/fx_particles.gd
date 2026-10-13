@@ -329,7 +329,7 @@ void vertex() {
 	v_glow = INSTANCE_CUSTOM.x;
 	v_tile = floor(INSTANCE_CUSTOM.y * 7.0 + 0.5);
 	vec3 centre = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
-	v_fl = flame_power * exp(-length(centre - flame_pos) / flame_reach);
+	v_fl = flame_power * exp(-length(centre - flame_pos) / max(flame_reach, 0.01));
 	v_lp = lamp_power * exp(-length(centre - lamp_pos) / 28.0);
 	vec3 wp = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 	v_gh = dot(wp - ground_p, ground_n);
@@ -343,13 +343,19 @@ void fragment() {
 	// Unshaded (a lit billboard goes black against the sun); brightness follows
 	// the scene light, the engine flame lights the clouds orange from below.
 	float fl = v_fl * (0.6 + 0.8 * (1.0 - top));
-	ALBEDO = v_col.rgb * (light * shade * (1.0 - 0.35 * fl) + vec3(1.0, 0.88, 0.72) * v_lp * 1.4 * shade)
+	vec3 col = v_col.rgb * (light * shade * (1.0 - 0.35 * fl) + vec3(1.0, 0.88, 0.72) * v_lp * 1.4 * shade)
 		+ vec3(1.0, 0.5, 0.16) * (fl * 1.8 + v_glow * 1.5);
 	// Soft contact with the ground (no depth texture on the mobile renderer).
 	if (ground_on > 0.5) {
 		a *= smoothstep(0.0, 3.0, v_gh);
 	}
-	ALPHA = a;
+	// A NaN anywhere above shows on mobile GPUs as a pitch-black puff: drop it.
+	if (any(isnan(col)) || any(isinf(col)) || isnan(a) || isinf(a)) {
+		col = vec3(0.0);
+		a = 0.0;
+	}
+	ALBEDO = col;
+	ALPHA = clamp(a, 0.0, 1.0);
 }
 """
 	return _sh

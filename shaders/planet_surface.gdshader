@@ -90,8 +90,20 @@ vec4 hash42(vec2 p) {
 
 // Two reads of a texture at random offsets picked by the noise index k, blended
 // with weight w (shared by all textures read with the same offsets).
-vec4 stoch(sampler2D s, vec2 uv, vec2 dx, vec2 dy, vec2 oa, vec2 ob, float w) {
-	return mix(textureGrad(s, uv + oa, dx, dy), textureGrad(s, uv + ob, dx, dy), w);
+// Near-layer read. textureGrad (explicit gradients) is several times slower
+// than a plain read on mobile GPUs; the stochastic offsets jump between
+// regions, so the mip level is worked out once per pixel from the smooth UV
+// and the reads use textureLod. exact_grad: the old path (debug comparison).
+uniform bool exact_grad = false;
+vec4 tex_n(sampler2D s, vec2 uv, vec2 dx, vec2 dy, float lod) {   // normal maps
+	return exact_grad ? textureGrad(s, uv, dx, dy) : textureLod(s, uv, lod);
+}
+vec4 tex_p(vec2 uv, vec2 dx, vec2 dy, float lod) {                 // the ground pack
+	return exact_grad ? textureGrad(ground_pack, uv, dx, dy) : textureLod(ground_pack, uv, lod);
+}
+
+vec4 stoch(sampler2D s, vec2 uv, vec2 dx, vec2 dy, float lod, vec2 oa, vec2 ob, float w) {
+	return mix(tex_n(s, uv + oa, dx, dy, lod), tex_n(s, uv + ob, dx, dy, lod), w);
 }
 
 // Bowl crater with a rim; x = distance / radius. Height in units of depth.
@@ -197,9 +209,7 @@ void fragment() {
 
 		// Mid scale: rotated, plain (also the noise index for the stochastic layer).
 		vec2 umid = ROT_MID * UV2 / 23.0 + macro_seed * 3.0;
-		vec2 mdx = ROT_MID * ddx / 23.0;
-		vec2 mdy = ROT_MID * ddy / 23.0;
-		LP vec4 pm = textureGrad(ground_pack, umid, mdx, mdy);
+		LP vec4 pm = texture(ground_pack, umid);   // smooth UV: hardware derivatives are exact
 		LP vec4 pn = pm;          // near-scale pack (falls back to mid)
 		LP vec4 n1 = vec4(0.5);   // fine | gravel normals
 		LP vec4 n2 = vec4(0.5);   // rock | bumps normals
@@ -209,11 +219,12 @@ void fragment() {
 		vec2 near_off_a = vec2(0.0);
 		vec2 near_off_b = vec2(0.0);
 		LP float near_mix = 0.0;
+		float near_lod = 0.0;
 		// Within 25 m the near layer fully replaces the mid-scale normals.
 		if (detail_level > 0 && mid_normals && dist < 2500.0 && fade_near < 1.0) {
 			// Mid-scale normals, rotated back to the patch axes.
-			LP vec4 mn1 = textureGrad(ground_pack_normal, umid, mdx, mdy) * 2.0 - 1.0;
-			LP vec4 mn2 = textureGrad(ground_pack_normal2, umid, mdx, mdy) * 2.0 - 1.0;
+			LP vec4 mn1 = texture(ground_pack_normal, umid) * 2.0 - 1.0;
+			LP vec4 mn2 = texture(ground_pack_normal2, umid) * 2.0 - 1.0;
 			mat2 back = transpose(ROT_MID);
 			n1 = vec4(back * mn1.xy, back * mn1.zw) * 0.5 + 0.5;
 			n2 = vec4(back * mn2.xy, back * mn2.zw) * 0.5 + 0.5;
@@ -227,8 +238,13 @@ void fragment() {
 			vec2 un = UV2 / 3.2;
 			vec2 ndx = ddx / 3.2;
 			vec2 ndy = ddy / 3.2;
-			LP vec4 a = textureGrad(ground_pack, un + near_off_a, ndx, ndy);
-			LP vec4 b = textureGrad(ground_pack, un + near_off_b, ndx, ndy);
+			// Mip level of the 512 px textures, between the two axes' footprints
+			// (a cheap stand-in for anisotropic filtering).
+			float fx_ = length(ndx * 512.0);
+			float fy_ = length(ndy * 512.0);
+			near_lod = log2(max(mix(min(fx_, fy_), max(fx_, fy_), 0.35), 1e-4));
+			LP vec4 a = tex_p(un + near_off_a, ndx, ndy, near_lod);
+			LP vec4 b = tex_p(un + near_off_b, ndx, ndy, near_lod);
 			near_mix = smoothstep(0.2, 0.8, fract(l) - 0.1 * dot(a - b, vec4(1.0)));
 			LP vec4 p_near = mix(a, b, near_mix);
 			near_w = fade_near;
@@ -237,14 +253,14 @@ void fragment() {
 			LP vec4 q1;
 			LP vec4 q2;
 			if (near_mix <= 0.0) {
-				q1 = textureGrad(ground_pack_normal, un + near_off_a, ndx, ndy);
-				q2 = textureGrad(ground_pack_normal2, un + near_off_a, ndx, ndy);
+				q1 = tex_n(ground_pack_normal, un + near_off_a, ndx, ndy, near_lod);
+				q2 = tex_n(ground_pack_normal2, un + near_off_a, ndx, ndy, near_lod);
 			} else if (near_mix >= 1.0) {
-				q1 = textureGrad(ground_pack_normal, un + near_off_b, ndx, ndy);
-				q2 = textureGrad(ground_pack_normal2, un + near_off_b, ndx, ndy);
+				q1 = tex_n(ground_pack_normal, un + near_off_b, ndx, ndy, near_lod);
+				q2 = tex_n(ground_pack_normal2, un + near_off_b, ndx, ndy, near_lod);
 			} else {
-				q1 = stoch(ground_pack_normal, un, ndx, ndy, near_off_a, near_off_b, near_mix);
-				q2 = stoch(ground_pack_normal2, un, ndx, ndy, near_off_a, near_off_b, near_mix);
+				q1 = stoch(ground_pack_normal, un, ndx, ndy, near_lod, near_off_a, near_off_b, near_mix);
+				q2 = stoch(ground_pack_normal2, un, ndx, ndy, near_lod, near_off_a, near_off_b, near_mix);
 			}
 			n1 = mix(n1, q1, near_w);
 			n2 = mix(n2, q2, near_w);
@@ -331,10 +347,12 @@ void fragment() {
 		// Micro shadows of grains / pebbles / rock ridges near the camera.
 		if (detail_level > 0 && micro_shadows && dist < 25.0 && tan_e > 0.0) {
 			vec2 un = UV2 / 3.2 + sun_h * (0.05 / 3.2);
-			LP vec4 s = near_mix <= 0.0 ? textureGrad(ground_pack, un + near_off_a, ddx / 3.2, ddy / 3.2)
-				: (near_mix >= 1.0 ? textureGrad(ground_pack, un + near_off_b, ddx / 3.2, ddy / 3.2)
-				: mix(textureGrad(ground_pack, un + near_off_a, ddx / 3.2, ddy / 3.2),
-					textureGrad(ground_pack, un + near_off_b, ddx / 3.2, ddy / 3.2), near_mix));
+			vec2 sdx = ddx / 3.2;
+			vec2 sdy = ddy / 3.2;
+			LP vec4 s = near_mix <= 0.0 ? tex_p(un + near_off_a, sdx, sdy, near_lod)
+				: (near_mix >= 1.0 ? tex_p(un + near_off_b, sdx, sdy, near_lod)
+				: mix(tex_p(un + near_off_a, sdx, sdy, near_lod),
+					tex_p(un + near_off_b, sdx, sdy, near_lod), near_mix));
 			LP vec4 hb0 = vec4(hf, hs, hg, hr);
 			LP vec4 hb1 = vec4(s.r * 0.4 + s.b * 0.6, s.b, s.a, s.g);
 			LP float dh = dot(hb1 - hb0, w);

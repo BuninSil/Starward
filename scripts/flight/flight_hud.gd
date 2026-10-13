@@ -559,7 +559,7 @@ var _prof_hid_rocket := false
 var _prof_stats: Label
 const PROF_FEATURES := [["shadows", "Тени"], ["ground", "Детальный грунт"], ["globe", "Шар планеты"],
 	["g_detail", "Грунт: детали вблизи (всё)"], ["g_near", "  · ближняя текстура"],
-	["g_mid", "  · средние нормали"], ["g_craters", "  · мелкие кратеры"], ["g_micro", "  · микротени"],
+	["g_mid", "  · средние нормали"], ["g_craters", "  · мелкие кратеры"], ["g_micro", "  · микротени"], ["g_grad", "  · старая выборка (вкл = медленнее)"],
 	["g_light", "Грунт: свет реголита"], ["g_fp32", "Грунт: полная точность (вкл = медленнее)"], ["g_hd", "Грунт: HD-снимки (Земля)"],
 	["rocks", "Камни и галька"], ["fx", "Дым и пыль"], ["glow", "Свечение (glow)"],
 	["rocket", "Ракета и космонавт"], ["lights", "Ночные фонари"], ["sky", "Небо"]]
@@ -679,6 +679,7 @@ func _prof_apply() -> void:
 			_prof_param(pm, "near_layer", false, off.has("g_near"))
 			_prof_param(pm, "mid_normals", false, off.has("g_mid"))
 			_prof_param(pm, "micro_shadows", false, off.has("g_micro"))
+			_prof_param(pm, "exact_grad", true, off.has("g_grad"))
 			_prof_param(pm, "regolith", 0.0, off.has("g_light"))
 			_prof_param(pm, "hd_rect", Vector4.ZERO, off.has("g_hd"))
 			var want: Shader = pv.call("surface_shader_fp32") if off.has("g_fp32") else pv.get("SURFACE_SHADER")
