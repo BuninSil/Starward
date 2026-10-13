@@ -810,6 +810,7 @@ func _update_chute(delta: float, attach_y: float) -> void:
 	centre.y = lerpf(centre.y, 0.25 - attach_y, settle)
 	_canopy.transform = Transform3D(b.scaled_local(sc), centre)
 	_chute_mat.set_shader_parameter("collapse", c)
+	_chute_mat.set_shader_parameter("ground_up", vessel.pos.normalized().to_v3())
 	for k in _chute_lines.size():
 		var a := TAU * k / float(_chute_lines.size())
 		var skirt := _canopy.transform * Vector3(cos(a) * CHUTE_R, 0, sin(a) * CHUTE_R)

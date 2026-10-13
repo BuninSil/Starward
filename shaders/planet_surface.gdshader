@@ -102,8 +102,18 @@ vec4 tex_p(vec2 uv, vec2 dx, vec2 dy, float lod) {                 // the ground
 	return exact_grad ? textureGrad(ground_pack, uv, dx, dy) : textureLod(ground_pack, uv, lod);
 }
 
-vec4 stoch(sampler2D s, vec2 uv, vec2 dx, vec2 dy, float lod, vec2 oa, vec2 ob, float w) {
-	return mix(tex_n(s, uv + oa, dx, dy, lod), tex_n(s, uv + ob, dx, dy, lod), w);
+// Cheap value noise from arithmetic only (no texture read).
+float hash12(vec2 p) {
+	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+	p3 += dot(p3, p3.yzx + 33.33);
+	return fract((p3.x + p3.y) * p3.z);
+}
+float vnoise_alu(vec2 p) {
+	vec2 i = floor(p);
+	vec2 f = fract(p);
+	f = f * f * (3.0 - 2.0 * f);
+	return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), f.x),
+		mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), f.x), f.y);
 }
 
 // Bowl crater with a rim; x = distance / radius. Height in units of depth.
@@ -230,8 +240,11 @@ void fragment() {
 			n2 = vec4(back * mn2.xy, back * mn2.zw) * 0.5 + 0.5;
 		}
 		if (detail_level > 0 && near_layer && dist < 120.0) {
-			// Near scale, stochastically tiled (3.2 m texture repeat).
-			float l = pm.b * 9.0;
+			// Near scale, stochastically tiled (3.2 m texture repeat). The region
+			// index comes from arithmetic noise, not from a texture value: every
+			// read below then depends only on UV2 and all of them are issued at
+			// once (a chain of dependent reads stalls mobile GPUs badly).
+			float l = vnoise_alu(UV2 / 7.0 + macro_seed * 3.0) * 9.0;
 			float ia = floor(l);
 			near_off_a = sin(vec2(3.0, 7.0) * ia);
 			near_off_b = sin(vec2(3.0, 7.0) * (ia + 1.0));
@@ -245,23 +258,16 @@ void fragment() {
 			near_lod = log2(max(mix(min(fx_, fy_), max(fx_, fy_), 0.35), 1e-4));
 			LP vec4 a = tex_p(un + near_off_a, ndx, ndy, near_lod);
 			LP vec4 b = tex_p(un + near_off_b, ndx, ndy, near_lod);
+			LP vec4 q1a = tex_n(ground_pack_normal, un + near_off_a, ndx, ndy, near_lod);
+			LP vec4 q1b = tex_n(ground_pack_normal, un + near_off_b, ndx, ndy, near_lod);
+			LP vec4 q2a = tex_n(ground_pack_normal2, un + near_off_a, ndx, ndy, near_lod);
+			LP vec4 q2b = tex_n(ground_pack_normal2, un + near_off_b, ndx, ndy, near_lod);
 			near_mix = smoothstep(0.2, 0.8, fract(l) - 0.1 * dot(a - b, vec4(1.0)));
 			LP vec4 p_near = mix(a, b, near_mix);
 			near_w = fade_near;
 			pn = mix(pm, p_near, near_w);
-			// Outside the blend band one read per texture is enough.
-			LP vec4 q1;
-			LP vec4 q2;
-			if (near_mix <= 0.0) {
-				q1 = tex_n(ground_pack_normal, un + near_off_a, ndx, ndy, near_lod);
-				q2 = tex_n(ground_pack_normal2, un + near_off_a, ndx, ndy, near_lod);
-			} else if (near_mix >= 1.0) {
-				q1 = tex_n(ground_pack_normal, un + near_off_b, ndx, ndy, near_lod);
-				q2 = tex_n(ground_pack_normal2, un + near_off_b, ndx, ndy, near_lod);
-			} else {
-				q1 = stoch(ground_pack_normal, un, ndx, ndy, near_lod, near_off_a, near_off_b, near_mix);
-				q2 = stoch(ground_pack_normal2, un, ndx, ndy, near_lod, near_off_a, near_off_b, near_mix);
-			}
+			LP vec4 q1 = mix(q1a, q1b, near_mix);
+			LP vec4 q2 = mix(q2a, q2b, near_mix);
 			n1 = mix(n1, q1, near_w);
 			n2 = mix(n2, q2, near_w);
 		}
@@ -349,10 +355,8 @@ void fragment() {
 			vec2 un = UV2 / 3.2 + sun_h * (0.05 / 3.2);
 			vec2 sdx = ddx / 3.2;
 			vec2 sdy = ddy / 3.2;
-			LP vec4 s = near_mix <= 0.0 ? tex_p(un + near_off_a, sdx, sdy, near_lod)
-				: (near_mix >= 1.0 ? tex_p(un + near_off_b, sdx, sdy, near_lod)
-				: mix(tex_p(un + near_off_a, sdx, sdy, near_lod),
-					tex_p(un + near_off_b, sdx, sdy, near_lod), near_mix));
+			LP vec4 s = mix(tex_p(un + near_off_a, sdx, sdy, near_lod),
+				tex_p(un + near_off_b, sdx, sdy, near_lod), near_mix);
 			LP vec4 hb0 = vec4(hf, hs, hg, hr);
 			LP vec4 hb1 = vec4(s.r * 0.4 + s.b * 0.6, s.b, s.a, s.g);
 			LP float dh = dot(hb1 - hb0, w);

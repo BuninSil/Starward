@@ -7,6 +7,7 @@ render_mode cull_disabled;
 uniform float gores = 12.0;
 uniform float collapse = 0.0;   // 0 inflated .. 1 lying on the ground
 uniform float radius = 7.5;
+uniform vec3 ground_up = vec3(0.0, 1.0, 0.0);   // world: local vertical (lying canopy faces it)
 
 void vertex() {
 	// atan(0, 0) is NaN on mobile GPUs: the apex vertex would vanish (a hole).
@@ -29,6 +30,16 @@ void vertex() {
 }
 
 void fragment() {
+	// A canopy lying on the ground faces up. The squashed geometry's own normals
+	// are unreliable on some mobile GPUs (they came out black), so they are
+	// eased toward the local vertical as it settles; NaN guarded as well.
+	vec3 up_v = normalize((VIEW_MATRIX * vec4(ground_up, 0.0)).xyz);
+	vec3 n = NORMAL;
+	if (any(isnan(n)) || dot(n, n) < 1e-6) {
+		n = up_v;
+	}
+	n = normalize(mix(n, up_v, smoothstep(0.4, 0.9, collapse) * 0.85));
+	NORMAL = n;
 	// Inside of the canopy: thin nylon glows with the light coming through it,
 	// so light it like the outside (sun side) instead of a black hollow.
 	ALBEDO = FRONT_FACING ? COLOR.rgb : COLOR.rgb * 0.8;
