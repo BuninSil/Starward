@@ -245,6 +245,7 @@ func _set_vessel(v: Vessel) -> void:
 		message.emit("%s сгорела при входе в атмосферу" % st.name)
 		Log.warn("Flight: %s burned off on entry" % st.name))
 	vessel.landed_changed.connect(_on_landed_changed)
+	vessel.wrecked.connect(_on_wrecked)
 
 
 ## Debug: replaces the vessel by the lunar module (capsule + ascent + descent
@@ -409,6 +410,44 @@ func _exit_tree() -> void:
 	for b in bodies:
 		b.children.clear()
 		b.parent = null
+
+
+## A stage destroyed by an impact or airloads while the crew lives on: its
+## model breaks off as a charred wreck (lying on the ground after an impact,
+## tumbling away in the air).
+func _on_wrecked(st: Dictionary, reason: String) -> void:
+	var node: Node3D = rocket.detach_bottom_stage()
+	Log.warn("Flight: " + reason)
+	message.emit(reason)
+	sfx.event("crash", -4.0)
+	if node == null:
+		return
+	add_child(node)
+	node.top_level = true
+	node.global_transform = node.get_meta("global")
+	for m in rocket.hull_materials_of(node):
+		m.set_shader_parameter("scorch", 1.1)
+		m.set_shader_parameter("scorch_len", 6.0)
+	var near_ground := vessel.altitude_above_ground(sim_time) < 30.0
+	if near_ground:
+		# Crumpled where it hit: squashed, tipped, half sunk.
+		var b := node.global_transform.basis
+		node.global_transform.basis = b.rotated(b.x.normalized(), randf_range(-0.5, 0.5)).scaled(Vector3(1.0, 0.6, 1.0))
+		_debris.append({
+			"node": node, "body": vessel.body, "basis": node.global_transform.basis,
+			"fixed": vessel.body.inertial_to_fixed(vessel.pos.add(DVec3.from_v3(node.global_position)), sim_time),
+			"pos": DVec3.new(), "vel": DVec3.new(), "life": INF,
+		})
+		if has_solid_surface(vessel.body):
+			_dust_burst(1.0)
+	else:
+		_debris.append({
+			"node": node, "body": vessel.body, "basis": node.global_transform.basis,
+			"pos": vessel.pos.add(DVec3.from_v3(node.global_position)),
+			"vel": vessel.vel.add(DVec3.from_v3(Vector3(randf() - 0.5, randf() - 0.5, randf() - 0.5) * 20.0)),
+			"life": 25.0,
+		})
+	_sparks(st)
 
 
 func _on_staged(_dropped: Dictionary) -> void:

@@ -607,7 +607,7 @@ func _build_destroyed() -> void:
 	_destroyed_panel.add_child(box)
 	var t := Label.new()
 	_destroyed_title = t
-	t.text = "Ракета разрушена"
+	t.text = "Капсула потеряна"
 	t.add_theme_font_size_override("font_size", 36)
 	t.add_theme_color_override("font_color", Color(1.0, 0.45, 0.4))
 	box.add_child(t)
@@ -633,7 +633,7 @@ func on_vessel_reset() -> void:
 	_set_hold("sas")
 
 
-func show_destroyed(reason: String, title := "Ракета разрушена") -> void:
+func show_destroyed(reason: String, title := "Капсула потеряна") -> void:
 	_destroyed_title.text = title
 	_destroyed_label.text = reason
 	_destroyed_panel.show()
@@ -701,8 +701,9 @@ func _on_chute() -> void:
 		toast(err)
 		return
 	var vt := v.chute_touchdown_speed(flight.sim_time)
-	if vt > Vessel.CRASH_SPEED:
-		toast("Парашют раскрыт, но ракета тяжёлая: сядет на %d м/с (безопасно до %d). Сбрось ступени" % [int(vt), int(Vessel.CRASH_SPEED)])
+	var safe := Vessel.crash_tolerance(v.stages[v.stages.size() - 1])
+	if vt > safe:
+		toast("Парашют раскрыт, но ракета тяжёлая: сядет на %d м/с, нижняя ступень выдерживает %d. Сбрось ступени" % [int(vt), int(safe)])
 	else:
 		toast("Парашют раскрыт, касание ~%d м/с" % int(vt))
 
@@ -738,8 +739,9 @@ func _process(delta: float) -> void:
 	_ap_label.text = "Автопилот · " + ap.status() if ap.active() else ""
 	if not ap.active() and v.chute_deployed and not v.landed and not v.destroyed_flag:
 		var vt := v.chute_touchdown_speed(flight.sim_time)
-		if vt > Vessel.CRASH_SPEED:
-			_ap_label.text = "Парашют не держит: касание ~%d м/с > %d. Сбрось ступени или притормози двигателем" % [int(vt), int(Vessel.CRASH_SPEED)]
+		var safe_b := Vessel.crash_tolerance(v.stages[v.stages.size() - 1])
+		if vt > safe_b:
+			_ap_label.text = "Парашют не держит: касание ~%d м/с > %d, нижняя ступень разобьётся. Сбрось ступени или притормози двигателем" % [int(vt), int(safe_b)]
 	_ap_btn.text = "Стоп\nавтопилот" if ap.active() else "Автопилот"
 	# Re-entry heating: shown once it matters, with what to do about it.
 	var hf := v.heat_fraction()

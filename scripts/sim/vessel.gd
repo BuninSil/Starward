@@ -216,6 +216,7 @@ func step(dt: float, t: float) -> void:
 	vel.add_scaled(a0.add(a1), 0.5 * dt)
 
 	_step_heating(dt)
+	_step_aero_loads()
 	_check_ground(t + dt)
 	check_soi(t + dt)
 
@@ -227,8 +228,10 @@ func step(dt: float, t: float) -> void:
 # the real feel: a shielded capsule survives, bare tanks and noses do not.
 
 signal burned_off(stage: Dictionary)   ## a stage that overheated and broke away
+signal wrecked(stage: Dictionary, reason: String)   ## a stage destroyed (impact, airloads); crew still alive
 
 const HEAT_SCALE := 3.0
+const AERO_BREAK := 2500.0        ## Pa of q*sin(AoA) a stack takes before it breaks up (thin scaled air)
 const SHIELD_LIMIT := 2400.0      ## K, ablative heat shield (capsule bottom first)
 const HULL_LIMIT := 900.0         ## K, bare aluminium tanks / capsule nose
 const SKIN_CAPACITY := 2.2e4      ## J/(m^2 K), effective heat capacity of the skin
@@ -343,6 +346,8 @@ func _step_attitude(dt: float) -> void:
 			accel = desired.limit_length(SAS_ACCEL)
 	elif sas:
 		accel = (-ang_vel / maxf(dt, 1e-4)).limit_length(SAS_ACCEL)
+	if not chute_deployed:
+		accel += aero_accel()
 	# Hanging under an open parachute: the canopy pulls the craft into line
 	# with the airflow (nose against it) and damps the swinging; the attitude
 	# controls are far too weak to fight it.
@@ -497,7 +502,13 @@ func _check_ground(t: float) -> void:
 	var vs := surface_velocity()
 	var speed := vs.length()
 	touchdown_speed = speed
-	if speed > CRASH_SPEED:
+	speed = _impact(speed)
+	touchdown_speed = speed
+	if destroyed_flag:
+		_surface_fixed = body.inertial_to_fixed(pos.normalized().mul(ground_r), t)
+		_stick_to_surface(t)
+		return
+	if speed > crash_tolerance(stages[stages.size() - 1]):
 		destroyed_flag = true
 		throttle = 0.0
 		var radial := pos.normalized()
@@ -514,6 +525,112 @@ func _check_ground(t: float) -> void:
 	_surface_fixed = body.inertial_to_fixed(pos.normalized().mul(ground_r), t)
 	_set_landed(true)
 	_settle(t)
+
+
+# --- Damage by module ----------------------------------------------------------------
+# Every stage takes its own damage. Lower stages crumple and absorb part of an
+# impact; only the crew capsule (top stage) dying ends the flight.
+
+## Impact speed a stage survives, m/s.
+static func crash_tolerance(s: Dictionary) -> float:
+	if s.get("parachute", false):
+		return 22.0    # crew capsule: shock-absorbing seats, strong shell
+	if s.get("legs", false):
+		return 12.0
+	return 7.0
+
+
+## Breaks the stages the impact is too much for (bottom up when upright, all of
+## them when broadside, the capsule first when nose-down). Returns the speed
+## left for the surviving part; sets destroyed_flag if the capsule is lost.
+func _impact(speed: float) -> float:
+	var up_dot := up_world().dot(pos.normalized().to_v3())
+	var crew: Dictionary = stages[0]
+	var what := "%d м/с" % int(speed)
+	if up_dot > 0.45:
+		# Upright: the bottom stage hits first and crumples, slowing the rest.
+		while stages.size() > 1 and speed > crash_tolerance(stages[stages.size() - 1]):
+			var s: Dictionary = stages.pop_back()
+			# Crumpling eats energy: legs and tank structure act as a crush zone.
+			var absorb := crash_tolerance(s) * (1.6 if s.get("legs", false) else 1.3)
+			speed = sqrt(maxf(speed * speed - absorb * absorb, 0.0))
+			wrecked.emit(s, "%s: разбита при ударе (%s)" % [s.name, what])
+	elif up_dot > -0.45:
+		# Broadside: everything hits the ground at once.
+		if stages.size() > 1 and speed > 7.0 * 1.3:
+			while stages.size() > 1:
+				var s2: Dictionary = stages.pop_back()
+				wrecked.emit(s2, "%s: разбита ударом боком (%s)" % [s2.name, what])
+			speed *= 0.7
+	if speed > crash_tolerance(crew) or (up_dot <= -0.45 and speed > 7.0):
+		destroyed_flag = true
+		throttle = 0.0
+		destroyed.emit("Капсула разбилась: удар %s, %s" % [what,
+			"носом в грунт" if up_dot <= -0.45 else ("боком" if up_dot < 0.45 else "сверху вниз")])
+	return speed
+
+
+## Aerodynamics without shapes: a stack is stable nose into the airflow
+## (centre of pressure behind the centre of mass, fins make it stronger), a lone
+## capsule trims base first (heat shield forward). Returns the angular
+## acceleration toward the stable attitude plus aero damping.
+func aero_accel() -> Vector3:
+	if landed or not body.has_atmosphere() or stages.is_empty():
+		return Vector3.ZERO
+	var rho := body.density_at(altitude())
+	if rho <= 0.0:
+		return Vector3.ZERO
+	var vrel := surface_velocity()
+	var sp := vrel.length()
+	if sp < 5.0:
+		return Vector3.ZERO
+	var q := 0.5 * rho * sp * sp
+	var flow := vrel.mul(1.0 / sp).to_v3()
+	var capsule_only := stages.size() == 1
+	var target := -flow if capsule_only else flow
+	var up := up_world()
+	var axis := up.cross(target)
+	var ang := up.angle_to(target)
+	if axis.length() < 1e-6:
+		axis = attitude * Vector3.RIGHT   # exactly backwards: any side will do
+	var L := 0.0
+	var area := 0.0
+	var fins := false
+	for st in stages:
+		L += float(st.length)
+		area += float(st.diameter) * float(st.length)
+		fins = fins or st.get("fins", false)
+	var arm := L * (0.25 if capsule_only else (0.18 if fins else 0.08))
+	var inertia := maxf(mass() * L * L / 12.0, 1.0)
+	# Stiffness per radian, clamped so the integration stays stable at warp.
+	var k := minf(0.5 * q * area * arm / inertia, 8.0)
+	var c := 1.4 * sqrt(k)
+	# Past 90 deg the body still tumbles round (never balances backwards).
+	var push := sin(ang) if ang < PI * 0.5 else maxf(sin(ang), 0.3)
+	return axis.normalized() * push * k - ang_vel * c
+
+
+## Dynamic pressure x sine of the angle of attack: what tears a stack apart
+## when it is turned across the airflow.
+func side_load() -> float:
+	if landed or not body.has_atmosphere() or stages.size() < 2:
+		return 0.0
+	var vrel := surface_velocity()
+	var sp := vrel.length()
+	if sp < 5.0:
+		return 0.0
+	var q := 0.5 * body.density_at(altitude()) * sp * sp
+	return q * sin(up_world().angle_to(vrel.mul(1.0 / sp).to_v3()))
+
+
+func _step_aero_loads() -> void:
+	if side_load() > AERO_BREAK:
+		var lost := stages.size() - 1
+		while stages.size() > 1:
+			var s: Dictionary = stages.pop_back()
+			wrecked.emit(s, "%s: разрушена напором воздуха" % s.name)
+		if lost > 0:
+			throttle = 0.0
 
 
 func _max_relief() -> float:
@@ -710,6 +827,7 @@ static func moon_rocket(b: CelestialBody) -> Vessel:
 	]
 	v.stages[0]["parachute"] = true
 	v.stages[2]["legs"] = true
+	v.stages[5]["fins"] = true
 	return v
 
 
@@ -730,5 +848,6 @@ static func default_rocket(b: CelestialBody) -> Vessel:
 		make_stage("Первая ступень", 2500.0, 9000.0, 270_000.0, 280.0, 310.0, 2.5, 9.0),
 	]
 	v.stages[0]["parachute"] = true
+	v.stages[2]["fins"] = true
 	v.height_offset = 0.0
 	return v

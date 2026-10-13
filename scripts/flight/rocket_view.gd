@@ -997,6 +997,19 @@ func _collect_hull_mats() -> void:
 		_hull_mats[node] = mats
 
 
+func hull_materials_of(node: Node3D) -> Array:
+	var mats: Array = []
+	var stack: Array[Node] = [node]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		stack.append_array(n.get_children())
+		if n is MeshInstance3D and (n as MeshInstance3D).material_override is ShaderMaterial:
+			var m := (n as MeshInstance3D).material_override as ShaderMaterial
+			if m.shader == HULL_SHADER and not mats.has(m):
+				mats.append(m)
+	return mats
+
+
 func _update_reentry() -> void:
 	var n_st := _stage_nodes.size()
 	if n_st == 0 or n_st != vessel.stages.size():
