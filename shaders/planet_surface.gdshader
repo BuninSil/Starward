@@ -80,6 +80,15 @@ uniform vec3 sun_local = vec3(0.0, 1.0, 0.0);   // patch: toward the sun, patch 
 uniform float regolith = 0.0;
 
 varying float v_shade;
+// Low-frequency ground parameters, computed per vertex (the patch mesh is
+// dense near the viewer): macro brightness, macro tint weight, the 200 m macro
+// noise (used by the material masks) and the near layer's region weight.
+varying float v_mv;
+varying float v_tintw;
+varying float v_m1;
+varying float v_nw;
+uniform int near_mode = 2;   // 0 stochastic offsets (old), 1 one plain read, 2 two scales by region
+const mat2 ROT_NEAR = mat2(vec2(0.47, -0.88), vec2(0.88, 0.47));
 
 const mat2 ROT_MID = mat2(vec2(0.80, 0.60), vec2(-0.60, 0.80));
 const mat2 ROT_MACRO1 = mat2(vec2(0.28, 0.96), vec2(-0.96, 0.28));
@@ -117,6 +126,24 @@ float vnoise_alu(vec2 p) {
 	f = f * f * (3.0 - 2.0 * f);
 	return mix(mix(hash12(i), hash12(i + vec2(1.0, 0.0)), f.x),
 		mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+
+void vertex() {
+	v_mv = 0.0;
+	v_tintw = 0.0;
+	v_m1 = 0.5;
+	v_nw = 0.0;
+	if (use_detail) {
+		// Vertex spacing grows with the distance from the patch centre: read the
+		// macro textures at a matching mip level (no aliasing far out).
+		float spacing = max(0.05 * length(VERTEX.xz), 0.3);
+		float m1 = textureLod(ground_pack, ROT_MACRO1 * UV2 / 1300.0 + macro_seed, max(log2(spacing / 2.54), 0.0)).b;
+		float m2 = textureLod(ground_pack, ROT_MACRO2 * UV2 / 4200.0 + macro_seed.yx, max(log2(spacing / 8.2), 0.0)).b;
+		v_m1 = m1;
+		v_mv = (m1 - 0.5) * 0.65 + (m2 - 0.5) * 0.5;
+		v_tintw = clamp(m2 * 1.6 - 0.5, 0.0, 1.0);
+		v_nw = vnoise_alu(UV2 / 7.0 + macro_seed * 3.0);
+	}
 }
 
 // Bowl crater with a rim; x = distance / radius. Height in units of depth.
@@ -214,12 +241,10 @@ void fragment() {
 		LP float ejecta = use_slope ? COLOR.g : 0.0;
 		LP float rims = use_slope ? COLOR.b : 0.0;
 
-		// Soft macro variation: two rotated scales (~200 m and ~700 m features).
-		LP float m1 = texture(ground_pack, ROT_MACRO1 * UV2 / 1300.0 + macro_seed).b;
-		LP float m2 = texture(ground_pack, ROT_MACRO2 * UV2 / 4200.0 + macro_seed.yx).b;
-		LP float mv = (m1 - 0.5) * 0.65 + (m2 - 0.5) * 0.5;
-		col *= 1.0 + mv * macro_amp * fade_far;
-		col = mix(col, col * macro_tint, clamp(m2 * 1.6 - 0.5, 0.0, 1.0) * fade_far);
+		// Soft macro variation (two rotated scales, ~200 m and ~700 m), per vertex.
+		LP float m1 = v_m1;
+		col *= 1.0 + v_mv * macro_amp * fade_far;
+		col = mix(col, col * macro_tint, v_tintw * fade_far);
 		col *= 1.0 + ejecta * 0.55;   // bright ejecta and rays of young craters
 
 		// Mid scale: rotated, plain (also the noise index for the stochastic layer).
@@ -245,44 +270,55 @@ void fragment() {
 			n2 = vec4(back * mn2.xy, back * mn2.zw) * 0.5 + 0.5;
 		}
 		if (detail_level > 0 && near_layer && dist < 60.0) {
-			// Near scale, stochastically tiled (3.2 m texture repeat). The region
-			// index comes from arithmetic noise, not from a texture value: every
-			// read below then depends only on UV2 and all of them are issued at
-			// once (a chain of dependent reads stalls mobile GPUs badly).
-			float l = vnoise_alu(UV2 / 7.0 + macro_seed * 3.0) * 9.0;
-			float ia = floor(l);
-			near_off_a = sin(vec2(3.0, 7.0) * ia);
-			near_off_b = sin(vec2(3.0, 7.0) * (ia + 1.0));
 			vec2 un = UV2 / 3.2;
-			vec2 ndx = ddx / 3.2;
-			vec2 ndy = ddy / 3.2;
-			// Mip level of the 512 px textures, between the two axes' footprints
-			// (a cheap stand-in for anisotropic filtering).
-			float fx_ = length(ndx * 512.0);
-			float fy_ = length(ndy * 512.0);
-			near_lod = log2(max(mix(min(fx_, fy_), max(fx_, fy_), 0.35), 1e-4));
-			// Stochastic blend only inside the narrow bands between regions: the
-			// blend weight is known before any read, so elsewhere (most of the
-			// ground) one copy of the textures is read instead of two.
-			LP float base_mix = smoothstep(0.3, 0.7, fract(l));
 			LP vec4 a;
 			LP vec4 q1;
 			LP vec4 q2;
-			if (base_mix <= 0.0 || base_mix >= 1.0) {
-				vec2 o = base_mix <= 0.0 ? near_off_a : near_off_b;
-				a = tex_p(un + o, ndx, ndy, near_lod);
-				q1 = tex_n(ground_pack_normal, un + o, ndx, ndy, near_lod);
-				q2 = tex_n(ground_pack_normal2, un + o, ndx, ndy, near_lod);
-				near_mix = base_mix;
-			} else {
+			if (near_mode == 0) {
+				// Old: stochastic offsets, explicit mip level.
+				float l = vnoise_alu(UV2 / 7.0 + macro_seed * 3.0) * 9.0;
+				float ia = floor(l);
+				near_off_a = sin(vec2(3.0, 7.0) * ia);
+				near_off_b = sin(vec2(3.0, 7.0) * (ia + 1.0));
+				vec2 ndx = ddx / 3.2;
+				vec2 ndy = ddy / 3.2;
+				float fx_ = length(ndx * 512.0);
+				float fy_ = length(ndy * 512.0);
+				near_lod = log2(max(mix(min(fx_, fy_), max(fx_, fy_), 0.35), 1e-4));
 				LP vec4 pa = tex_p(un + near_off_a, ndx, ndy, near_lod);
 				LP vec4 pb = tex_p(un + near_off_b, ndx, ndy, near_lod);
-				LP vec4 q1a = tex_n(ground_pack_normal, un + near_off_a, ndx, ndy, near_lod);
-				LP vec4 q1b = tex_n(ground_pack_normal, un + near_off_b, ndx, ndy, near_lod);
-				LP vec4 q2a = tex_n(ground_pack_normal2, un + near_off_a, ndx, ndy, near_lod);
-				LP vec4 q2b = tex_n(ground_pack_normal2, un + near_off_b, ndx, ndy, near_lod);
-				// Ragged edge from the heights, fading to nothing at the band edges.
-				near_mix = clamp(base_mix - 0.4 * dot(pa - pb, vec4(1.0)) * base_mix * (1.0 - base_mix), 0.0, 1.0);
+				near_mix = smoothstep(0.3, 0.7, fract(l));
+				a = mix(pa, pb, near_mix);
+				q1 = mix(tex_n(ground_pack_normal, un + near_off_a, ndx, ndy, near_lod),
+					tex_n(ground_pack_normal, un + near_off_b, ndx, ndy, near_lod), near_mix);
+				q2 = mix(tex_n(ground_pack_normal2, un + near_off_a, ndx, ndy, near_lod),
+					tex_n(ground_pack_normal2, un + near_off_b, ndx, ndy, near_lod), near_mix);
+			} else {
+				// Plain reads with hardware mip selection. Mode 2: a second,
+				// rotated and smaller scale takes over region by region (the
+				// region weight comes from the vertices), so the 3.2 m repeat
+				// never shows; both reads only inside the blend bands.
+				near_mix = near_mode == 2 ? smoothstep(0.35, 0.65, v_nw) : 0.0;
+				vec2 ub = ROT_NEAR * UV2 / 1.9 + vec2(0.37, 0.61);
+				LP vec4 pa = vec4(0.0);
+				LP vec4 pb = vec4(0.0);
+				LP vec4 q1a = vec4(0.5);
+				LP vec4 q1b = vec4(0.5);
+				LP vec4 q2a = vec4(0.5);
+				LP vec4 q2b = vec4(0.5);
+				if (near_mix < 1.0) {
+					pa = texture(ground_pack_near, un);
+					q1a = texture(ground_pack_normal, un);
+					q2a = texture(ground_pack_normal2, un);
+				}
+				if (near_mix > 0.0) {
+					pb = texture(ground_pack_near, ub);
+					mat2 back = transpose(ROT_NEAR);
+					LP vec4 r1 = texture(ground_pack_normal, ub) * 2.0 - 1.0;
+					LP vec4 r2 = texture(ground_pack_normal2, ub) * 2.0 - 1.0;
+					q1b = vec4(back * r1.xy, back * r1.zw) * 0.5 + 0.5;
+					q2b = vec4(back * r2.xy, back * r2.zw) * 0.5 + 0.5;
+				}
 				a = mix(pa, pb, near_mix);
 				q1 = mix(q1a, q1b, near_mix);
 				q2 = mix(q2a, q2b, near_mix);
@@ -377,10 +413,13 @@ void fragment() {
 			vec2 sdx = ddx / 3.2;
 			vec2 sdy = ddy / 3.2;
 			LP vec4 s;
-			if (near_mix <= 0.0 || near_mix >= 1.0) {
-				s = tex_p(un + (near_mix <= 0.0 ? near_off_a : near_off_b), sdx, sdy, near_lod);
-			} else {
+			if (near_mode == 0) {
 				s = mix(tex_p(un + near_off_a, sdx, sdy, near_lod), tex_p(un + near_off_b, sdx, sdy, near_lod), near_mix);
+			} else if (near_mix <= 0.0) {
+				s = texture(ground_pack_near, un);
+			} else {
+				vec2 ub = ROT_NEAR * (UV2 + sun_h * 0.05) / 1.9 + vec2(0.37, 0.61);
+				s = near_mix >= 1.0 ? texture(ground_pack_near, ub) : mix(texture(ground_pack_near, un), texture(ground_pack_near, ub), near_mix);
 			}
 			LP vec4 hb0 = vec4(hf, hs, hg, hr);
 			LP vec4 hb1 = vec4(s.r * 0.4 + s.b * 0.6, s.b, s.a, s.g);

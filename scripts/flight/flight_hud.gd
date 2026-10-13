@@ -557,6 +557,7 @@ var _prof_panel: PanelContainer = null
 var _prof_timer := 0.0
 var _prof_hid_rocket := false
 var _prof_stats: Label
+var _prof_near_mode := 2
 const PROF_FEATURES := [["shadows", "Тени"], ["ground", "Детальный грунт"], ["globe", "Шар планеты"],
 	["g_detail", "Грунт: детали вблизи (всё)"], ["g_near", "  · ближняя текстура"],
 	["g_mid", "  · средние нормали"], ["g_craters", "  · мелкие кратеры"], ["g_micro", "  · микротени"], ["g_grad", "  · старая выборка (вкл = медленнее)"],
@@ -631,6 +632,13 @@ func _show_profiler() -> void:
 			sc.text = "Разрешение %d%%" % int(PROF_SCALES[i] * 100.0))
 		sc.text = "Разрешение %d%%" % int(get_viewport().scaling_3d_scale * 100.0)
 		items.add_child(sc)
+		var nm_names := ["стохастика (старая)", "одна выборка", "два масштаба"]
+		var nm_btn := _button("Ближний слой: два масштаба", func() -> void: pass)
+		nm_btn.pressed.connect(func() -> void:
+			_prof_near_mode = (_prof_near_mode + 1) % 3
+			nm_btn.text = "Ближний слой: " + nm_names[_prof_near_mode]
+			_prof_timer = 0.0)
+		items.add_child(nm_btn)
 	RenderingServer.viewport_set_measure_render_time(get_viewport().get_viewport_rid(), true)
 	_prof_panel.show()
 
@@ -680,6 +688,7 @@ func _prof_apply() -> void:
 			_prof_param(pm, "mid_normals", false, off.has("g_mid"))
 			_prof_param(pm, "micro_shadows", false, off.has("g_micro"))
 			_prof_param(pm, "exact_grad", true, off.has("g_grad"))
+			(pm as ShaderMaterial).set_shader_parameter("near_mode", _prof_near_mode)
 			_prof_param(pm, "regolith", 0.0, off.has("g_light"))
 			_prof_param(pm, "hd_rect", Vector4.ZERO, off.has("g_hd"))
 			var want: Shader = pv.call("surface_shader_fp32") if off.has("g_fp32") else pv.get("SURFACE_SHADER")
