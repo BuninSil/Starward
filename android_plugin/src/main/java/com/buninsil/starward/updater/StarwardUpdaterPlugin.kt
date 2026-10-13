@@ -55,6 +55,35 @@ class StarwardUpdaterPlugin(godot: Godot) : GodotPlugin(godot) {
         }
     }
 
+    /**
+     * Asks Android for the display's highest refresh rate at the current
+     * resolution (apps get 60 Hz by default even on 90/120 Hz screens).
+     * Returns that rate in Hz (0 if there is no activity).
+     */
+    @UsedByGodot
+    fun requestHighRefreshRate(): Float {
+        val act = activity ?: return 0f
+        return try {
+            @Suppress("DEPRECATION")
+            val display = act.windowManager.defaultDisplay
+            val cur = display.mode
+            val best = display.supportedModes
+                .filter { it.physicalWidth == cur.physicalWidth && it.physicalHeight == cur.physicalHeight }
+                .maxByOrNull { it.refreshRate } ?: cur
+            act.runOnUiThread {
+                val lp = act.window.attributes
+                lp.preferredDisplayModeId = best.modeId
+                lp.preferredRefreshRate = best.refreshRate
+                act.window.attributes = lp
+            }
+            Log.i(TAG, "Display mode ${best.modeId}: ${best.refreshRate} Hz")
+            best.refreshRate
+        } catch (e: Exception) {
+            Log.e(TAG, "requestHighRefreshRate failed", e)
+            0f
+        }
+    }
+
     companion object {
         private const val TAG = "StarwardUpdater"
         private const val PLUGIN_NAME = "StarwardUpdater"

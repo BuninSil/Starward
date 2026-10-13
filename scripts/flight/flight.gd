@@ -582,6 +582,12 @@ func _physics_process(_delta: float) -> void:
 
 ## One fixed tick of the simulation (60 Hz). Also used by headless tests.
 func sim_tick() -> void:
+	# State before this tick, for drawing in between ticks (_process).
+	_ip_t = sim_time
+	_ip_pos = vessel.pos.copy()
+	_ip_att = vessel.attitude
+	_ip_body = vessel.body
+	_ip_astro = astronaut.global_transform if astronaut != null and is_instance_valid(astronaut) else Transform3D()
 	if is_rails():
 		autopilot.update(vessel, sim_time)
 		_apply_autopilot_warp()
@@ -925,7 +931,44 @@ func autosave() -> void:
 	_autosave_t = AUTOSAVE_EVERY
 
 
+# --- Render interpolation ----------------------------------------------------------
+# The simulation ticks at a fixed 60 Hz; the screen may run at 120 Hz. Each frame
+# is drawn between the last two ticks (at most one tick behind), so motion stays
+# smooth instead of standing still every other frame.
+var _ip_t := -1.0
+var _ip_pos := DVec3.new()
+var _ip_att := Quaternion.IDENTITY
+var _ip_body: CelestialBody = null
+var _ip_astro := Transform3D()
+var _astro_xf := Transform3D()   ## astronaut transform as drawn this frame
+
+
 func _process(delta: float) -> void:
+	var a := Engine.get_physics_interpolation_fraction()
+	var dt_tick := sim_time - _ip_t
+	var shown: DVec3 = null
+	var saved_t := sim_time
+	var saved_pos := vessel.pos
+	var saved_att := vessel.attitude
+	if _ip_body == vessel.body and not map_mode and warp() == 1 and dt_tick > 0.0 and dt_tick < 0.05:
+		shown = _ip_pos.add(vessel.pos.sub(_ip_pos).mul(a))
+		vessel.pos = shown
+		sim_time = _ip_t + dt_tick * a
+		vessel.attitude = _ip_att.slerp(vessel.attitude, a)
+	if astronaut != null and is_instance_valid(astronaut):
+		var live := astronaut.global_transform
+		_astro_xf = _ip_astro.interpolate_with(live, a) if shown != null and _ip_astro.origin.distance_to(live.origin) < 2.0 else live
+		if astronaut.model:
+			astronaut.model.transform = live.affine_inverse() * _astro_xf * Transform3D(Basis(), Vector3(0, -0.925, 0))
+	_process_frame(delta)
+	# Back to the simulated state (unless something replaced it meanwhile).
+	if shown != null and vessel.pos == shown:
+		vessel.pos = saved_pos
+		sim_time = saved_t
+		vessel.attitude = saved_att
+
+
+func _process_frame(delta: float) -> void:
 	ApPlan.reap()
 	vessel.cargo_mass = Game.ship_inv.mass()
 	_autosave_t -= delta
@@ -966,7 +1009,7 @@ func _process(delta: float) -> void:
 	elif eva_mode:
 		_update_eva_camera()
 		if not is_surface_eva():
-			tether.update_visual(hatch_world(), astronaut.global_position + astronaut.global_transform.basis * Vector3(0, 0.15, 0.32), camera.global_position, delta)
+			tether.update_visual(hatch_world(), _astro_xf * Vector3(0, 0.15, 0.32), camera.global_position, delta)
 	else:
 		_update_flight_camera()
 	traj_view.visible = map_mode
@@ -1393,8 +1436,8 @@ func use_oxygen_item() -> String:
 
 func _update_eva_camera() -> void:
 	# Chase camera behind the astronaut's back, up = astronaut up.
-	var b := astronaut.global_transform.basis
-	var target := astronaut.global_position + b.y * 0.4
+	var b := _astro_xf.basis
+	var target := _astro_xf.origin + b.y * 0.4
 	var cam_pos := target + b.z * eva_cam_dist + b.y * eva_cam_dist * 0.25
 	if is_surface_eva():
 		# On the ground: orbit camera around the astronaut in the horizon frame
@@ -1405,7 +1448,7 @@ func _update_eva_camera() -> void:
 		var ref2 := ref.cross(up)
 		var horiz := ref2 * cos(cam_yaw) + ref * sin(cam_yaw)
 		var pitch := clampf(cam_pitch, -0.2, 1.2)
-		target = astronaut.global_position + up * 0.6
+		target = _astro_xf.origin + up * 0.6
 		cam_pos = _keep_above_ground(target + (horiz * cos(pitch) + up * sin(pitch)) * eva_cam_dist, 0.6)
 		b = Basis(ref, up, ref2)
 	camera.near = 0.1

@@ -341,6 +341,15 @@ func _build_globe(segs: int) -> ArrayMesh:
 
 
 const SURFACE_SHADER := preload("res://shaders/planet_surface.gdshader")
+static var _surface_fp32: Shader
+
+
+## The ground shader with full precision everywhere (debug comparison).
+static func surface_shader_fp32() -> Shader:
+	if _surface_fp32 == null:
+		_surface_fp32 = Shader.new()
+		_surface_fp32.code = SURFACE_SHADER.code.replace("shader_type spatial;\n", "shader_type spatial;\n#define LP highp\n")
+	return _surface_fp32
 
 
 ## Globe material: NASA maps through the planet shader (water on Earth), or the

@@ -851,12 +851,33 @@ func _build_lights() -> void:
 		[Vector3(rr, y, 0), Color(0.1, 1.0, 0.25), false, 0.1],     # starboard (+X)
 		[Vector3(0, L * 0.82, -_capsule_radius(r, top_r, L, 0.08, L * 0.82) - 0.03), Color(1, 1, 1), true, 1.6],
 	]
+	var housing_mat := StandardMaterial3D.new()
+	housing_mat.albedo_color = Color(0.16, 0.16, 0.17)
+	housing_mat.metallic = 0.6
+	housing_mat.roughness = 0.45
 	for sp in specs:
+		# A real fixture: a dark metal socket on the hull and a glass dome on it.
+		var nrm := Vector3((sp[0] as Vector3).x, 0.0, (sp[0] as Vector3).z).normalized()
+		var side := nrm.cross(Vector3.UP).normalized()
+		var on_hull := Basis(side, nrm, side.cross(nrm))   # local +Y = out of the hull
+		var socket := MeshInstance3D.new()
+		var cm := CylinderMesh.new()
+		cm.top_radius = 0.05
+		cm.bottom_radius = 0.06
+		cm.height = 0.035
+		cm.radial_segments = 12
+		cm.rings = 1
+		socket.mesh = cm
+		socket.material_override = housing_mat
+		socket.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		socket.transform = Transform3D(on_hull, (sp[0] as Vector3) - nrm * 0.01)
+		node.add_child(socket)
 		var bulb := MeshInstance3D.new()
 		var sm := SphereMesh.new()
-		sm.radius = 0.045
-		sm.height = 0.09
-		sm.radial_segments = 8
+		sm.radius = 0.036
+		sm.height = 0.036
+		sm.is_hemisphere = true
+		sm.radial_segments = 12
 		sm.rings = 4
 		bulb.mesh = sm
 		var m := StandardMaterial3D.new()
@@ -864,16 +885,17 @@ func _build_lights() -> void:
 		m.albedo_color = sp[1]
 		bulb.material_override = m
 		bulb.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		bulb.position = sp[0]
+		bulb.transform = Transform3D(on_hull, (sp[0] as Vector3) + nrm * 0.007)
 		node.add_child(bulb)
-		# Soft halo around the lamp, always facing the camera.
+		# Small glow sitting on the dome (bright core, short falloff), facing the camera.
 		var halo := MeshInstance3D.new()
 		var qm := QuadMesh.new()
-		qm.size = Vector2(0.5, 0.5)
+		qm.size = Vector2(0.28, 0.28)
 		halo.mesh = qm
 		var hm := ShaderMaterial.new()
 		hm.shader = _halo_shader()
 		hm.set_shader_parameter("tint", Color(sp[1]))
+		hm.set_shader_parameter("pull", 0.08)
 		halo.material_override = hm
 		halo.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		bulb.add_child(halo)
@@ -935,15 +957,19 @@ static func _halo_shader() -> Shader:
 		_halo.code = """shader_type spatial;
 render_mode unshaded, blend_add, depth_draw_never, cull_disabled, shadows_disabled;
 uniform vec4 tint : source_color;
+uniform float pull = 0.08;   // metres towards the camera, so the lamp's own housing does not cut it
 void vertex() {
-	// Billboard, pulled a little towards the camera so the hull does not cut it.
 	MODELVIEW_MATRIX = VIEW_MATRIX * mat4(INV_VIEW_MATRIX[0], INV_VIEW_MATRIX[1], INV_VIEW_MATRIX[2], MODEL_MATRIX[3]);
-	MODELVIEW_MATRIX[3].z += 0.3;
+	MODELVIEW_MATRIX[3].z += pull;
 }
 void fragment() {
+	// A lamp, not a cloud: hot white-ish core the size of the bulb, a short
+	// bright falloff and only a faint wide glow.
 	float d = length(UV - 0.5) * 2.0;
-	float g = (exp(-d * d * 9.0) + 0.25 * exp(-d * d * 2.5)) * (1.0 - smoothstep(0.6, 1.0, d));
-	ALBEDO = tint.rgb * g * 1.1;
+	float core = 1.0 - smoothstep(0.08, 0.2, d);
+	float g = exp(-d * d * 22.0) * 0.9 + 0.12 * exp(-d * d * 5.0);
+	g *= 1.0 - smoothstep(0.7, 1.0, d);
+	ALBEDO = mix(tint.rgb, vec3(1.0), 0.6) * core * 1.4 + tint.rgb * g * 1.2;
 	ALPHA = 1.0;
 }
 """

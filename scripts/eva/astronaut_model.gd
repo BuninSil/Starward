@@ -247,14 +247,15 @@ func _build_helmet() -> void:
 		# Glow around the lens: a camera-facing halo, so the lamp itself shines.
 		var halo := MeshInstance3D.new()
 		var qm := QuadMesh.new()
-		qm.size = Vector2(0.4, 0.4)
+		qm.size = Vector2(0.16, 0.16)
 		halo.mesh = qm
 		var hm := ShaderMaterial.new()
 		hm.shader = RV._halo_shader()
 		hm.set_shader_parameter("tint", Color(1.0, 0.9, 0.7))
+		hm.set_shader_parameter("pull", 0.03)
 		halo.material_override = hm
 		halo.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		halo.position = Vector3(sx * 0.2, 0.25, -0.1)
+		halo.position = Vector3(sx * 0.2, 0.25, -0.075)   # on the lens
 		halo.visible = false
 		_head.add_child(halo)
 		_lamp_halos.append(halo)

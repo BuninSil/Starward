@@ -558,7 +558,7 @@ var _prof_timer := 0.0
 var _prof_hid_rocket := false
 const PROF_FEATURES := [["shadows", "Тени"], ["ground", "Детальный грунт"], ["globe", "Шар планеты"],
 	["g_detail", "Грунт: детали вблизи"], ["g_craters", "Грунт: мелкие кратеры"],
-	["g_light", "Грунт: свет реголита"], ["g_hd", "Грунт: HD-снимки (Земля)"],
+	["g_light", "Грунт: свет реголита"], ["g_fp32", "Грунт: полная точность (вкл = медленнее)"], ["g_hd", "Грунт: HD-снимки (Земля)"],
 	["rocks", "Камни и галька"], ["fx", "Дым и пыль"], ["glow", "Свечение (glow)"],
 	["rocket", "Ракета и космонавт"], ["lights", "Ночные фонари"], ["sky", "Небо"]]
 const PROF_SCALES := [1.0, 0.75, 0.6, 0.5]
@@ -649,6 +649,9 @@ func _prof_apply() -> void:
 			_prof_param(pm, "crater_decals", 0.0, off.has("g_craters"))
 			_prof_param(pm, "regolith", 0.0, off.has("g_light"))
 			_prof_param(pm, "hd_rect", Vector4.ZERO, off.has("g_hd"))
+			var want: Shader = pv.call("surface_shader_fp32") if off.has("g_fp32") else pv.get("SURFACE_SHADER")
+			if (pm as ShaderMaterial).shader != want:
+				(pm as ShaderMaterial).shader = want
 		pv.get("_surface").visible = not off.has("globe")
 		var site: Node = pv.get("_site")
 		if site == null:
