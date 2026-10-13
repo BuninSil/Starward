@@ -21,12 +21,9 @@ var playtime := 0.0
 
 func _ready() -> void:
 	_fresh_inventories()
-	# Up to 120 FPS (project max_fps); on Android also ask for the screen's top
-	# refresh rate, apps are kept at 60 Hz otherwise.
-	if Engine.has_singleton("StarwardUpdater"):
-		var plugin := Engine.get_singleton("StarwardUpdater")
-		if plugin.has_method("requestHighRefreshRate"):
-			Log.info("Game: display refresh %.0f Hz" % float(plugin.call("requestHighRefreshRate")))
+	# Refresh rate / frame cap from the settings (auto: the screen's top rate).
+	Graphics.apply_fps()
+	Log.info("Game: display %.0f Hz, max_fps %d" % [Graphics.screen_hz, Engine.max_fps])
 
 
 func _process(delta: float) -> void:

@@ -57,32 +57,37 @@ class StarwardUpdaterPlugin(godot: Godot) : GodotPlugin(godot) {
 
     /**
      * Asks Android for the display's highest refresh rate at the current
-     * resolution (apps get 60 Hz by default even on 90/120 Hz screens).
-     * Returns that rate in Hz (0 if there is no activity).
+     * resolution, up to [maxHz] (apps get 60 Hz by default even on 90/120 Hz
+     * screens). Returns the chosen rate in Hz (0 if there is no activity).
      */
     @UsedByGodot
-    fun requestHighRefreshRate(): Float {
+    fun requestRefreshRate(maxHz: Float): Float {
         val act = activity ?: return 0f
         return try {
             @Suppress("DEPRECATION")
             val display = act.windowManager.defaultDisplay
             val cur = display.mode
-            val best = display.supportedModes
+            val same = display.supportedModes
                 .filter { it.physicalWidth == cur.physicalWidth && it.physicalHeight == cur.physicalHeight }
-                .maxByOrNull { it.refreshRate } ?: cur
+            val best = same.filter { it.refreshRate <= maxHz + 0.5f }.maxByOrNull { it.refreshRate }
+                ?: same.minByOrNull { it.refreshRate } ?: cur
             act.runOnUiThread {
                 val lp = act.window.attributes
                 lp.preferredDisplayModeId = best.modeId
                 lp.preferredRefreshRate = best.refreshRate
                 act.window.attributes = lp
             }
-            Log.i(TAG, "Display mode ${best.modeId}: ${best.refreshRate} Hz")
+            Log.i(TAG, "Display mode ${best.modeId}: ${best.refreshRate} Hz (max $maxHz)")
             best.refreshRate
         } catch (e: Exception) {
-            Log.e(TAG, "requestHighRefreshRate failed", e)
+            Log.e(TAG, "requestRefreshRate failed", e)
             0f
         }
     }
+
+    /** The highest refresh rate the screen has. */
+    @UsedByGodot
+    fun requestHighRefreshRate(): Float = requestRefreshRate(1000f)
 
     companion object {
         private const val TAG = "StarwardUpdater"

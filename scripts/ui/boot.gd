@@ -521,6 +521,11 @@ func _build_settings() -> Control:
 	gfx_hint.add_theme_font_size_override("font_size", 17)
 	gfx_hint.add_theme_color_override("font_color", DIM)
 	box.add_child(gfx_hint)
+	var fps_btn := _menu_button("Частота кадров: " + Graphics.fps_label(), func() -> void: pass)
+	fps_btn.pressed.connect(func() -> void:
+		Graphics.set_fps_mode((Graphics.fps_mode + 1) % 3)
+		fps_btn.text = "Частота кадров: " + Graphics.fps_label())
+	box.add_child(fps_btn)
 
 	box.add_child(_menu_button("Проверить обновление", func() -> void:
 		_update_status.text = "Проверяю…"
