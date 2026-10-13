@@ -26,6 +26,7 @@ var destroyed_flag := false
 var height_offset := 0.0        ## distance from vessel origin to its lowest point
 var chute_deployed := false
 var touchdown_speed := 0.0
+var crushed_height := 0.0         ## wreck under the vessel after a hard landing, m
 var cargo_mass := 0.0            ## kg of cargo in the capsule (ship inventory)
 
 const CHUTE_CDA := 260.0        ## Cd * area of the open main chute, m^2
@@ -231,6 +232,7 @@ signal burned_off(stage: Dictionary)   ## a stage that overheated and broke away
 signal wrecked(stage: Dictionary, reason: String)   ## a stage destroyed (impact, airloads); crew still alive
 
 const HEAT_SCALE := 3.0
+const WRECK_SQUASH := 0.55       ## a crumpled stage keeps this much of its height
 const AERO_BREAK := 2500.0        ## Pa of q*sin(AoA) a stack takes before it breaks up (thin scaled air)
 const SHIELD_LIMIT := 2400.0      ## K, ablative heat shield (capsule bottom first)
 const HULL_LIMIT := 900.0         ## K, bare aluminium tanks / capsule nose
@@ -502,8 +504,10 @@ func _check_ground(t: float) -> void:
 	var vs := surface_velocity()
 	var speed := vs.length()
 	touchdown_speed = speed
+	crushed_height = 0.0
 	speed = _impact(speed)
 	touchdown_speed = speed
+	ground_r += crushed_height
 	if destroyed_flag:
 		_surface_fixed = body.inertial_to_fixed(pos.normalized().mul(ground_r), t)
 		_stick_to_surface(t)
@@ -551,6 +555,7 @@ func _impact(speed: float) -> float:
 		# Upright: the bottom stage hits first and crumples, slowing the rest.
 		while stages.size() > 1 and speed > crash_tolerance(stages[stages.size() - 1]):
 			var s: Dictionary = stages.pop_back()
+			crushed_height += float(s.length) * WRECK_SQUASH   # the rest stands on the wreck
 			# Crumpling eats energy: legs and tank structure act as a crush zone.
 			var absorb := crash_tolerance(s) * (1.6 if s.get("legs", false) else 1.3)
 			speed = sqrt(maxf(speed * speed - absorb * absorb, 0.0))

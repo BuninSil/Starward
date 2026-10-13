@@ -431,8 +431,18 @@ func _on_wrecked(st: Dictionary, reason: String) -> void:
 	var near_ground := vessel.altitude_above_ground(sim_time) < 30.0
 	if near_ground:
 		# Crumpled where it hit: squashed, tipped, half sunk.
+		# Squashed about its base (the node origin): what is left of the ship
+		# stands on top of it (Vessel.crushed_height).
 		var b := node.global_transform.basis
-		node.global_transform.basis = b.rotated(b.x.normalized(), randf_range(-0.5, 0.5)).scaled(Vector3(1.0, 0.6, 1.0))
+		var upright := b.y.normalized().dot(vessel.pos.normalized().to_v3()) > 0.45
+		if upright:
+			var sq := Basis().scaled(Vector3(1.0, Vessel.WRECK_SQUASH, 1.0))
+			node.global_transform.basis = b * sq.rotated(Vector3.RIGHT, randf_range(-0.06, 0.06))
+		else:
+			# Broadside: the stage lies on the ground next to the capsule.
+			var side := b.x.normalized()
+			node.global_transform = Transform3D(b.scaled(Vector3(1.0, 0.85, 1.0)),
+				node.global_position + side * (float(st.diameter) * 0.6 + 1.2))
 		_debris.append({
 			"node": node, "body": vessel.body, "basis": node.global_transform.basis,
 			"fixed": vessel.body.inertial_to_fixed(vessel.pos.add(DVec3.from_v3(node.global_position)), sim_time),
@@ -447,7 +457,7 @@ func _on_wrecked(st: Dictionary, reason: String) -> void:
 			"vel": vessel.vel.add(DVec3.from_v3(Vector3(randf() - 0.5, randf() - 0.5, randf() - 0.5) * 20.0)),
 			"life": 25.0,
 		})
-	_sparks(st)
+		_sparks(st)
 
 
 func _on_staged(_dropped: Dictionary) -> void:
