@@ -941,6 +941,7 @@ var _ip_att := Quaternion.IDENTITY
 var _ip_body: CelestialBody = null
 var _ip_astro := Transform3D()
 var _astro_xf := Transform3D()   ## astronaut transform as drawn this frame
+var _ip_ahead := 0.0             ## drawn time minus simulated time (debris follow it too)
 
 
 func _process(delta: float) -> void:
@@ -960,7 +961,9 @@ func _process(delta: float) -> void:
 		_astro_xf = _ip_astro.interpolate_with(live, a) if shown != null and _ip_astro.origin.distance_to(live.origin) < 2.0 else live
 		if astronaut.model:
 			astronaut.model.transform = live.affine_inverse() * _astro_xf * Transform3D(Basis(), Vector3(0, -0.925, 0))
+	_ip_ahead = sim_time - saved_t   # <= 0: how far behind the last tick this frame is drawn
 	_process_frame(delta)
+	_ip_ahead = 0.0
 	# Back to the simulated state (unless something replaced it meanwhile).
 	if shown != null and vessel.pos == shown:
 		vessel.pos = saved_pos
@@ -995,6 +998,8 @@ func _process_frame(delta: float) -> void:
 	for d in _debris:
 		var n: Node3D = d.node
 		var dabs := (d.body as CelestialBody).absolute_position(sim_time).add(d.pos)
+		if _ip_ahead != 0.0 and not d.has("scorch"):
+			dabs = dabs.add((d.vel as DVec3).mul(_ip_ahead))   # in step with the interpolated frame
 		var bas: Basis = d.basis
 		if d.has("scorch"):
 			# Flat on the ground: rebuilt from the local vertical (the body turns).

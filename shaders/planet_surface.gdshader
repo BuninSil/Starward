@@ -261,18 +261,34 @@ void fragment() {
 			float fx_ = length(ndx * 512.0);
 			float fy_ = length(ndy * 512.0);
 			near_lod = log2(max(mix(min(fx_, fy_), max(fx_, fy_), 0.35), 1e-4));
-			LP vec4 a = tex_p(un + near_off_a, ndx, ndy, near_lod);
-			LP vec4 b = tex_p(un + near_off_b, ndx, ndy, near_lod);
-			LP vec4 q1a = tex_n(ground_pack_normal, un + near_off_a, ndx, ndy, near_lod);
-			LP vec4 q1b = tex_n(ground_pack_normal, un + near_off_b, ndx, ndy, near_lod);
-			LP vec4 q2a = tex_n(ground_pack_normal2, un + near_off_a, ndx, ndy, near_lod);
-			LP vec4 q2b = tex_n(ground_pack_normal2, un + near_off_b, ndx, ndy, near_lod);
-			near_mix = smoothstep(0.2, 0.8, fract(l) - 0.1 * dot(a - b, vec4(1.0)));
-			LP vec4 p_near = mix(a, b, near_mix);
+			// Stochastic blend only inside the narrow bands between regions: the
+			// blend weight is known before any read, so elsewhere (most of the
+			// ground) one copy of the textures is read instead of two.
+			LP float base_mix = smoothstep(0.3, 0.7, fract(l));
+			LP vec4 a;
+			LP vec4 q1;
+			LP vec4 q2;
+			if (base_mix <= 0.0 || base_mix >= 1.0) {
+				vec2 o = base_mix <= 0.0 ? near_off_a : near_off_b;
+				a = tex_p(un + o, ndx, ndy, near_lod);
+				q1 = tex_n(ground_pack_normal, un + o, ndx, ndy, near_lod);
+				q2 = tex_n(ground_pack_normal2, un + o, ndx, ndy, near_lod);
+				near_mix = base_mix;
+			} else {
+				LP vec4 pa = tex_p(un + near_off_a, ndx, ndy, near_lod);
+				LP vec4 pb = tex_p(un + near_off_b, ndx, ndy, near_lod);
+				LP vec4 q1a = tex_n(ground_pack_normal, un + near_off_a, ndx, ndy, near_lod);
+				LP vec4 q1b = tex_n(ground_pack_normal, un + near_off_b, ndx, ndy, near_lod);
+				LP vec4 q2a = tex_n(ground_pack_normal2, un + near_off_a, ndx, ndy, near_lod);
+				LP vec4 q2b = tex_n(ground_pack_normal2, un + near_off_b, ndx, ndy, near_lod);
+				// Ragged edge from the heights, fading to nothing at the band edges.
+				near_mix = clamp(base_mix - 0.4 * dot(pa - pb, vec4(1.0)) * base_mix * (1.0 - base_mix), 0.0, 1.0);
+				a = mix(pa, pb, near_mix);
+				q1 = mix(q1a, q1b, near_mix);
+				q2 = mix(q2a, q2b, near_mix);
+			}
 			near_w = fade_near;
-			pn = mix(pm, p_near, near_w);
-			LP vec4 q1 = mix(q1a, q1b, near_mix);
-			LP vec4 q2 = mix(q2a, q2b, near_mix);
+			pn = mix(pm, a, near_w);
 			n1 = mix(n1, q1, near_w);
 			n2 = mix(n2, q2, near_w);
 		}
@@ -360,8 +376,12 @@ void fragment() {
 			vec2 un = UV2 / 3.2 + sun_h * (0.05 / 3.2);
 			vec2 sdx = ddx / 3.2;
 			vec2 sdy = ddy / 3.2;
-			LP vec4 s = mix(tex_p(un + near_off_a, sdx, sdy, near_lod),
-				tex_p(un + near_off_b, sdx, sdy, near_lod), near_mix);
+			LP vec4 s;
+			if (near_mix <= 0.0 || near_mix >= 1.0) {
+				s = tex_p(un + (near_mix <= 0.0 ? near_off_a : near_off_b), sdx, sdy, near_lod);
+			} else {
+				s = mix(tex_p(un + near_off_a, sdx, sdy, near_lod), tex_p(un + near_off_b, sdx, sdy, near_lod), near_mix);
+			}
 			LP vec4 hb0 = vec4(hf, hs, hg, hr);
 			LP vec4 hb1 = vec4(s.r * 0.4 + s.b * 0.6, s.b, s.a, s.g);
 			LP float dh = dot(hb1 - hb0, w);
