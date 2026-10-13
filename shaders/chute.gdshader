@@ -45,6 +45,20 @@ void fragment() {
 	ALBEDO = FRONT_FACING ? COLOR.rgb : COLOR.rgb * 0.8;
 	ROUGHNESS = 0.82;
 	SPECULAR = 0.25;
-	// Thin nylon: sunlight shows through from behind.
-	BACKLIGHT = COLOR.rgb * 0.45;
+}
+
+// Own lighting: the engine's GGX highlight overflows in half precision on some
+// mobile GPUs right where the sun glints off the fabric (a black disc there).
+// Lambert, light through the thin nylon from behind, and a soft clamped sheen.
+void light() {
+	float ndl = dot(NORMAL, LIGHT);
+	vec3 lc = LIGHT_COLOR * ATTENUATION / PI;
+	// Light through the nylon is tinted by the nylon itself (as BACKLIGHT did).
+	DIFFUSE_LIGHT += lc * (1.08 * max(ndl, 0.0) + 0.45 * ALBEDO * (1.0 - max(ndl, 0.0)));
+	vec3 h = normalize(LIGHT + VIEW);
+	float nh = clamp(dot(NORMAL, h), 0.0, 1.0);
+	float n2 = nh * nh;
+	float n4 = n2 * n2;
+	float n8 = n4 * n4;
+	SPECULAR_LIGHT += lc * max(ndl, 0.0) * 0.03 * n8 * n8;   // nh^16, all values <= 1
 }

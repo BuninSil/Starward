@@ -969,6 +969,7 @@ func _make_patch_material() -> Material:
 	sm.set_shader_parameter("use_detail", true)
 	var st := surface_style()
 	sm.set_shader_parameter("ground_pack", _ground_pack)
+	sm.set_shader_parameter("ground_pack_near", _ground_pack)
 	sm.set_shader_parameter("ground_pack_normal", _ground_pack_normal)
 	sm.set_shader_parameter("ground_pack_normal2", _ground_pack_normal2)
 	sm.set_shader_parameter("detail_level", Graphics.quality)

@@ -49,6 +49,9 @@ uniform int detail_level = 1;           // 0 low, 1 high
 //   pack:   R fine speckle, G cracked rock (ridged), B soft bumps, A pebbles;
 //   normal: RG fine ground, BA gravel;  normal2: RG rock, BA soft bumps.
 uniform sampler2D ground_pack : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
+// The same pack texture through a plain trilinear sampler for the near reads
+// (explicit mip level; anisotropic sampling may still cost extra on mobile).
+uniform sampler2D ground_pack_near : hint_default_white, filter_linear_mipmap, repeat_enable;
 uniform sampler2D ground_pack_normal : hint_default_black, filter_linear_mipmap, repeat_enable;
 uniform sampler2D ground_pack_normal2 : hint_default_black, filter_linear_mipmap, repeat_enable;
 uniform float detail_strength = 0.85;
@@ -99,7 +102,7 @@ vec4 tex_n(sampler2D s, vec2 uv, vec2 dx, vec2 dy, float lod) {   // normal maps
 	return exact_grad ? textureGrad(s, uv, dx, dy) : textureLod(s, uv, lod);
 }
 vec4 tex_p(vec2 uv, vec2 dx, vec2 dy, float lod) {                 // the ground pack
-	return exact_grad ? textureGrad(ground_pack, uv, dx, dy) : textureLod(ground_pack, uv, lod);
+	return exact_grad ? textureGrad(ground_pack, uv, dx, dy) : textureLod(ground_pack_near, uv, lod);
 }
 
 // Cheap value noise from arithmetic only (no texture read).
@@ -202,7 +205,9 @@ void fragment() {
 	if (use_detail && dist < 8000.0) {
 		LP float fade_far = 1.0 - smoothstep(3000.0, 8000.0, dist);
 		LP float fade_mid = 1.0 - smoothstep(600.0, 3000.0, dist);
-		LP float fade_near = 1.0 - smoothstep(25.0, 120.0, dist);
+		// The near layer's grains are sub-pixel past ~60 m: it hands over to the
+		// mid scale there (much less of the screen pays for it).
+		LP float fade_near = 1.0 - smoothstep(20.0, 60.0, dist);
 		vec2 ddx = dFdx(UV2);
 		vec2 ddy = dFdy(UV2);
 		LP float slope = use_slope ? COLOR.r : 0.0;
@@ -239,7 +244,7 @@ void fragment() {
 			n1 = vec4(back * mn1.xy, back * mn1.zw) * 0.5 + 0.5;
 			n2 = vec4(back * mn2.xy, back * mn2.zw) * 0.5 + 0.5;
 		}
-		if (detail_level > 0 && near_layer && dist < 120.0) {
+		if (detail_level > 0 && near_layer && dist < 60.0) {
 			// Near scale, stochastically tiled (3.2 m texture repeat). The region
 			// index comes from arithmetic noise, not from a texture value: every
 			// read below then depends only on UV2 and all of them are issued at
