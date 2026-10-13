@@ -886,10 +886,10 @@ func _build_lights() -> void:
 	for a in [deg_to_rad(-40.0), deg_to_rad(220.0)]:
 		var f := SpotLight3D.new()
 		f.light_color = Color(1.0, 0.9, 0.76)
-		f.spot_range = 60.0
-		f.spot_angle = 44.0
-		f.spot_attenuation = 1.4          # gentle fade with distance
-		f.spot_angle_attenuation = 0.35   # soft edge of the cone
+		f.spot_range = 90.0
+		f.spot_angle = 62.0
+		f.spot_attenuation = 1.1          # gentle fade with distance
+		f.spot_angle_attenuation = 0.2    # very soft edge of the cone
 		f.light_energy = 0.0
 		f.shadow_enabled = false
 		var dir := Vector3(cos(a), 0, sin(a))
@@ -902,8 +902,8 @@ func _build_lights() -> void:
 	# hard line between light and dark.
 	var fill := OmniLight3D.new()
 	fill.light_color = Color(1.0, 0.88, 0.72)
-	fill.omni_range = 22.0
-	fill.omni_attenuation = 2.0
+	fill.omni_range = 40.0
+	fill.omni_attenuation = 1.6
 	fill.shadow_enabled = false
 	fill.position = Vector3(0, -2.0, 0)
 	node.add_child(fill)
@@ -926,7 +926,7 @@ void vertex() {
 }
 void fragment() {
 	float d = length(UV - 0.5) * 2.0;
-	float g = exp(-d * d * 9.0) + 0.25 * exp(-d * d * 2.5);
+	float g = (exp(-d * d * 9.0) + 0.25 * exp(-d * d * 2.5)) * (1.0 - smoothstep(0.6, 1.0, d));
 	ALBEDO = tint.rgb * g * 1.1;
 	ALPHA = 1.0;
 }
@@ -944,10 +944,10 @@ func _update_lights(delta: float) -> void:
 		(e.light as OmniLight3D).light_energy = (e.energy as float) * n if lit else 0.0
 		(e.light as OmniLight3D).visible = n > 0.01 and lit
 	for f in _floods:
-		f.light_energy = 5.0 * n
+		f.light_energy = 8.0 * n
 		f.visible = n > 0.01
 	if _fill:
-		_fill.light_energy = 0.9 * n
+		_fill.light_energy = 1.6 * n
 		_fill.visible = n > 0.01
 
 

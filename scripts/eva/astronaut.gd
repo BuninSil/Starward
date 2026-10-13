@@ -40,6 +40,7 @@ const JUMP_SPEED := 2.2
 
 var drilling := false    ## kneeling at the drill (surface EVA)
 var _air_time := 0.0     ## seconds off the ground
+var _jumping := false    ## airborne after a jump: no ground snapping until we land
 var _since_jump := 10.0  ## seconds since the last jump
 var _puffs: Array[MeshInstance3D] = []
 
@@ -185,12 +186,16 @@ func _walk_tick(dt: float) -> void:
 	q.exclude = [get_rid()]
 	var hit := space.intersect_ray(q)
 	var gap := (global_position - (hit.position as Vector3)).dot(up_dir) if not hit.is_empty() else INF
-	on_ground = gap <= 1.05
-	_air_time = 0.0 if on_ground else _air_time + dt
 	_since_jump += dt
+	# Just pushed off: the feet are still near the ground for a few frames,
+	# that is not a landing.
+	on_ground = gap <= 1.05 and not (_jumping and _since_jump < 0.3)
+	if on_ground:
+		_jumping = false
+	_air_time = 0.0 if on_ground else _air_time + dt
 	# Walking over bumps / downhill: stay on the ground instead of sailing off it
-	# (in 1/6 g every small kick turns into a long float). Not after a jump.
-	if not on_ground and gap < 1.7 and _since_jump > 0.4 and linear_velocity.dot(up_dir) < 1.2:
+	# (in 1/6 g every small kick turns into a long float). Never during a jump.
+	if not on_ground and not _jumping and gap < 1.4 and linear_velocity.dot(up_dir) < 0.3:
 		global_position -= up_dir * (gap - 0.98)
 		linear_velocity -= up_dir * maxf(linear_velocity.dot(up_dir), 0.0)
 		on_ground = true
@@ -210,6 +215,7 @@ func _walk_tick(dt: float) -> void:
 		if jump_requested:
 			v_up = JUMP_SPEED if gravity < 3.0 else 4.0   # Earth: ~0.8 m hop in the suit
 			_since_jump = 0.0
+			_jumping = true
 		elif v_up > 0.0:
 			v_up = 0.0   # the ground plane re-tilting under the feet must not launch us
 		jump_requested = false

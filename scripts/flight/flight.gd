@@ -1167,6 +1167,16 @@ func _update_ground() -> void:
 		return
 	var at := astronaut.global_position if astronaut != null and is_instance_valid(astronaut) else Vector3.ZERO
 	var c := _terrain_point(vessel.pos.add(DVec3.from_v3(at)))
+	# The boots stand on the highest bump under them, not on the point under
+	# the body centre (else they sink into small rises and crater rims).
+	var up0 := vessel.pos.add(DVec3.from_v3(at)).normalized().to_v3()
+	var side0 := up0.cross(Vector3.FORWARD if absf(up0.z) < 0.9 else Vector3.RIGHT).normalized()
+	var fwd0 := side0.cross(up0)
+	for off in [side0 * 0.35, -side0 * 0.35, fwd0 * 0.35, -fwd0 * 0.35]:
+		var q := _terrain_point(vessel.pos.add(DVec3.from_v3(at + off)))
+		var dh: float = (q - c).dot(up0)
+		if dh > 0.0:
+			c += up0 * dh
 	# Slope from two neighbours ~2 m away along the local horizon.
 	var up := vessel.pos.add(DVec3.from_v3(at)).normalized().to_v3()
 	var e := Vector3.UP.cross(up)

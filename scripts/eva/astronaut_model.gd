@@ -190,6 +190,7 @@ func _build_torso() -> void:
 
 var lamps := 0.0   ## helmet lights 0..1 (set by the flight scene in the dark)
 var _lamp_lights: Array[SpotLight3D] = []
+var _lamp_halos: Array[MeshInstance3D] = []
 var _lens_mat: StandardMaterial3D
 
 
@@ -228,10 +229,10 @@ func _build_helmet() -> void:
 		# EMU helmet lights: a wide, soft warm beam where the astronaut looks.
 		var l := SpotLight3D.new()
 		l.light_color = Color(1.0, 0.93, 0.82)
-		l.spot_range = 22.0
-		l.spot_angle = 34.0
-		l.spot_attenuation = 1.3
-		l.spot_angle_attenuation = 0.6
+		l.spot_range = 35.0
+		l.spot_angle = 40.0
+		l.spot_attenuation = 0.9
+		l.spot_angle_attenuation = 0.45
 		l.light_energy = 0.0
 		l.shadow_enabled = false
 		l.visible = false
@@ -239,6 +240,20 @@ func _build_helmet() -> void:
 		l.rotation.x = deg_to_rad(-8.0)
 		_head.add_child(l)
 		_lamp_lights.append(l)
+		# Glow around the lens: a camera-facing halo, so the lamp itself shines.
+		var halo := MeshInstance3D.new()
+		var qm := QuadMesh.new()
+		qm.size = Vector2(0.4, 0.4)
+		halo.mesh = qm
+		var hm := ShaderMaterial.new()
+		hm.shader = RV._halo_shader()
+		hm.set_shader_parameter("tint", Color(1.0, 0.9, 0.7))
+		halo.material_override = hm
+		halo.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		halo.position = Vector3(sx * 0.2, 0.25, -0.1)
+		halo.visible = false
+		_head.add_child(halo)
+		_lamp_halos.append(halo)
 
 
 func _build_arm(side: float) -> Array:
@@ -291,8 +306,10 @@ func play(state: String, speed := 1.0) -> void:
 func _update_lamps() -> void:
 	var n := clampf(lamps, 0.0, 1.0)
 	for l in _lamp_lights:
-		l.light_energy = 2.2 * n
+		l.light_energy = 6.0 * n
 		l.visible = n > 0.01
+	for h in _lamp_halos:
+		h.visible = n > 0.5
 	if _lens_mat:
 		_lens_mat.emission_energy_multiplier = 6.0 * n
 
@@ -331,7 +348,7 @@ func _process(delta: float) -> void:
 				target["sh%d" % side] = 0.95 + 0.05 * sin(_t * 30.0)
 				target["el%d" % side] = 0.7
 				target["abd%d" % side] = 0.05
-			bob = -0.32 + 0.01 * sin(_t * 40.0)
+			bob = -0.2 + 0.01 * sin(_t * 40.0)
 			lean = 0.35
 		"jump":
 			for side in [-1.0, 1.0]:
