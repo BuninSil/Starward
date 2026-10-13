@@ -13,6 +13,7 @@ const PLUGIN_SINGLETON := "StarwardUpdater"
 const TIMEOUT_SEC := 15.0
 const RETRY_DELAY_SEC := 2.0
 const DOWNLOAD_ATTEMPTS := 3
+const STALL_SEC := 15.0              ## no bytes for this long: the connection is dead, restart
 const RESUME_RECHECK_SEC := 600.0   ## re-check on app resume if the last check is older
 
 ## Last found release: {tag, version_code, name, notes, apk_url, apk_size, html_url}
@@ -55,6 +56,12 @@ func check_on_startup() -> void:
 
 
 func _notification(what: int) -> void:
+	# A download in flight when the app went to background: Android dropped the
+	# socket and the request just hangs (no error, no timeout). Start it afresh.
+	if what == NOTIFICATION_APPLICATION_RESUMED and is_downloading:
+		Log.info("Updater: app resumed during download, restarting it")
+		_download_attempt = 0
+		get_tree().create_timer(1.0).timeout.connect(_start_download)
 	# After the app was in background Android may have dropped its sockets;
 	# re-check if the last check is old enough.
 	if what == NOTIFICATION_APPLICATION_RESUMED and _startup_checked and current_version_code() > 0:
@@ -159,7 +166,14 @@ var _download_attempt := 0
 
 
 func download_and_install() -> void:
-	if latest.is_empty() or is_downloading:
+	if latest.is_empty():
+		return
+	if is_downloading:
+		# Pressed again: if it is stuck, start over instead of ignoring the tap.
+		if Time.get_ticks_msec() - _progress_msec > STALL_SEC * 500.0:
+			Log.info("Updater: download looks stuck, restarting")
+			_download_attempt = 0
+			_start_download()
 		return
 	var dir := OS.get_cache_dir().path_join("updates")
 	DirAccess.make_dir_recursive_absolute(dir)
@@ -184,15 +198,23 @@ func _start_download() -> void:
 		_download_request.cancel_request()
 		_download_request.queue_free()
 	_download_request = HTTPRequest.new()
-	_download_request.use_threads = true
+	# Polled on the main thread (no worker): cancelling a request whose thread
+	# is stuck on a dead socket would freeze the whole game.
+	_download_request.use_threads = false
 	_download_request.download_chunk_size = 256 * 1024
 	_download_request.request_completed.connect(_on_download_completed)
 	add_child(_download_request)
 	_download_request.download_file = _download_path
+	_progress_bytes = -1
+	_progress_msec = Time.get_ticks_msec()
 	Log.info("Updater: downloading %s -> %s" % [latest.apk_url, _download_path])
 	var err := _download_request.request(latest.apk_url, _headers("application/octet-stream"))
 	if err != OK:
 		_finish_download(false, "Не удалось начать загрузку (код %d)" % err)
+
+
+var _progress_bytes := -1
+var _progress_msec := 0
 
 
 func _process(_delta: float) -> void:
@@ -200,7 +222,21 @@ func _process(_delta: float) -> void:
 		var total := _download_request.get_body_size()
 		if total <= 0:
 			total = int(latest.get("apk_size", 0))
-		download_progress.emit(_download_request.get_downloaded_bytes(), total)
+		var got := _download_request.get_downloaded_bytes()
+		download_progress.emit(got, total)
+		# Stall watchdog: a dead connection never reports an error by itself.
+		if got != _progress_bytes:
+			_progress_bytes = got
+			_progress_msec = Time.get_ticks_msec()
+		elif Time.get_ticks_msec() - _progress_msec > STALL_SEC * 1000.0:
+			_download_attempt += 1
+			if _download_attempt < DOWNLOAD_ATTEMPTS:
+				Log.warn("Updater: no data for %.0f s, restarting download (attempt %d)" % [STALL_SEC, _download_attempt + 1])
+				_start_download()
+			else:
+				_download_request.cancel_request()
+				_finish_download(false, "Загрузка зависла. Открываю загрузку в браузере.")
+				open_in_browser()
 
 
 func _on_download_completed(result: int, code: int, _h: PackedStringArray, _b: PackedByteArray) -> void:
