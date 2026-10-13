@@ -10,6 +10,10 @@ var flight: Node3D
 var _grids := {}       ## "astro"/"ship" -> GridContainer
 var _heads := {}       ## "astro"/"ship" -> Label
 var _note: Label
+var _tabs := {}
+var _tab := "cargo"
+var _cargo_view: Control
+var _craft_view: VBoxContainer
 
 
 func _ready() -> void:
@@ -30,11 +34,20 @@ func _ready() -> void:
 	panel.add_child(box)
 	var top := HBoxContainer.new()
 	box.add_child(top)
-	var title := Label.new()
-	title.text = "Груз"
-	title.add_theme_font_size_override("font_size", 30)
-	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	top.add_child(title)
+	top.add_theme_constant_override("separation", 8)
+	for t in [["Груз", "cargo"], ["Производство", "craft"]]:
+		var tb := Button.new()
+		tb.text = t[0]
+		tb.toggle_mode = true
+		tb.focus_mode = Control.FOCUS_NONE
+		tb.custom_minimum_size = Vector2(190, 56)
+		var tab: String = t[1]
+		tb.pressed.connect(func() -> void: _show_tab(tab))
+		top.add_child(tb)
+		_tabs[tab] = tb
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	top.add_child(spacer)
 	var close := Button.new()
 	close.text = "Закрыть"
 	close.focus_mode = Control.FOCUS_NONE
@@ -44,6 +57,11 @@ func _ready() -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 24)
 	box.add_child(row)
+	_cargo_view = row
+	_craft_view = VBoxContainer.new()
+	_craft_view.add_theme_constant_override("separation", 8)
+	_craft_view.custom_minimum_size = Vector2(900, 0)
+	box.add_child(_craft_view)
 	for key in ["astro", "ship"]:
 		var col := VBoxContainer.new()
 		col.add_theme_constant_override("separation", 6)
@@ -78,6 +96,13 @@ func _can_transfer() -> bool:
 
 func refresh() -> void:
 	if not is_inside_tree():
+		return
+	for k in _tabs:
+		(_tabs[k] as Button).set_pressed_no_signal(k == _tab)
+	_cargo_view.visible = _tab == "cargo"
+	_craft_view.visible = _tab == "craft"
+	if _tab == "craft":
+		_refresh_craft()
 		return
 	var invs := {"astro": Game.astro_inv, "ship": Game.ship_inv}
 	for key in invs:
@@ -122,3 +147,75 @@ func _cell(inv: Inventory, i: int, other: Inventory) -> Control:
 			_note.text = "Некуда класть: на другой стороне нет места."
 		refresh())
 	return b
+
+
+func _show_tab(t: String) -> void:
+	_tab = t
+	refresh()
+
+
+## Inventories the factory can draw from: the ship's hold when aboard or close,
+## the suit always.
+func _sources() -> Array:
+	return [Game.ship_inv, Game.astro_inv] if _can_transfer() else [Game.astro_inv]
+
+
+func _row_button(text: String, enabled: bool, cb: Callable) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.focus_mode = Control.FOCUS_NONE
+	b.custom_minimum_size = Vector2(220, 60)
+	b.disabled = not enabled
+	b.pressed.connect(cb)
+	return b
+
+
+func _refresh_craft() -> void:
+	for c in _craft_view.get_children():
+		c.queue_free()
+	var src := _sources()
+	var dest: Inventory = Game.ship_inv if _can_transfer() else Game.astro_inv
+	for r in Crafting.RECIPES:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 14)
+		_craft_view.add_child(row)
+		var swatch := ColorRect.new()
+		swatch.color = Items.color_of(r.id)
+		swatch.custom_minimum_size = Vector2(10, 52)
+		row.add_child(swatch)
+		var l := Label.new()
+		var need := PackedStringArray()
+		for id in r["in"]:
+			var have := 0
+			for inv in src:
+				have += (inv as Inventory).count(id)
+			need.append("%s %d (есть %d)" % [Items.name_of(id), int(r["in"][id]), have])
+		l.text = "%s ×%d   ←   %s\n%s" % [r.name, int(r.out), ", ".join(need), r.hint]
+		l.add_theme_font_size_override("font_size", 18)
+		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(l)
+		var recipe: Dictionary = r
+		row.add_child(_row_button("Сделать", Crafting.can_craft(r, src), func() -> void:
+			var err := Crafting.craft(recipe, _sources(), Game.ship_inv if _can_transfer() else Game.astro_inv)
+			_note.text = err if err != "" else "Готово: %s" % recipe.name
+			refresh()))
+	var sep := HSeparator.new()
+	_craft_view.add_child(sep)
+	var acts := HBoxContainer.new()
+	acts.add_theme_constant_override("separation", 12)
+	_craft_view.add_child(acts)
+	var fuel_n := 0
+	for inv in src:
+		fuel_n += (inv as Inventory).count("fuel")
+	acts.add_child(_row_button("Заправить ракету (топливо ×%d)" % fuel_n, fuel_n > 0 and flight != null, func() -> void:
+		var kg := Crafting.refuel(flight.vessel, _sources())
+		_note.text = "Залито %.0f кг топлива" % kg if kg > 0.0 else "Баки полны"
+		refresh()))
+	var o2_n := Game.astro_inv.count("oxygen")
+	var in_eva: bool = flight != null and flight.astronaut != null
+	acts.add_child(_row_button("Пополнить баллон скафандра (×%d)" % o2_n, in_eva, func() -> void:
+		var err: String = flight.use_oxygen_item()
+		_note.text = err if err != "" else "Баллон пополнен"
+		refresh()))
+	_note.text = "Сырьё берётся из корабля и скафандра, готовое кладётся в корабль." if _can_transfer() \
+		else "Вдали от корабля работает только то, что в скафандре."

@@ -38,6 +38,7 @@ const WALK_SPEED := 4.0           ## m/s on Earth (brisk jog)
 const WALK_SPEED_LOW_G := 3.2     ## m/s in low gravity (bounding gait)
 const JUMP_SPEED := 2.2
 
+var drilling := false    ## kneeling at the drill (surface EVA)
 var _air_time := 0.0     ## seconds off the ground
 var _since_jump := 10.0  ## seconds since the last jump
 var _puffs: Array[MeshInstance3D] = []
@@ -149,7 +150,9 @@ func _update_animation() -> void:
 		return
 	var v_h := linear_velocity - up_dir * linear_velocity.dot(up_dir)
 	var sp := v_h.length()
-	if not on_ground and (_since_jump < 1.5 or _air_time > 0.35):
+	if drilling and on_ground:
+		model.play("drill")
+	elif not on_ground and (_since_jump < 1.5 or _air_time > 0.35):
 		model.play("jump")
 	elif sp > 2.6:
 		model.play("run", clampf(sp / 4.0, 0.6, 1.4))

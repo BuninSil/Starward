@@ -1286,6 +1286,7 @@ func _eva_physics(dt: float) -> void:
 		astronaut.up_dir = vessel.pos.normalized().to_v3()
 		astronaut.cam_forward = -camera.global_transform.basis.z
 		astronaut.physics_tick(dt, Vector3.ZERO)
+		_drill_tick(dt)
 		if astronaut.oxygen <= 0.0:
 			end_eva("Космонавт погиб: кончился кислород")
 		return
@@ -1306,6 +1307,71 @@ func _eva_physics(dt: float) -> void:
 
 
 var _tether_broken_reported := false
+
+# --- Drill (surface EVA) ------------------------------------------------------------
+
+const DRILL_PERIOD := 0.7   ## seconds per unit pulled at full richness
+var drill_held := false
+var _drill_acc := 0.0
+var _drill_rng := RandomNumberGenerator.new()
+
+
+## Lat/lon (degrees) of a scene point on the current body.
+func lat_lon_at(scene_pos: Vector3) -> Vector2:
+	var p := vessel.pos.add(DVec3.from_v3(scene_pos))
+	return CelestialBody.lat_lon(vessel.body.inertial_to_fixed(p, sim_time))
+
+
+func resources_here() -> Dictionary:
+	if astronaut == null:
+		return {}
+	var ll := lat_lon_at(astronaut.global_position)
+	return Resources.at(vessel.body.id, ll.x, ll.y)
+
+
+func _drill_tick(dt: float) -> void:
+	var on: bool = drill_held and astronaut.on_ground and astronaut.walk_input.length() < 0.1
+	astronaut.drilling = on
+	if not on:
+		_drill_acc = 0.0
+		return
+	var r := resources_here()
+	var best := 0.0
+	for k in r:
+		best = maxf(best, float(r[k]))
+	_drill_acc += dt * maxf(best, 0.15)
+	# Dust and grit thrown up at the bit, every few frames.
+	if Engine.get_physics_frames() % 4 == 0:
+		var up: Vector3 = astronaut.up_dir
+		var bit: Vector3 = astronaut.global_position + (-astronaut.global_transform.basis.z) * 0.6 - up * 0.85
+		var at := vessel.pos.add(DVec3.from_v3(bit))
+		var d := _rand_dir()
+		fx.emit(vessel.body, at, _air_velocity(vessel.body, at).add(DVec3.from_v3((d - up * d.dot(up)) * 1.2 + up * randf_range(0.6, 1.6))),
+			randf_range(0.6, 1.2), 0.15, 0.6, _dust_color(vessel.body, 0.7), 0.6 if vessel.body.has_atmosphere() else 0.0,
+			not vessel.body.has_atmosphere())
+	if _drill_acc < DRILL_PERIOD:
+		return
+	_drill_acc -= DRILL_PERIOD
+	sfx.event("step", -6.0, randf_range(0.6, 0.8))
+	var id := Resources.pick(r, _drill_rng)
+	if id == "":
+		message.emit("Голая скала: здесь ничего не добыть")
+		return
+	if Game.astro_inv.add(id, 1) > 0:
+		drill_held = false
+		message.emit("Скафандр полон: перенеси груз в корабль")
+
+
+## Breathes from an oxygen cylinder in the suit inventory.
+func use_oxygen_item() -> String:
+	if astronaut == null:
+		return "Только при выходе наружу"
+	if astronaut.oxygen > astronaut.OXYGEN_MAX - 60.0:
+		return "Баллон и так полон"
+	if Game.astro_inv.remove("oxygen", 1) == 0 and (not can_transfer_cargo() or Game.ship_inv.remove("oxygen", 1) == 0):
+		return "Нет кислорода в скафандре"
+	astronaut.oxygen = minf(astronaut.oxygen + Crafting.O2_PER_UNIT, astronaut.OXYGEN_MAX)
+	return ""
 
 
 func _update_eva_camera() -> void:

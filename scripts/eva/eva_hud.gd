@@ -218,8 +218,12 @@ func _build_surface() -> void:
 	col.grow_horizontal = Control.GROW_DIRECTION_BEGIN
 	col.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	_root.add_child(col)
+	var drill := _hold("Бур", func() -> void: flight.drill_held = true,
+		func() -> void: flight.drill_held = false, 220)
+	drill.custom_minimum_size = Vector2(220, 74)
+	col.add_child(drill)
 	var jump := _btn("Прыжок", func() -> void: flight.astronaut.jump_requested = true, 220)
-	jump.custom_minimum_size = Vector2(220, 90)
+	jump.custom_minimum_size = Vector2(220, 80)
 	col.add_child(jump)
 	_enter_btn = _btn("В корабль", func() -> void: flight.end_eva(), 220)
 	col.add_child(_enter_btn)
@@ -261,8 +265,9 @@ func _update_texts_surface(a: Node, delta: float) -> void:
 	var o2 := int(a.oxygen)
 	_o2_label.text = "Дышим воздухом" if a.breathable else "Кислорода на %d:%02d" % [o2 / 60, o2 % 60]
 	var dist: float = flight.entry_distance()
-	_info.text = "%s · g = %.2f м/с²\nДо ракеты %.1f м · %s" % [flight.vessel.body.name, a.gravity, dist,
-		"на земле" if a.on_ground else "в прыжке"]
+	_info.text = "%s · g = %.2f м/с²\nДо ракеты %.1f м · %s\nГрунт: %s" % [flight.vessel.body.name, a.gravity, dist,
+		"бурю…" if a.drilling else ("на земле" if a.on_ground else "в прыжке"),
+		Resources.describe(flight.resources_here())]
 	_enter_btn.disabled = dist > 2.5
 
 

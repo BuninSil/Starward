@@ -322,6 +322,17 @@ func _process(delta: float) -> void:
 				target["abd%d" % side] = 0.12
 			bob = absf(sin(_phase)) * (0.07 if low_gravity and run else (0.05 if run else 0.025))
 			lean = 0.18 if hop else (0.12 if run else 0.05)
+		"drill":
+			# Kneeling, both hands on the drill in front of the knees.
+			for side in [-1.0, 1.0]:
+				target["hip%d" % side] = 1.1 if side > 0.0 else 0.4
+				target["knee%d" % side] = -1.7 if side > 0.0 else -0.9
+				target["ankle%d" % side] = 0.5
+				target["sh%d" % side] = 0.95 + 0.05 * sin(_t * 30.0)
+				target["el%d" % side] = 0.7
+				target["abd%d" % side] = 0.05
+			bob = -0.32 + 0.01 * sin(_t * 40.0)
+			lean = 0.35
 		"jump":
 			for side in [-1.0, 1.0]:
 				target["hip%d" % side] = 0.5
