@@ -17,7 +17,7 @@ float noise(vec2 p) {
 void fragment() {
 	vec2 p = (UV - 0.5) * 2.0;
 	float r = length(p);
-	float ang = atan(p.y, p.x);
+	float ang = atan(p.y, p.x + 1e-6);
 	float edge = noise(vec2(ang * 3.0, seed)) * 0.25 + noise(p * 6.0) * 0.15;
 	float core = 1.0 - smoothstep(0.15, 0.95, r + edge - 0.1);
 	float rays = 0.5 + 0.5 * noise(vec2(ang * 9.0, r * 1.5 + seed));

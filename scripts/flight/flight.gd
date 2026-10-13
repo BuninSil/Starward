@@ -419,45 +419,57 @@ func _on_wrecked(st: Dictionary, reason: String) -> void:
 	var node: Node3D = rocket.detach_bottom_stage()
 	Log.warn("Flight: " + reason)
 	message.emit(reason)
-	sfx.event("crash", -4.0)
+	sfx.event("crash", -2.0, 0.8)
+	sfx.event("staging", 0.0, 0.6)
 	if node == null:
 		return
-	add_child(node)
-	node.top_level = true
-	node.global_transform = node.get_meta("global")
-	for m in rocket.hull_materials_of(node):
-		m.set_shader_parameter("scorch", 1.1)
-		m.set_shader_parameter("scorch_len", 6.0)
-	var near_ground := vessel.altitude_above_ground(sim_time) < 30.0
-	if near_ground:
-		# Crumpled where it hit: squashed, tipped, half sunk.
-		# Squashed about its base (the node origin): what is left of the ship
-		# stands on top of it (Vessel.crushed_height).
-		var b := node.global_transform.basis
-		var upright := b.y.normalized().dot(vessel.pos.normalized().to_v3()) > 0.45
-		if upright:
-			var sq := Basis().scaled(Vector3(1.0, Vessel.WRECK_SQUASH, 1.0))
-			node.global_transform.basis = b * sq.rotated(Vector3.RIGHT, randf_range(-0.06, 0.06))
-		else:
-			# Broadside: the stage lies on the ground next to the capsule.
-			var side := b.x.normalized()
-			node.global_transform = Transform3D(b.scaled(Vector3(1.0, 0.85, 1.0)),
-				node.global_position + side * (float(st.diameter) * 0.6 + 1.2))
-		_debris.append({
-			"node": node, "body": vessel.body, "basis": node.global_transform.basis,
-			"fixed": vessel.body.inertial_to_fixed(vessel.pos.add(DVec3.from_v3(node.global_position)), sim_time),
-			"pos": DVec3.new(), "vel": DVec3.new(), "life": INF,
-		})
-		if has_solid_surface(vessel.body):
-			_dust_burst(1.0)
-	else:
-		_debris.append({
-			"node": node, "body": vessel.body, "basis": node.global_transform.basis,
-			"pos": vessel.pos.add(DVec3.from_v3(node.global_position)),
-			"vel": vessel.vel.add(DVec3.from_v3(Vector3(randf() - 0.5, randf() - 0.5, randf() - 0.5) * 20.0)),
-			"life": 25.0,
-		})
-		_sparks(st)
+	# The stage explodes and is gone: fireball, flash, smoke and fragments.
+	var gt: Transform3D = node.get_meta("global")
+	var centre := gt * Vector3(0, float(st.length) * 0.5, 0)
+	node.queue_free()
+	_explosion(vessel.pos.add(DVec3.from_v3(centre)), float(st.diameter), float(st.length))
+
+
+## Fireball + flash + smoke + flying fragments at a body-relative point.
+func _explosion(at: DVec3, d: float, l: float) -> void:
+	var b := vessel.body
+	var air := b.has_atmosphere() and b.density_at(at.length() - b.radius) > 0.0
+	var base := _air_velocity(b, at) if vessel.landed or air else vessel.vel
+	var size := maxf(d, l * 0.5)
+	var on_ground := has_solid_surface(b) and vessel.altitude_above_ground(sim_time) < 40.0
+	var lift := 0.6 if on_ground else 0.0   # sits on the ground instead of half under it
+	# Fireball: bright, fast-growing, short.
+	for i in 34:
+		var dir := _rand_dir()
+		fx.emit(b, at.add(DVec3.from_v3(dir * randf_range(0.0, size * 0.5))),
+			base.add(DVec3.from_v3(dir * randf_range(5.0, 18.0))),
+			randf_range(0.6, 1.3), size * 0.9, size * randf_range(2.2, 3.4),
+			Color(1.0, 0.38, 0.06, 0.9) if i % 3 else Color(1.0, 0.7, 0.3, 0.9), 1.5 if air else 0.3, false, 0.55, lift)
+	# Smoke: billows in air, a quick dark puff in vacuum.
+	for i in (22 if air else 10):
+		var dir2 := _rand_dir()
+		fx.emit(b, at.add(DVec3.from_v3(dir2 * randf_range(0.0, size * 0.5))),
+			base.add(DVec3.from_v3(dir2 * randf_range(2.0, 8.0) + at.normalized().to_v3() * (2.0 if air else 0.0))),
+			randf_range(3.0, 6.0) if air else randf_range(0.8, 1.5), size * 1.2, size * (4.0 if air else 2.8),
+			Color(0.18, 0.16, 0.15, 0.75), 0.8 if air else 0.0, false, 0.4, lift)
+	# Fragments: small hot sparks on ballistic paths.
+	for i in 40:
+		var dir3 := _rand_dir()
+		fx.emit(b, at, base.add(DVec3.from_v3(dir3 * randf_range(15.0, 45.0))),
+			randf_range(1.0, 2.5), 0.25, 0.15, Color(0.35, 0.2, 0.1, 1.0), 0.0, true, 1.0)
+	if on_ground:
+		_dust_burst(1.0)
+	# Flash of light.
+	var flash := OmniLight3D.new()
+	flash.light_color = Color(1.0, 0.6, 0.3)
+	flash.omni_range = size * 25.0
+	flash.light_energy = 12.0
+	flash.shadow_enabled = false
+	add_child(flash)
+	flash.global_position = at.sub(vessel.pos).to_v3()
+	var tw := create_tween()
+	tw.tween_property(flash, "light_energy", 0.0, 0.7).set_ease(Tween.EASE_OUT)
+	tw.tween_callback(flash.queue_free)
 
 
 func _on_staged(_dropped: Dictionary) -> void:
@@ -757,6 +769,12 @@ func _update_fx(delta: float) -> void:
 			fx.emit(b, at, _air_velocity(b, at).add(DVec3.from_v3(_rand_dir() * 4.0)),
 				randf_range(3.0, 5.0), r * 2.0, r * randf_range(6.0, 10.0), Color(0.3, 0.27, 0.25, 0.7), 0.25, false, q)
 	fx.set_light(lerpf(1.0, 0.12, rocket.night))
+	var near_g := has_solid_surface(b) and v.altitude_above_ground(sim_time) < 3000.0 and not map_mode
+	if near_g:
+		var gp := _ground_under()
+		fx.set_ground(gp.sub(v.pos).to_v3(), gp.normalized().to_v3(), true)
+	else:
+		fx.set_ground(Vector3.ZERO, Vector3.UP, false)
 	var thr_f := v.last_thrust / maxf(v.current_thrust_max(), 1.0) if v.last_thrust > 0.0 else 0.0
 	var nozzle := rocket.global_transform * Vector3(0, -3.0, 0)
 	# A vacuum plume is thin and faint: it barely lights the dust.

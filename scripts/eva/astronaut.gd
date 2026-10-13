@@ -205,7 +205,7 @@ func _walk_tick(dt: float) -> void:
 		var accel := 14.0 if gravity > 3.0 else 7.0
 		v_h = v_h.move_toward(target, accel * dt)
 		if jump_requested:
-			v_up = JUMP_SPEED if gravity < 3.0 else JUMP_SPEED * 1.3
+			v_up = JUMP_SPEED if gravity < 3.0 else 4.0   # Earth: ~0.8 m hop in the suit
 			_since_jump = 0.0
 		elif v_up > 0.0:
 			v_up = 0.0   # the ground plane re-tilting under the feet must not launch us

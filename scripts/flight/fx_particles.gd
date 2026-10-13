@@ -43,6 +43,14 @@ func _ready() -> void:
 	custom_aabb = AABB(Vector3(-1e5, -1e5, -1e5), Vector3(2e5, 2e5, 2e5))
 
 
+## Local ground plane (scene coordinates) for soft ground contact; off when far.
+func set_ground(p: Vector3, n: Vector3, on: bool) -> void:
+	var m := material_override as ShaderMaterial
+	m.set_shader_parameter("ground_p", p)
+	m.set_shader_parameter("ground_n", n)
+	m.set_shader_parameter("ground_on", 1.0 if on else 0.0)
+
+
 ## Engine flame lighting the smoke (scene position, 0..1, metres of reach).
 func set_flame(pos: Vector3, power: float, reach: float) -> void:
 	var m := material_override as ShaderMaterial
@@ -144,6 +152,9 @@ static func _shader() -> Shader:
 		_sh.code = """shader_type spatial;
 render_mode blend_mix, depth_draw_never, cull_disabled, shadows_disabled, unshaded;
 uniform float light = 1.0;
+uniform vec3 ground_p = vec3(0.0);   // ground plane under the ship (scene)
+uniform vec3 ground_n = vec3(0.0, 1.0, 0.0);
+uniform float ground_on = 0.0;
 uniform vec3 flame_pos = vec3(0.0);   // view... world position of the engine flame
 uniform float flame_power = 0.0;      // 0..1
 uniform float flame_reach = 40.0;
@@ -181,8 +192,12 @@ void fragment() {
 	float lp = lamp_power * exp(-length(v_world - lamp_pos) / 28.0);
 	ALBEDO = v_col.rgb * (light * shade * (1.0 - 0.35 * fl) + vec3(1.0, 0.88, 0.72) * lp * 1.4 * shade)
 		+ vec3(1.0, 0.5, 0.16) * (fl * 1.8 + v_cus.x * 1.5);
-	// Ground clouds: the lower edge thins out instead of a hard cut.
-	a *= mix(1.0, smoothstep(0.42, 0.12, p.y), v_cus.z);
+	// Soft contact with the ground (no depth texture on the mobile renderer):
+	// the puff fades out over the last metres above the local ground plane.
+	if (ground_on > 0.5) {
+		vec3 wp = (INV_VIEW_MATRIX * vec4(VERTEX, 1.0)).xyz;
+		a *= smoothstep(0.0, 3.0, dot(wp - ground_p, ground_n));
+	}
 	ALPHA = a;
 }
 """

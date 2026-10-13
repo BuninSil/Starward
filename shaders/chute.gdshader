@@ -9,7 +9,8 @@ uniform float collapse = 0.0;   // 0 inflated .. 1 lying on the ground
 uniform float radius = 7.5;
 
 void vertex() {
-	float ang = atan(VERTEX.z, VERTEX.x);
+	// atan(0, 0) is NaN on mobile GPUs: the apex vertex would vanish (a hole).
+	float ang = atan(VERTEX.z, VERTEX.x + 1e-5);
 	float r = length(VERTEX.xz) / radius;          // 0 apex .. 1 skirt
 	float between = 0.5 - 0.5 * cos(ang * gores);  // 0 at a line, 1 mid-gore
 	float t = TIME;

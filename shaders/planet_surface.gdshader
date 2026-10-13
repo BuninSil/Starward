@@ -108,7 +108,7 @@ vec4 crater_layer(vec2 uv, float cell, float fill, float seed, vec2 sun_h, float
 	float r = 0.1 + 0.25 * h.z * h.z;                  // radius, cells (power law-ish)
 	vec2 ctr = 0.5 + (h.wz - 0.5) * (1.0 - 2.8 * r);   // stays inside the cell
 	vec2 o = c - id - ctr;
-	float ang = atan(o.y, o.x);
+	float ang = atan(o.y, o.x + 1e-6);
 	float wob = 1.0 + 0.1 * sin(ang * 3.0 + h.w * 6.3) + 0.06 * sin(ang * 5.0 + h.y * 6.3);
 	float rr = r * wob;
 	float x = length(o) / rr;
