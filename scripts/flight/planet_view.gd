@@ -45,6 +45,8 @@ func setup(b: CelestialBody, with_site: bool, lat: float, lon: float, sun_dir: V
 	_surface.mesh = _globe_hi
 	_surface.material_override = _make_star_material() if b.is_star else (
 		_make_gas_material() if _is_gas_giant() else _make_surface_material())
+	if _surface.material_override is ShaderMaterial and (_surface.material_override as ShaderMaterial).shader == SURFACE_SHADER:
+		(_surface.material_override as ShaderMaterial).shader = globe_shader()
 	_surface.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_spin.add_child(_surface)
 	if b.id == "saturn":
@@ -252,8 +254,10 @@ func update_view(origin_rel: DVec3, t: float, view_scale := 1.0) -> void:
 		_atmo_mat.set_shader_parameter("sun_dir_world", SolarSystem.sun_dir(body, t))
 	_poll_patch_task()
 	if _site == null or not _patch_built:
+		_cut_globe(false)
 		return
 	_site.visible = view_scale >= 0.999
+	_cut_globe(_site.visible)
 	if not _site.visible:
 		return
 	# Ground patch: compute its world position in doubles relative to the vessel,
@@ -342,6 +346,15 @@ func _build_globe(segs: int) -> ArrayMesh:
 
 const SURFACE_SHADER := preload("res://shaders/planet_surface.gdshader")
 static var _surface_fp32: Shader
+static var _globe_shader: Shader
+
+
+## The surface shader for the globe: with the cut-out under the ground patch.
+static func globe_shader() -> Shader:
+	if _globe_shader == null:
+		_globe_shader = Shader.new()
+		_globe_shader.code = SURFACE_SHADER.code.replace("shader_type spatial;\n", "shader_type spatial;\n#define GLOBE_CUT\n")
+	return _globe_shader
 
 
 ## The ground shader with full precision everywhere (debug comparison).
@@ -727,6 +740,21 @@ func _apply_patch(res: Dictionary) -> void:
 
 
 var _patch_material: Material = null
+var _cut_on := false
+
+
+## Cut the globe out under the ground patch (slightly inside its rim).
+func _cut_globe(on: bool) -> void:
+	var gm := _surface.material_override as ShaderMaterial
+	if gm == null or gm.shader != _globe_shader:
+		return
+	if on:
+		var d := _site_normal_fixed.normalized()
+		gm.set_shader_parameter("patch_dir", Vector3(d.x, d.y, d.z))
+		gm.set_shader_parameter("patch_cos", cos(minf(CAP_RADIUS / body.radius, 0.5) * 0.85))
+	elif _cut_on:
+		gm.set_shader_parameter("patch_cos", 2.0)
+	_cut_on = on
 
 
 ## High-resolution colour block (from HdTiles) on the globe and the ground
@@ -745,6 +773,8 @@ func set_hd(tex: Texture2D, rect: Rect2, level := 0) -> void:
 			(m as ShaderMaterial).set_shader_parameter(pre + "tex", tex)
 			(m as ShaderMaterial).set_shader_parameter(pre + "rect", Vector4(rect.position.x, rect.position.y, rect.size.x, rect.size.y))
 			(m as ShaderMaterial).set_shader_parameter(pre + "lod", lod)
+			# Metres per texel (north-south): for the per-vertex reads on the patch.
+			(m as ShaderMaterial).set_shader_parameter(pre + "texel_m", PI * body.radius * rect.size.y / float(tex.get_height()))
 
 
 static var _rocks: Array[ArrayMesh] = []

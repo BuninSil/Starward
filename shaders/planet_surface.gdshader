@@ -74,12 +74,16 @@ uniform float land_roughness = 0.9;
 // rectangles of the map: hd = full resolution under the vessel, hd2 = coarser
 // level out to the horizon. hd_lod: the mip level of the block that matches
 // the global map's texel (the block only adds detail finer than that).
-uniform sampler2D hd_tex : source_color, filter_linear_mipmap_anisotropic, repeat_disable;
+uniform sampler2D hd_tex : source_color, filter_linear_mipmap, repeat_disable;
 uniform vec4 hd_rect = vec4(0.0, 0.0, 0.0, 0.0);   // u0, v0, du, dv (du = 0: none)
 uniform float hd_lod = 3.0;
-uniform sampler2D hd2_tex : source_color, filter_linear_mipmap_anisotropic, repeat_disable;
+uniform sampler2D hd2_tex : source_color, filter_linear_mipmap, repeat_disable;
 uniform vec4 hd2_rect = vec4(0.0, 0.0, 0.0, 0.0);
 uniform float hd2_lod = 1.0;
+// Metres per texel of each block (the ground patch reads the blocks per vertex,
+// at the mip level of the vertex spacing: no per-pixel cost close up).
+uniform float hd_texel_m = 120.0;
+uniform float hd2_texel_m = 500.0;
 uniform bool use_slope = false;   // patch: COLOR.r slope, COLOR.g ejecta, COLOR.b crater rims
 uniform vec3 sun_local = vec3(0.0, 1.0, 0.0);   // patch: toward the sun, patch axes
 // Regolith reflectance (0 = Lambert): Lommel–Seeliger + opposition surge, the
@@ -94,6 +98,15 @@ varying float v_mv;
 varying float v_tintw;
 varying float v_m1;
 varying float v_nw;
+varying vec3 v_hd;   // patch: HD detail ratio, per vertex
+#ifdef GLOBE_CUT
+// Globe only: the part under the ground patch is cut out. It is hidden by the
+// patch anyway, but GPUs shaded it in full under the patch (a third of the
+// frame looking down at the ground).
+uniform vec3 patch_dir = vec3(0.0, 1.0, 0.0);   // body-fixed, unit
+uniform float patch_cos = 2.0;                  // > 1: no cut
+varying vec3 v_obj;
+#endif
 uniform int near_mode = 2;   // 0 stochastic offsets (old), 1 one plain read, 2 two scales by region
 const mat2 ROT_NEAR = mat2(vec2(0.47, -0.88), vec2(0.88, 0.47));
 
@@ -135,11 +148,30 @@ float vnoise_alu(vec2 p) {
 		mix(hash12(i + vec2(0.0, 1.0)), hash12(i + vec2(1.0, 1.0)), f.x), f.y);
 }
 
+// HD block ratio at an explicit mip level (vertex stage of the ground patch).
+vec4 hd_ratio_lod(sampler2D t, vec4 r, float lod_match, vec2 uv, float lod) {
+	float du = uv.x - r.x;
+	du -= floor(du);
+	vec2 hu = vec2(du / r.z, (uv.y - r.y) / r.w);
+	vec2 e = min(hu, 1.0 - hu);
+	float w = smoothstep(0.0, 0.08, min(e.x, e.y)) * clamp(lod_match - lod, 0.0, 1.0);
+	if (w <= 0.0) {
+		return vec4(1.0, 1.0, 1.0, 0.0);
+	}
+	vec3 hd = textureLod(t, hu, max(lod, 0.0)).rgb;
+	vec3 m = textureLod(t, hu, lod_match).rgb;
+	return vec4(clamp(hd / max(m, vec3(0.02)), vec3(0.5), vec3(1.6)), w);
+}
+
 void vertex() {
 	v_mv = 0.0;
 	v_tintw = 0.0;
 	v_m1 = 0.5;
 	v_nw = 0.0;
+	v_hd = vec3(1.0);
+#ifdef GLOBE_CUT
+	v_obj = VERTEX;
+#endif
 	if (use_detail) {
 		// Vertex spacing grows with the distance from the patch centre: read the
 		// macro textures at a matching mip level (no aliasing far out).
@@ -150,6 +182,14 @@ void vertex() {
 		v_mv = (m1 - 0.5) * 0.65 + (m2 - 0.5) * 0.5;
 		v_tintw = clamp(m2 * 1.6 - 0.5, 0.0, 1.0);
 		v_nw = vnoise_alu(UV2 / 7.0 + macro_seed * 3.0);
+		// Downloaded colour blocks: the near one wins where it covers.
+		vec4 h1 = hd_rect.z > 0.0 ? hd_ratio_lod(hd_tex, hd_rect, hd_lod, UV, log2(spacing / hd_texel_m)) : vec4(1.0, 1.0, 1.0, 0.0);
+		vec3 r = mix(vec3(1.0), h1.rgb, h1.a);
+		if (hd2_rect.z > 0.0 && h1.a < 1.0) {
+			vec4 h2 = hd_ratio_lod(hd2_tex, hd2_rect, hd2_lod, UV, log2(spacing / hd2_texel_m));
+			r = mix(mix(vec3(1.0), h2.rgb, h2.a), r, h1.a);
+		}
+		v_hd = r;
 	}
 }
 
@@ -227,12 +267,21 @@ LP vec3 hd_apply(LP vec3 col, sampler2D t, vec4 r, float lod_match, vec2 uv) {
 }
 
 void fragment() {
-	LP vec3 col = texture(albedo_tex, UV).rgb;
-	if (hd2_rect.z > 0.0) {
-		col = hd_apply(col, hd2_tex, hd2_rect, hd2_lod, UV);
+#ifdef GLOBE_CUT
+	if (dot(normalize(v_obj), patch_dir) > patch_cos) {
+		discard;
 	}
-	if (hd_rect.z > 0.0) {
-		col = hd_apply(col, hd_tex, hd_rect, hd_lod, UV);
+#endif
+	LP vec3 col = texture(albedo_tex, UV).rgb;
+	if (use_detail) {
+		col *= v_hd;
+	} else {
+		if (hd2_rect.z > 0.0) {
+			col = hd_apply(col, hd2_tex, hd2_rect, hd2_lod, UV);
+		}
+		if (hd_rect.z > 0.0) {
+			col = hd_apply(col, hd_tex, hd_rect, hd_lod, UV);
+		}
 	}
 	if (albedo_target > 0.0) {
 		// Relative brightness, compressed (real albedo contrasts are ~2:1).
