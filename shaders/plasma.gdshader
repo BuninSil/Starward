@@ -11,12 +11,40 @@ uniform float power = 0.0;    // 0..1
 uniform float body_d = 0.3;   // where the craft ends, as a fraction downstream
 uniform sampler2D noise_tex : hint_default_white, filter_linear_mipmap, repeat_enable;
 
+// Shell geometry in metres (rocket_view.gd): the mesh is scaled by rad_m
+// across and len_m along the flow; the radius is rebuilt here so the shock
+// hugs the leading face: a paraboloid from the apex (12 cm ahead of the heat
+// shield) to just outside the shield's rim at face_m behind the apex, then a
+// slowly widening sheath, and behind the craft the converging wake.
+uniform float len_m = 10.0;
+uniform float rad_m = 1.0;
+uniform float rim_m = 0.9;
+uniform float face_m = 0.3;
+
 varying float d;
+varying float d_m;
 
 void vertex() {
 	d = 0.5 - VERTEX.y;   // 0 at the apex .. 1 at the tail
+	d_m = d * len_m;
+	float r0 = rim_m * 1.1;
+	float r;
+	float dr;   // dr / dd, metres per metre
+	if (d_m < face_m) {
+		r = r0 * sqrt(d_m / face_m);
+		dr = r0 * 0.5 / sqrt(max(d_m, 1e-4) * face_m);
+	} else {
+		float k = (d_m - face_m) / max(rim_m, 0.1);
+		r = r0 * (1.0 + 0.18 * sqrt(k));
+		dr = r0 * 0.09 / sqrt(max(k, 1e-3)) / max(rim_m, 0.1);
+	}
 	// Behind the craft the wake converges instead of widening further.
-	VERTEX.xz *= mix(1.0, 0.45, smoothstep(body_d, 1.0, d));
+	float conv = mix(1.0, 0.45, smoothstep(body_d, 1.0, d));
+	r *= conv;
+	vec2 dir = length(VERTEX.xz) > 1e-5 ? normalize(VERTEX.xz) : vec2(1.0, 0.0);
+	VERTEX.xz = dir * (r / rad_m);
+	// Outward normal of r(d) in the mesh's (scaled) space.
+	NORMAL = normalize(vec3(dir.x, dr * len_m / rad_m, dir.y));
 }
 
 void fragment() {
@@ -31,11 +59,11 @@ void fragment() {
 
 	// Shock layer in front of the shield: thin and very bright.
 	float soft = smoothstep(0.0, 0.35, ndv);   // no hard line at the shell's outline
-	float cap = exp(-d / 0.035) * (0.35 + 0.6 * edge) * soft;
+	float cap = exp(-d_m / max(face_m * 0.7, 0.05)) * (0.5 + 0.7 * edge) * soft;
 	// Along the hull: a faint sheath, a little brighter at the silhouette.
-	float sheath = 0.1 * (1.0 - smoothstep(0.0, body_d * 1.2, d)) * edge * soft;
+	float sheath = 0.05 * (1.0 - smoothstep(0.0, body_d * 1.2, d)) * edge * soft;
 	// Wake behind the craft: streaky, fading downstream.
-	float wake_on = smoothstep(body_d * 0.7, body_d * 1.15, d);
+	float wake_on = smoothstep(body_d * 0.95, body_d * 1.35, d);   // the craft itself sits in the dark near wake
 	float wake = wake_on * exp(-(d - body_d) * 2.6) * (0.2 + 0.9 * streak) * pow(ndv, 1.6);
 	float tail = 1.0 - smoothstep(0.75, 1.0, d);
 

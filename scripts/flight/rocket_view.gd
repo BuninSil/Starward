@@ -1053,15 +1053,15 @@ func _build_plasma() -> void:
 ## where the shader fades it out). No open rim in front: that showed as a hard
 ## glowing edge.
 static func _bow_shock_mesh() -> ArrayMesh:
-	const RINGS := 20
-	const SEGS := 24
+	const RINGS := 40
+	const SEGS := 28
 	var verts := PackedVector3Array()
 	var norms := PackedVector3Array()
 	var uvs := PackedVector2Array()
 	var idx := PackedInt32Array()
 	for i in RINGS + 1:
 		var t := float(i) / RINGS
-		var d := t * t                        # denser near the apex
+		var d := t * t * t                    # dense near the apex (the shader reshapes it)
 		var r := 1.9 * pow(d, 0.2)
 		# Slope dr/dy for the normal (r = 1.9 d^0.2, y = 0.5 - d).
 		var dr := 1.9 * 0.2 * pow(maxf(d, 1e-4), -0.8)
@@ -1154,18 +1154,31 @@ func _update_reentry() -> void:
 		"nose": lead_local = Vector3(0, total, 0)
 		"side": lead_local = Vector3(0, vessel.com_height(), 0)
 		_: lead_local = Vector3(0, -0.2, 0)
-	var lead := global_transform * lead_local
-	var R := 0.0
+	var rim := 0.0   # radius of the leading face
 	for s in vessel.stages:
-		R = maxf(R, float(s.diameter) * 0.5)
-	R *= 1.12 if vessel.heat_lead != "side" else 1.6
+		rim = maxf(rim, float(s.diameter) * 0.5)
+	# The bow shock stands off a blunt body by ~0.78 * nose radius * density
+	# ratio across the shock (~0.06): ~12 cm for our capsule. The glowing shock
+	# layer fills that gap, so the plasma starts right at the heat shield.
+	var standoff := 0.12
+	var face_depth := 0.05   # apex of the leading face to the plane of its rim
+	if vessel.heat_lead == "tail" and vessel.stages.size() == 1:
+		lead_local = Vector3(0, -0.1, 0)   # centre of the heat shield dome
+		face_depth = 0.18
+	var lead := global_transform * lead_local
+	var R := rim * (1.12 if vessel.heat_lead != "side" else 1.6)
 	var length := R * lerpf(4.0, 11.0, pw) + total * (0.8 if vessel.heat_lead == "side" else 1.0)
 	var x := vdir.cross(Vector3.UP if absf(vdir.y) < 0.95 else Vector3.RIGHT).normalized()
 	var z := x.cross(vdir)
-	_plasma.global_transform = Transform3D(Basis(x * R, vdir * length, z * R), lead - vdir * (length * 0.5 - R * 0.35))
+	_plasma.global_transform = Transform3D(Basis(x * R, vdir * length, z * R), lead + vdir * (standoff - length * 0.5))
 	_plasma_mat.set_shader_parameter("power", pw)
 	var body_len := total if vessel.heat_lead != "side" else R
-	_plasma_mat.set_shader_parameter("body_d", clampf((R * 0.35 + body_len) / length, 0.08, 0.85))
+	_plasma_mat.set_shader_parameter("body_d", clampf((standoff + body_len) / length, 0.05, 0.85))
+	# Shell shape in metres: hugs the leading face (shader vertex()).
+	_plasma_mat.set_shader_parameter("len_m", length)
+	_plasma_mat.set_shader_parameter("rad_m", R)
+	_plasma_mat.set_shader_parameter("rim_m", rim if vessel.heat_lead != "side" else R)
+	_plasma_mat.set_shader_parameter("face_m", standoff + face_depth)
 
 
 ## Drops the visual of the bottom stage; returns it re-parented for debris.
