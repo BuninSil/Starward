@@ -1,0 +1,59 @@
+name: Fetch launch audio (NASA, public domain)
+
+# Manual: downloads NASA pad-microphone recordings from Wikimedia Commons
+# (public domain, NASA/KSC), cuts the liftoff out of each
+# (tools/cut_launch_audio.py) and publishes the cuts as the prerelease
+# `sounds-src-v1`. The game's sounds are made from these cuts.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ccr-5579ac45-n3nljq]
+    paths: [.github/workflows/fetch-launch-audio.yml, tools/cut_launch_audio.py]
+
+permissions:
+  contents: write
+
+jobs:
+  audio:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      UA: "StarwardGameDev/1.0 (https://github.com/BuninSil/Starward)"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg && pip install --quiet numpy
+
+      - name: Download and cut
+        run: |
+          mkdir -p "$RUNNER_TEMP/src" out
+          fetch() {
+            local key="$1"; local name="$2"
+            local url="https://commons.wikimedia.org/wiki/Special:FilePath/$(python3 -c 'import sys,urllib.parse;print(urllib.parse.quote(sys.argv[1]))' "$name")"
+            echo "== $key: $name"
+            for i in 1 2 3 4; do
+              curl -fsSL -A "$UA" -o "$RUNNER_TEMP/src/$key" "$url" && break
+              sleep $((i * 20))
+            done
+            ls -la "$RUNNER_TEMP/src/$key" || return 0
+            python tools/cut_launch_audio.py "$RUNNER_TEMP/src/$key" "out/$key" || true
+            rm -f "$RUNNER_TEMP/src/$key"
+          }
+          fetch crew13_gantry "NASA's SpaceX Crew-13 Live Launch Coverage (KSC-20261001-AU-LMM01-0001-SpaceX Crew 13 Live Launch Coverage Gantry-M26153).wav"
+          fetch artemis2_gantry "Artemis II Live Launch Coverage - Gantry (KSC-20260401-AU-LMM01-0001-Artemis II Live Launch Coverage Gantry).wav"
+          fetch artemis2_cs4 "Artemis II Live Launch Coverage - Pad Camera Site 4 (KSC-20260401-AU-LMM01-0001-Artemis II Live Launch Coverage Pad Camera Site 4).wav"
+          fetch artemis2_cs1 "Artemis II Live Launch Coverage - Pad Camera Site 1 (KSC-20260401-AU-LMM01-0001-Artemis II Live Launch Coverage Pad CS1).wav"
+          fetch im2_padmic "SpaceX CLPS IM-2 Live Launch Coverage - Pad Mic 1 (1), Pad Mic 2 (2) (KSC-20250226-AU-ILW01-0002-SpaceX CLPS IM-2 Live Launch Coverage PadMic-1 PadMic-2).wav"
+          ls -la out
+
+      - name: Publish prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: sounds-src-v1
+          name: "Исходники звуков пуска (NASA, public domain)"
+          body: "Вырезки старта из записей микрофонов NASA/KSC (Wikimedia Commons, public domain). Не для установки."
+          prerelease: true
+          make_latest: false
+          target_commitish: ${{ github.sha }}
+          files: out/*.ogg
