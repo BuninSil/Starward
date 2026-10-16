@@ -17,6 +17,11 @@
 | `assets/planets/venus_*` | USGS Astrogeology / NASA, Magellan C3-MDIR global mosaic 2025 m (радар, тонирован) и Magellan topography 4641 m | public domain |
 | `assets/planets/phobos_*` | USGS Astrogeology, Phobos Viking mosaic 40 ppd (DLR control, P. Stooke) и Mars Express HRSC DEM 2 ppd (ESA/DLR/FU Berlin, распространяется USGS как PDS) | public domain (PDS) |
 
+| `assets/sounds/engine_air.ogg`, `engine_vac.ogg`, `ignition.ogg` | NASA/KSC, Artemis II Live Launch Coverage — микрофоны Pad Camera Site 1 и Gantry (Wikimedia Commons, KSC-20260401-AU-LMM01-0001) | NASA, public domain |
+| `assets/sounds/buffet.ogg` | NASA/KSC, SpaceX CLPS IM-2 Live Launch Coverage — Pad Mic (Wikimedia Commons, KSC-20250226-AU-ILW01-0002), низкочастотная часть | NASA, public domain |
+
+Звуки старта вырезаются workflow `.github/workflows/fetch-launch-audio.yml` (`tools/cut_launch_audio.py`), петли и смесь — из этих вырезок.
+
 Карты скачиваются и уменьшаются workflow `.github/workflows/fetch-planet-maps.yml` (`tools/fetch_planet_maps.py`).
 
 Движок: [Godot Engine](https://godotengine.org) — MIT.

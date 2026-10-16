@@ -1,8 +1,12 @@
 extends Node
-## Flight sounds, all synthesised in code at start-up (worker thread, no audio
-## files): engine roar in air / structure-borne rumble in vacuum (both follow
-## throttle), aerodynamic wind from dynamic pressure, RCS puffs, staging bang,
-## crash, hatch hiss and clunk, footsteps, suit breathing and jetpack puffs.
+## Flight sounds. The engine is real: NASA pad-microphone recordings of the
+## Artemis II liftoff (public domain, assets/sounds/, made by
+## .github/workflows/fetch-launch-audio.yml + tools/cut_launch_audio.py): roar in
+## air, its deep part felt through the structure in vacuum, ignition from the
+## pad, and the buffeting roar of the air at high dynamic pressure. The rest is
+## synthesised in code at start-up (worker thread): wind, RCS puffs, staging
+## bang, crash, hatch hiss and clunk, footsteps, suit breathing, jetpack puffs.
+## Without the files the synthesised engine is used.
 ## flight.gd calls update() every frame and event() for one-shots.
 
 const RATE := 22050
@@ -16,6 +20,21 @@ var _step_timer := 0.0
 var _jet_timer := 0.0
 var _pending: Array[String] = []
 var _rng := RandomNumberGenerator.new()
+var _was_off := 99.0      ## seconds the engine has been off
+var _ign_time := 99.0     ## seconds since the ignition sound started
+const SAMPLES := {"roar": "engine_air", "rumble": "engine_vac", "buffet": "buffet", "ignition": "ignition"}
+
+
+## Recorded sound from assets/sounds/ (null when missing).
+static func _sample(n: String, loop: bool) -> AudioStream:
+	var path := "res://assets/sounds/%s.ogg" % n
+	if not ResourceLoader.exists(path):
+		return null
+	var st := load(path) as AudioStreamOggVorbis
+	if st != null:
+		st = st.duplicate()
+		st.loop = loop
+	return st
 
 
 func _ready() -> void:
@@ -32,7 +51,13 @@ func _process(_delta: float) -> void:
 	if _task >= 0 and WorkerThreadPool.is_task_completed(_task):
 		WorkerThreadPool.wait_for_task_completion(_task)
 		_task = -1
-		for n in ["roar", "rumble", "wind", "breath"]:
+		for k in SAMPLES:
+			var rec := _sample(SAMPLES[k], k != "ignition")
+			if rec != null:
+				_sounds[k] = rec
+		for n in ["roar", "rumble", "wind", "breath", "buffet"]:
+			if not _sounds.has(n):
+				continue
 			var p := AudioStreamPlayer.new()
 			p.stream = _sounds[n]
 			p.volume_db = -80.0
@@ -69,11 +94,11 @@ func event(name: String, volume_db := 0.0, pitch := 1.0) -> void:
 		_one(key, volume_db, pitch)
 
 
-func _one(key: String, volume_db: float, pitch: float) -> void:
+func _one(key: String, volume_db: float, pitch: float, vary := true) -> void:
 	var p := AudioStreamPlayer.new()
 	p.stream = _sounds[key]
 	p.volume_db = volume_db
-	p.pitch_scale = pitch * _rng.randf_range(0.94, 1.06)
+	p.pitch_scale = pitch * (_rng.randf_range(0.94, 1.06) if vary else 1.0)
 	add_child(p)
 	p.play()
 	p.finished.connect(p.queue_free)
@@ -90,10 +115,26 @@ func update(delta: float, thrust: float, pressure: float, q: float, rcs: bool,
 	var on := thr > 0.001
 	var air := clampf(pressure * 3.0, 0.0, 1.0)
 	var muffle := 0.35 if eva else 1.0
-	_set_loop(_loops.roar, (0.2 + 0.8 * thr) * air * muffle if on else 0.0, 0.85 + 0.3 * thr)
-	_set_loop(_loops.rumble, (0.25 + 0.6 * thr) * (1.0 - air * 0.6) * (0.3 if eva else 1.0) if on else 0.0, 0.8 + 0.25 * thr)
+	var recorded := _sounds.roar is AudioStreamOggVorbis
+	# Ignition from the pad (engine off for a while, thick air): the recording
+	# of the real start-up plays and the steady roar fades in under its end.
+	_ign_time += delta
+	if on and _was_off > 2.0 and air > 0.6 and not eva and _sounds.has("ignition"):
+		_one("ignition", 0.0, 1.0, false)
+		_ign_time = 0.0
+	_was_off = 0.0 if on else _was_off + delta
+	var ign_fade := smoothstep(4.0, 9.0, _ign_time)
+	# Recordings keep their pitch (shifting them sounds fake); the synthesised
+	# roar follows the throttle.
+	var roar_pitch := (0.96 + 0.06 * thr) if recorded else (0.85 + 0.3 * thr)
+	_set_loop(_loops.roar, (0.25 + 0.75 * thr) * air * muffle * ign_fade if on else 0.0, roar_pitch)
+	_set_loop(_loops.rumble, (0.3 + 0.6 * thr) * (1.0 - air * 0.6) * (0.3 if eva else 1.0) if on else 0.0,
+		1.0 if recorded else 0.8 + 0.25 * thr)
 	var w := clampf(q / 30000.0, 0.0, 1.0)
 	_set_loop(_loops.wind, w * 0.9 * muffle, 0.7 + 0.6 * w)
+	if _loops.has("buffet"):
+		# Heavy roar of the air on the hull: from ~10 kPa (max-q, re-entry).
+		_set_loop(_loops.buffet, smoothstep(0.25, 1.0, w) * 0.9 * muffle, 1.0)
 	_set_loop(_loops.breath, 0.55 if eva else 0.0, 1.0)
 	# RCS chatter while turning.
 	_rcs_timer -= delta

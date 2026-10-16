@@ -645,12 +645,13 @@ func _build_flames() -> void:
 	if _flame_mat == null:
 		_flame_mat = ShaderMaterial.new()
 		_flame_mat.shader = EXHAUST_SHADER
+		_flame_mat.set_shader_parameter("noise_tex", _noise_tex())
 	var cone := CylinderMesh.new()
 	cone.top_radius = 0.35      # narrow end on the nozzle, UV.y = 0 there
 	cone.bottom_radius = 1.0
 	cone.height = 1.0
 	cone.radial_segments = 20
-	cone.rings = 1
+	cone.rings = 12             # the shader bends the profile
 	cone.cap_top = false
 	cone.cap_bottom = false
 	if _stage_nodes.is_empty():
@@ -1158,11 +1159,13 @@ func _update_reentry() -> void:
 	for s in vessel.stages:
 		R = maxf(R, float(s.diameter) * 0.5)
 	R *= 1.12 if vessel.heat_lead != "side" else 1.6
-	var length := R * lerpf(2.5, 7.0, pw) + (total * 0.8 if vessel.heat_lead == "side" else 0.0)
+	var length := R * lerpf(4.0, 11.0, pw) + total * (0.8 if vessel.heat_lead == "side" else 1.0)
 	var x := vdir.cross(Vector3.UP if absf(vdir.y) < 0.95 else Vector3.RIGHT).normalized()
 	var z := x.cross(vdir)
 	_plasma.global_transform = Transform3D(Basis(x * R, vdir * length, z * R), lead - vdir * (length * 0.5 - R * 0.35))
 	_plasma_mat.set_shader_parameter("power", pw)
+	var body_len := total if vessel.heat_lead != "side" else R
+	_plasma_mat.set_shader_parameter("body_d", clampf((R * 0.35 + body_len) / length, 0.08, 0.85))
 
 
 ## Drops the visual of the bottom stage; returns it re-parented for debris.
@@ -1226,8 +1229,8 @@ func update_visual(delta: float) -> void:
 		var re: float = f.get_meta("re")
 		var anchor: Vector3 = f.get_meta("anchor")
 		# Long thin plume in air, short wide bloom in vacuum.
-		var len := re * lerpf(9.0, 22.0, thr) * lerpf(0.8, 1.0, p)
-		var width := re * lerpf(3.2, 1.05, p)
+		var len := re * lerpf(9.0, 20.0, thr) * lerpf(0.85, 1.0, p)
+		var width := re * lerpf(3.2, 2.1, p)
 		var flick := 1.0 + randf_range(-0.04, 0.04)
 		f.scale = Vector3(width, len * flick, width)
 		f.position = anchor + Vector3(0, -len * flick * 0.5, 0)
