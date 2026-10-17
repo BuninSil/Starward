@@ -1019,6 +1019,7 @@ func _process_frame(delta: float) -> void:
 			hd_tiles.call("want", vessel.body, dir_n, 0)
 		hd_tiles.call("want", vessel.body, dir_n, 1)
 	_update_bases(vabs, delta)
+	_update_build()
 	var t_pl := FrameSpikes.now()
 	for b in bodies:
 		var rel := b.absolute_position(sim_time).sub(vabs)
@@ -1131,6 +1132,122 @@ func _update_bases(vabs: DVec3, delta: float) -> void:
 				base_views[i].queue_free()
 			base_views.erase(i)
 	FrameSpikes.add("базы", t0)
+
+
+## Scene transform of a grid cell of a base: origin on the ground at the cell
+## centre, axes = the base grid (x, up, z).
+func base_cell_xf(b: Dictionary, gx: int, gz: int) -> Transform3D:
+	var bd := vessel.body
+	var f := Bases.frame(b)
+	var dir := Bases.cell_dir(b, gx, gz, bd.radius)
+	var p := bd.absolute_position(sim_time).add(bd.fixed_to_inertial(dir.mul(bd.radius + bd.surface_height(dir)), sim_time))
+	return Transform3D(Basis(bd.fixed_to_inertial(f[1], sim_time).to_v3(), bd.fixed_to_inertial(f[0], sim_time).to_v3(),
+		bd.fixed_to_inertial(f[2], sim_time).to_v3()), p.sub(render_origin()).to_v3())
+
+
+# --- Build mode (astronaut on the ground) -----------------------------------------------
+
+const BUILD_REACH := 7.0      ## metres in front of the astronaut
+const SHIP_REACH := 60.0      ## materials in the ship count while it is this close
+var build_type := ""          ## module being placed, "" = not building
+var build_rot := 0
+var _ghost: Node3D
+var _ghost_mat: StandardMaterial3D
+var _build_spot := {}         ## {base: int (-1 = new), gx, gz, ok, why, lat, lon}
+
+
+## Inventories that pay for building: the suit, and the ship when it is near.
+func build_inventories() -> Array:
+	var invs := [Game.astro_inv]
+	if eva_mode and astronaut != null and entry_distance() < SHIP_REACH:
+		invs.append(Game.ship_inv)
+	return invs
+
+
+func set_build_type(type: String) -> void:
+	build_type = type
+	build_rot = 0
+	if _ghost != null:
+		_ghost.queue_free()
+		_ghost = null
+	if type == "":
+		return
+	_ghost = BaseView.build_module(type, true)
+	_ghost_mat = (_ghost.find_children("*", "MeshInstance3D", true, false)[0] as MeshInstance3D).material_override
+	add_child(_ghost)
+
+
+func rotate_build() -> void:
+	build_rot = (build_rot + 1) % 4
+
+
+## Where the module would go: snapped to the grid of a base nearby, or the
+## first module of a new base right in front of the astronaut.
+func _update_build() -> void:
+	if build_type == "" or _ghost == null:
+		return
+	if not (eva_mode and is_surface_eva() and astronaut != null):
+		set_build_type("")
+		return
+	var up: Vector3 = astronaut.up_dir
+	var fwd := -camera.global_transform.basis.z
+	fwd = (fwd - up * fwd.dot(up)).normalized()
+	var p := astronaut.global_position + fwd * BUILD_REACH
+	var bd := vessel.body
+	var dir := bd.inertial_to_fixed(vessel.pos.add(DVec3.from_v3(p)), sim_time).normalized()
+	var spot := {"base": -1, "gx": 0, "gz": 0, "ok": true, "why": ""}
+	var best := Bases.NEAR
+	for i in Game.bases.size():
+		var b: Dictionary = Game.bases[i]
+		if str(b.body) != bd.id:
+			continue
+		var d := Bases.distance_to(b, dir, bd.radius)
+		if d < best:
+			best = d
+			var c := Bases.cell_of(b, dir, bd.radius)
+			spot = {"base": i, "gx": c.x, "gz": c.y, "ok": true, "why": ""}
+	var xf: Transform3D
+	if spot.base >= 0:
+		var b: Dictionary = Game.bases[spot.base]
+		if Bases.blocked(b, build_type, spot.gx, spot.gz):
+			spot.ok = false
+			spot.why = "место занято" if build_type != "pad" else "площадке нужно свободное место вокруг"
+		xf = base_cell_xf(b, spot.gx, spot.gz)
+	else:
+		var ll := CelestialBody.lat_lon(dir)
+		spot.lat = ll.x
+		spot.lon = ll.y
+		xf = base_cell_xf(Bases.make(bd.id, ll.x, ll.y, 0.0, sim_time), 0, 0)
+	if spot.ok and not Bases.affordable(build_type, build_inventories()):
+		spot.ok = false
+		spot.why = "не хватает: " + Bases.cost_text(build_type)
+	_build_spot = spot
+	_ghost.global_transform = xf * Transform3D(Basis(Vector3.UP, -PI * 0.5 * build_rot), Vector3.ZERO)
+	_ghost_mat.albedo_color = Color(0.4, 0.9, 1.0, 0.35) if spot.ok else Color(1.0, 0.3, 0.25, 0.35)
+
+
+## Places the module shown by the ghost. Returns "" or why not.
+func place_build() -> String:
+	if build_type == "" or _build_spot.is_empty():
+		return "Выбери модуль"
+	if not _build_spot.ok:
+		return "Нельзя: " + str(_build_spot.why)
+	var bd := vessel.body
+	var i: int = _build_spot.base
+	if i < 0:
+		Game.bases.append(Bases.make(bd.id, _build_spot.lat, _build_spot.lon, 0.0, sim_time))
+		i = Game.bases.size() - 1
+	var b: Dictionary = Game.bases[i]
+	Bases.simulate(b, bd, sim_time)
+	Bases.pay(build_type, build_inventories())
+	Bases.add_module(b, build_type, _build_spot.gx, _build_spot.gz, build_rot)
+	refresh_base(i)
+	sfx.event("hatch_close", -4.0, 0.8)
+	var name := str(Bases.MODULES[build_type].name)
+	Log.info("Base: built %s at %s (%d, %d)" % [build_type, Bases.display_name(b, i), _build_spot.gx, _build_spot.gz])
+	if not Bases.affordable(build_type, build_inventories()):
+		set_build_type("")
+	return "Построено: %s (%s)" % [name, Bases.display_name(b, i)]
 
 
 ## Landing pads of the bases on the current body: [{name, lat, lon}].

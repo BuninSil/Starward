@@ -225,6 +225,7 @@ func _build_surface() -> void:
 	var jump := _btn("Прыжок", func() -> void: flight.astronaut.jump_requested = true, 220)
 	jump.custom_minimum_size = Vector2(220, 80)
 	col.add_child(jump)
+	col.add_child(_btn("Стройка", _toggle_build, 220))
 	_enter_btn = _btn("В корабль", func() -> void: flight.end_eva(), 220)
 	col.add_child(_enter_btn)
 	var hint := Label.new()
@@ -232,6 +233,90 @@ func _build_surface() -> void:
 	hint.add_theme_font_size_override("font_size", 16)
 	hint.add_theme_color_override("font_color", Color(0.7, 0.78, 0.9))
 	col.add_child(hint)
+
+
+# --- Build mode -----------------------------------------------------------------------
+
+var _build_panel: PanelContainer
+var _build_list: VBoxContainer
+var _build_note: Label
+var _build_btns := {}
+
+
+func _toggle_build() -> void:
+	if _build_panel == null:
+		_make_build_panel()
+	_build_panel.visible = not _build_panel.visible
+	if not _build_panel.visible:
+		flight.set_build_type("")
+	_refresh_build()
+
+
+func _make_build_panel() -> void:
+	_build_panel = _panel()
+	_build_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 12)
+	_build_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_root.add_child(_build_panel)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 6)
+	_build_panel.add_child(box)
+	var head := Label.new()
+	head.text = "Стройка: модуль встанет в 7 м перед тобой, рядом с базой — по её сетке"
+	head.add_theme_font_size_override("font_size", 17)
+	head.add_theme_color_override("font_color", Color(0.75, 0.85, 1.0))
+	box.add_child(head)
+	_build_list = VBoxContainer.new()
+	box.add_child(_build_list)
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 6)
+	grid.add_theme_constant_override("v_separation", 6)
+	_build_list.add_child(grid)
+	for type in Bases.ORDER:
+		var b := _btn("", func() -> void:
+			flight.set_build_type(type)
+			_refresh_build(), 380, false)
+		b.add_theme_font_size_override("font_size", 16)
+		b.custom_minimum_size = Vector2(380, 56)
+		grid.add_child(b)
+		_build_btns[type] = b
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	box.add_child(row)
+	row.add_child(_btn("Повернуть", func() -> void: flight.rotate_build(), 170))
+	row.add_child(_btn("Поставить", func() -> void:
+		var r: String = flight.place_build()
+		flight.message.emit(r)
+		_refresh_build(), 190))
+	row.add_child(_btn("Закрыть", _toggle_build, 150))
+	_build_note = Label.new()
+	_build_note.add_theme_font_size_override("font_size", 17)
+	box.add_child(_build_note)
+
+
+func _refresh_build() -> void:
+	if _build_panel == null or not _build_panel.visible:
+		return
+	var invs: Array = flight.build_inventories()
+	for type in _build_btns:
+		var ok := Bases.affordable(type, invs)
+		var b: Button = _build_btns[type]
+		b.text = "%s%s\n%s" % ["▶ " if flight.build_type == type else "", Bases.MODULES[type].name, Bases.cost_text(type)]
+		b.modulate = Color(1, 1, 1) if ok else Color(0.65, 0.65, 0.7)
+	var have := PackedStringArray()
+	for id in ["metal", "parts"]:
+		var n := 0
+		for inv in invs:
+			n += (inv as Inventory).count(id)
+		have.append("%s %d" % [Items.name_of(id), n])
+	var src := "скафандр + корабль" if invs.size() > 1 else "только скафандр (корабль дальше 60 м)"
+	var spot: Dictionary = flight._build_spot
+	var why := ""
+	if flight.build_type != "" and not spot.is_empty() and not spot.ok:
+		why = "\n⚠ " + str(spot.why)
+	elif flight.build_type != "":
+		why = "\n" + str(Bases.MODULES[flight.build_type].desc)
+	_build_note.text = "Есть: %s (%s)%s" % [", ".join(have), src, why]
 
 
 func _sync_toggles() -> void:
@@ -289,6 +374,8 @@ func _process(delta: float) -> void:
 		flight.cam_pitch = clampf(flight.cam_pitch + _swipe_rel.y * 0.006, -0.2, 1.2)
 		_swipe_rel = Vector2.ZERO
 		_update_texts_surface(a, delta)
+		if _build_panel != null and _build_panel.visible and _timer >= 0.09:
+			_refresh_build()
 		return
 	a.move_input = Vector3(j.x, _up, -j.y)
 	# Swipe speed -> rotation command (pitch about X, yaw about Y), decays when idle.
