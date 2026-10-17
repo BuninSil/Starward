@@ -208,8 +208,24 @@ func _compose(job: Dictionary, paths: PackedStringArray) -> void:
 			img = Image.create(t * 2, t * 2, false, Image.FORMAT_RGB8)
 		img.blit_rect(tile, Rect2i(0, 0, t, t), Vector2i((i % 2) * t, (i / 2) * t))
 	if img != null:
+		# Phones' GPUs take no 3-byte texels: converted here, not while uploading
+		# on the main thread (that was a visible stall).
+		img.convert(Image.FORMAT_RGBA8)
 		img.generate_mipmaps()
-	_finish.call_deferred(job, img, paths)
+	_done.call_deferred(job, img, paths)
+
+
+var _ready_blocks: Array = []   ## composed blocks waiting for upload, one per frame
+
+
+func _done(job: Dictionary, img: Image, paths: PackedStringArray) -> void:
+	_ready_blocks.append([job, img, paths])
+
+
+func _process(_delta: float) -> void:
+	if not _ready_blocks.is_empty():
+		var b: Array = _ready_blocks.pop_front()
+		_finish(b[0], b[1], b[2])
 
 
 func _finish(job: Dictionary, img: Image, paths: PackedStringArray) -> void:
@@ -226,7 +242,9 @@ func _finish(job: Dictionary, img: Image, paths: PackedStringArray) -> void:
 		Log.info("HD tiles: %s level %d: bad tile" % [job.id, l])
 		return
 	_cur[l] = {"id": job.id, "x0": job.x0, "y0": job.y0}
+	var t0 := FrameSpikes.now()
 	var tex := ImageTexture.create_from_image(img)
+	FrameSpikes.add("HD-снимки: загрузка в видеокарту", t0)
 	var rect := Rect2(float(job.x0) / float(job.cols), float(job.y0) / float(job.rows),
 		2.0 / float(job.cols), 2.0 / float(job.rows))
 	Log.info("HD tiles: %s level %d block %d,%d loaded" % [job.id, l, job.x0, job.y0])

@@ -984,12 +984,13 @@ func _update_texts() -> void:
 	]
 	if _prof_panel != null and _prof_panel.visible:
 		var vp := get_viewport().get_viewport_rid()
-		_prof_stats.text = "FPS %d · экран %d Гц\nCPU %.1f мс · GPU %.1f мс\ndraw %d · %dk треуг." % [
+		_prof_stats.text = ("FPS %d · экран %d Гц\nCPU %.1f мс · GPU %.1f мс\ndraw %d · %dk треуг." % [
 			Engine.get_frames_per_second(), int(round(maxf(Graphics.current_hz(), 0.0))),
 			RenderingServer.viewport_get_measured_render_time_cpu(vp) + Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
 			RenderingServer.viewport_get_measured_render_time_gpu(vp),
 			int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME)),
-			int(Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME) / 1000.0)]
+			int(Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME) / 1000.0)]) \
+			+ ("\nРывки:\n" + "\n".join(FrameSpikes.recent) if not FrameSpikes.recent.is_empty() else "")
 		_prof_apply()
 
 

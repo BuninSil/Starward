@@ -577,7 +577,9 @@ func set_warp(i: int) -> void:
 # --- Main loop -----------------------------------------------------------------------
 
 func _physics_process(_delta: float) -> void:
+	var t0 := FrameSpikes.now()
 	sim_tick()
+	FrameSpikes.add("симуляция", t0)
 
 
 ## One fixed tick of the simulation (60 Hz). Also used by headless tests.
@@ -944,7 +946,23 @@ var _astro_xf := Transform3D()   ## astronaut transform as drawn this frame
 var _ip_ahead := 0.0             ## drawn time minus simulated time (debris follow it too)
 
 
+var _typical_ms := 33.0
+
+
 func _process(delta: float) -> void:
+	# Stall finder: log the frames that took far longer than usual, with the
+	# heavy jobs that ran in them (FrameSpikes).
+	var frame_ms := delta * 1000.0
+	var hitch := FrameSpikes.check(frame_ms, _typical_ms)
+	if hitch != "":
+		Log.info("[hitch] " + hitch)
+	_typical_ms = lerpf(_typical_ms, minf(frame_ms, _typical_ms * 1.5), 0.05)
+	var t_frame := FrameSpikes.now()
+	_process_inner(delta)
+	FrameSpikes.add("кадр (скрипты)", t_frame)
+
+
+func _process_inner(delta: float) -> void:
 	var a := Engine.get_physics_interpolation_fraction()
 	var dt_tick := sim_time - _ip_t
 	var shown: DVec3 = null
@@ -976,16 +994,22 @@ func _process_frame(delta: float) -> void:
 	vessel.cargo_mass = Game.ship_inv.mass()
 	_autosave_t -= delta
 	if _autosave_t <= 0.0:
+		var t0 := FrameSpikes.now()
 		autosave()
+		FrameSpikes.add("автосохранение", t0)
 	# Floating origin: the vessel at 0 (or the focused body on the map), everything
 	# else relative to it in doubles.
 	var vabs := render_origin()
+	var t_sun := FrameSpikes.now()
 	_update_sun_light()
+	FrameSpikes.add("солнце/тени", t_sun)
 	# Detailed ground patch under a low vessel (any body).
 	var agl := vessel.altitude_above_ground(sim_time) if vessel.altitude() < 30_000.0 else INF
 	if agl < 12_000.0:
+		var t_p := FrameSpikes.now()
 		var fixed_n := vessel.body.inertial_to_fixed(vessel.pos, sim_time).normalized()
 		(planets[vessel.body] as Node3D).call("ensure_patch", fixed_n, agl)
+		FrameSpikes.add("грунт: запрос", t_p)
 	# Sharper surface colour streamed around the vessel: the full tiles below,
 	# the coarse level out to the horizon (from orbit).
 	var alt := vessel.altitude()
@@ -994,14 +1018,22 @@ func _process_frame(delta: float) -> void:
 		if alt < 0.5 * vessel.body.radius:
 			hd_tiles.call("want", vessel.body, dir_n, 0)
 		hd_tiles.call("want", vessel.body, dir_n, 1)
+	var t_pl := FrameSpikes.now()
 	for b in bodies:
 		var rel := b.absolute_position(sim_time).sub(vabs)
 		(planets[b] as Node3D).call("update_view", rel, sim_time, 1.0 if map_mode else _view_scale(rel.length(), b.radius))
+	FrameSpikes.add("планеты", t_pl)
 	rocket.basis = Basis(vessel.attitude)
+	var t_r := FrameSpikes.now()
 	rocket.update_visual(delta)
+	FrameSpikes.add("ракета", t_r)
+	var t_snd := FrameSpikes.now()
 	_update_sound(delta)
+	FrameSpikes.add("звук", t_snd)
 	_engine_recent = 0.0 if vessel.last_thrust > 0.0 else _engine_recent + delta
+	var t_fx := FrameSpikes.now()
 	_update_fx(delta)
+	FrameSpikes.add("дым/частицы", t_fx)
 	for d in _debris:
 		var n: Node3D = d.node
 		var dabs := (d.body as CelestialBody).absolute_position(sim_time).add(d.pos)
@@ -1015,7 +1047,10 @@ func _process_frame(delta: float) -> void:
 			bas = Basis(x, up, x.cross(up))
 		n.global_transform = Transform3D(bas, dabs.sub(vabs).to_v3())
 
+	var t_sky := FrameSpikes.now()
 	_update_sky()
+	FrameSpikes.add("небо", t_sky)
+	var t_cam := FrameSpikes.now()
 	if map_mode:
 		_update_map_camera()
 	elif eva_mode:
@@ -1024,13 +1059,16 @@ func _process_frame(delta: float) -> void:
 			tether.update_visual(rocket.global_transform * rocket.hatch_hull_local(), _astro_xf * Vector3(0, 0.15, 0.32), camera.global_position, delta, rocket.rope_obstacles())
 	else:
 		_update_flight_camera()
+	FrameSpikes.add("камера/трос", t_cam)
 	traj_view.visible = map_mode
 	if map_mode:
 		_traj_timer -= delta
 		if _traj_timer <= 0.0:
 			# Coasting: the conic barely changes, refresh it less often (saves CPU).
 			_traj_timer = 0.25 if vessel.throttle > 0.0 or vessel.landed or autopilot.active() else 1.0
+			var t_tr := FrameSpikes.now()
 			refresh_trajectory()
+			FrameSpikes.add("траектория", t_tr)
 		var node_pos = null
 		var shown: ManeuverNode = maneuver if maneuver != null else autopilot.node
 		if shown != null and shown.body == vessel.body and shown.t > sim_time:

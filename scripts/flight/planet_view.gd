@@ -465,8 +465,10 @@ func _poll_patch_task() -> void:
 	WorkerThreadPool.wait_for_task_completion(_patch_task)
 	_patch_task = -1
 	if not _patch_result.is_empty():
+		var t0 := FrameSpikes.now()
 		_apply_patch(_patch_result)
 		_patch_result = {}
+		FrameSpikes.add("грунт: сборка", t0)
 
 
 func _exit_tree() -> void:
