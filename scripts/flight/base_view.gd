@@ -14,6 +14,11 @@ const DARK := Color(0.12, 0.12, 0.13)
 const ORANGE := Color(0.95, 0.5, 0.12)
 const GOLD := Color(0.83, 0.62, 0.22)
 
+## Collision box of each module (deck included), m.
+const SOLID := {"solar": Vector3(3.5, 2.4, 3.5), "battery": Vector3(3.5, 1.9, 3.5), "storage": Vector3(3.5, 2.6, 3.5),
+	"drill": Vector3(3.5, 0.5, 3.5), "processor": Vector3(3.5, 2.9, 3.5), "pump": Vector3(3.5, 2.0, 3.5),
+	"pad": Vector3(8.6, 0.3, 8.6)}
+
 var base: Dictionary
 var body: CelestialBody
 var _drills: Array[Node3D] = []     ## spinning drill strings
@@ -59,6 +64,21 @@ func rebuild() -> void:
 	MeshMerge.merge(self, null, true, true)
 	for k in keep:
 		(k[1] as Node).add_child(k[0])
+	# Solid modules: the astronaut walks around them and can stand on decks.
+	var body := AnimatableBody3D.new()
+	body.sync_to_physics = false
+	add_child(body)
+	for m in base.modules:
+		var gx := int(m.x)
+		var gz := int(m.z)
+		var p := Vector3(gx * C, _height(gx, gz) - h0, gz * C)
+		var size: Vector3 = SOLID.get(str(m.type), Vector3(3.4, 2.0, 3.4))
+		var cs := CollisionShape3D.new()
+		var sh := BoxShape3D.new()
+		sh.size = size
+		cs.shape = sh
+		cs.position = p + Vector3(0, size.y * 0.5, 0)
+		body.add_child(cs)
 
 
 ## Ground height (m above the reference sphere) at a grid cell.
@@ -135,8 +155,8 @@ static func _deck(p: Node3D, size := 3.4) -> void:
 	_box(p, Vector3(size, 0.18, size), Vector3(0, 0.25, 0), _mat(GREY, 0.5, 0.5))
 	# Orange edge frame (hazard stripe) around the plate.
 	for sgn in [-1, 1]:
-		_box(p, Vector3(size + 0.06, 0.08, 0.14), Vector3(0, 0.3, sgn * (size * 0.5 - 0.04)), _mat(ORANGE, 0.0, 0.5))
-		_box(p, Vector3(0.14, 0.08, size + 0.06), Vector3(sgn * (size * 0.5 - 0.04), 0.3, 0), _mat(ORANGE, 0.0, 0.5))
+		_box(p, Vector3(size + 0.12, 0.08, 0.16), Vector3(0, 0.36, sgn * (size * 0.5 - 0.02)), _mat(ORANGE, 0.0, 0.5))
+		_box(p, Vector3(0.16, 0.08, size + 0.12), Vector3(sgn * (size * 0.5 - 0.02), 0.355, 0), _mat(ORANGE, 0.0, 0.5))
 	for sx in [-1, 1]:
 		for sz in [-1, 1]:
 			_cyl(p, 0.09, 1.6, Vector3(sx * size * 0.42, -0.5, sz * size * 0.42), _mat(DARK, 0.6, 0.5), 8)
@@ -156,16 +176,16 @@ static func build_module(type: String, ghost := false, drills: Array = [], lamps
 			# Flat landing pad ~9 m across, a little above the ground, markings
 			# and edge lights.
 			_cyl(n, 4.6, 0.5, Vector3(0, -0.12, 0), _mat(Color(0.47, 0.47, 0.46), 0.1, 0.85), 24)
-			_cyl(n, 4.62, 0.06, Vector3(0, 0.14, 0), _mat(ORANGE, 0.0, 0.6), 24)
-			_cyl(n, 4.3, 0.07, Vector3(0, 0.15, 0), _mat(Color(0.5, 0.5, 0.49), 0.1, 0.85), 24)
-			_cyl(n, 2.4, 0.08, Vector3(0, 0.16, 0), _mat(WHITE, 0.0, 0.7), 24)
-			_cyl(n, 2.1, 0.09, Vector3(0, 0.17, 0), _mat(Color(0.5, 0.5, 0.49), 0.1, 0.85), 24)
-			_box(n, Vector3(0.35, 0.1, 2.4), Vector3(-0.6, 0.18, 0), _mat(WHITE, 0.0, 0.7))
-			_box(n, Vector3(0.35, 0.1, 2.4), Vector3(0.6, 0.18, 0), _mat(WHITE, 0.0, 0.7))
-			_box(n, Vector3(1.2, 0.1, 0.35), Vector3(0, 0.18, 0), _mat(WHITE, 0.0, 0.7))
+			_cyl(n, 4.68, 0.1, Vector3(0, 0.12, 0), _mat(ORANGE, 0.0, 0.6), 24)
+			_cyl(n, 4.3, 0.1, Vector3(0, 0.16, 0), _mat(Color(0.5, 0.5, 0.49), 0.1, 0.85), 24)
+			_cyl(n, 2.4, 0.1, Vector3(0, 0.2, 0), _mat(WHITE, 0.0, 0.7), 24)
+			_cyl(n, 2.1, 0.1, Vector3(0, 0.24, 0), _mat(Color(0.5, 0.5, 0.49), 0.1, 0.85), 24)
+			_box(n, Vector3(0.35, 0.1, 2.4), Vector3(-0.6, 0.28, 0), _mat(WHITE, 0.0, 0.7))
+			_box(n, Vector3(0.35, 0.1, 2.4), Vector3(0.6, 0.28, 0), _mat(WHITE, 0.0, 0.7))
+			_box(n, Vector3(0.86, 0.1, 0.35), Vector3(0, 0.28, 0), _mat(WHITE, 0.0, 0.7))
 			for k in 8:
 				var a := TAU * k / 8.0
-				var lamp := _cyl(n, 0.12, 0.14, Vector3(cos(a) * 4.45, 0.2, sin(a) * 4.45),
+				var lamp := _cyl(n, 0.12, 0.14, Vector3(cos(a) * 4.45, 0.24, sin(a) * 4.45),
 					_mat(DARK, 0.0, 0.4, Color(0.3, 0.8, 1.0)), 8)
 				lamps.append(lamp)
 		"solar":
@@ -178,7 +198,7 @@ static func build_module(type: String, ghost := false, drills: Array = [], lamps
 			# Cells: dark blue tiles in a grid (separate boxes, merged later).
 			for i in 6:
 				for j in 4:
-					_box(panel, Vector3(0.54, 0.02, 0.54), Vector3(-1.5 + i * 0.6, 0.05, -0.9 + j * 0.6),
+					_box(panel, Vector3(0.54, 0.04, 0.54), Vector3(-1.5 + i * 0.6, 0.07, -0.9 + j * 0.6),
 						_mat(Color(0.05, 0.09, 0.22), 0.4, 0.18))
 			_strut(n, Vector3(-0.9, y0, 0.9), Vector3(0, y0 + 1.2, 0.2), 0.08, _mat(GREY, 0.6, 0.5))
 			_strut(n, Vector3(0.9, y0, 0.9), Vector3(0, y0 + 1.2, 0.2), 0.08, _mat(GREY, 0.6, 0.5))
@@ -186,15 +206,15 @@ static func build_module(type: String, ghost := false, drills: Array = [], lamps
 			_box(n, Vector3(2.6, 1.5, 1.6), Vector3(0, y0 + 0.75, 0), _mat(WHITE, 0.1, 0.5))
 			for i in 7:
 				_box(n, Vector3(0.06, 1.2, 1.75), Vector3(-1.05 + i * 0.35, y0 + 0.75, 0), _mat(GREY, 0.7, 0.4))
-			_box(n, Vector3(2.62, 0.16, 1.62), Vector3(0, y0 + 1.42, 0), _mat(ORANGE, 0.0, 0.5))
-			var lamp := _box(n, Vector3(0.9, 0.12, 0.04), Vector3(0, y0 + 1.1, 0.83), _mat(DARK, 0.0, 0.4, Color(0.2, 1.0, 0.4)))
+			_box(n, Vector3(2.72, 0.2, 1.72), Vector3(0, y0 + 1.46, 0), _mat(ORANGE, 0.0, 0.5))
+			var lamp := _box(n, Vector3(0.9, 0.12, 0.06), Vector3(0, y0 + 1.1, 0.85), _mat(DARK, 0.0, 0.4, Color(0.2, 1.0, 0.4)))
 			lamps.append(lamp)
 		"storage":
 			_box(n, Vector3(3.2, 2.2, 3.0), Vector3(0, y0 + 1.1, 0), _mat(WHITE, 0.1, 0.55))
 			for i in 4:
-				_box(n, Vector3(3.24, 0.1, 3.04), Vector3(0, y0 + 0.3 + i * 0.55, 0), _mat(GREY, 0.6, 0.45))
-			_box(n, Vector3(1.6, 1.7, 0.06), Vector3(0, y0 + 0.9, 1.52), _mat(ORANGE, 0.0, 0.5))
-			_box(n, Vector3(0.05, 1.6, 0.08), Vector3(0, y0 + 0.9, 1.55), _mat(DARK, 0.3, 0.5))
+				_box(n, Vector3(3.32, 0.1, 3.12), Vector3(0, y0 + 0.3 + i * 0.55, 0), _mat(GREY, 0.6, 0.45))
+			_box(n, Vector3(1.6, 1.7, 0.1), Vector3(0, y0 + 0.9, 1.54), _mat(ORANGE, 0.0, 0.5))
+			_box(n, Vector3(0.06, 1.6, 0.1), Vector3(0, y0 + 0.9, 1.6), _mat(DARK, 0.3, 0.5))
 		"drill":
 			# Derrick: three legs to a crown, motor head, spinning drill string.
 			var crown := Vector3(0, y0 + 3.4, 0)
@@ -216,14 +236,14 @@ static func build_module(type: String, ghost := false, drills: Array = [], lamps
 			_cyl(n, 0.62, 0.3, Vector3(-0.8, y0 + 2.45, -0.4), _mat(WHITE, 0.1, 0.45), 18, 0.35)
 			_cyl(n, 0.45, 1.8, Vector3(0.9, y0 + 0.9, -0.6), _mat(GOLD, 0.8, 0.35), 16)
 			_box(n, Vector3(1.6, 1.0, 1.0), Vector3(0.3, y0 + 0.5, 0.9), _mat(WHITE, 0.1, 0.5))
-			_box(n, Vector3(1.62, 0.12, 1.02), Vector3(0.3, y0 + 1.0, 0.9), _mat(ORANGE, 0.0, 0.5))
+			_box(n, Vector3(1.72, 0.14, 1.12), Vector3(0.3, y0 + 1.0, 0.9), _mat(ORANGE, 0.0, 0.5))
 			_strut(n, Vector3(-0.8, y0 + 2.0, -0.4), Vector3(0.9, y0 + 1.6, -0.6), 0.1, _mat(GREY, 0.7, 0.4))
 			_strut(n, Vector3(0.9, y0 + 0.6, -0.6), Vector3(0.3, y0 + 0.6, 0.9), 0.1, _mat(GREY, 0.7, 0.4))
-			var lamp2 := _box(n, Vector3(0.5, 0.1, 0.04), Vector3(0.3, y0 + 0.7, 1.41), _mat(DARK, 0.0, 0.4, Color(1.0, 0.6, 0.1)))
+			var lamp2 := _box(n, Vector3(0.5, 0.1, 0.06), Vector3(0.3, y0 + 0.7, 1.42), _mat(DARK, 0.0, 0.4, Color(1.0, 0.6, 0.1)))
 			lamps.append(lamp2)
 		"pump":
 			_box(n, Vector3(0.9, 1.6, 0.7), Vector3(0, y0 + 0.8, 0), _mat(WHITE, 0.1, 0.5))
-			_box(n, Vector3(0.92, 0.25, 0.72), Vector3(0, y0 + 1.5, 0), _mat(ORANGE, 0.0, 0.5))
+			_box(n, Vector3(1.0, 0.25, 0.8), Vector3(0, y0 + 1.5, 0), _mat(ORANGE, 0.0, 0.5))
 			_cyl(n, 0.45, 0.25, Vector3(0, y0 + 0.9, 0.48), _mat(DARK, 0.3, 0.6), 16).rotation.x = PI * 0.5
 			_cyl(n, 0.07, 3.0, Vector3(0, y0 + 1.5, -0.2), _mat(GREY, 0.7, 0.4), 8).position.y = y0 + 1.5 + 1.5
 			var beacon := _cyl(n, 0.1, 0.16, Vector3(0, y0 + 4.1, -0.2), _mat(DARK, 0.0, 0.4, Color(1.0, 0.25, 0.1)), 10)

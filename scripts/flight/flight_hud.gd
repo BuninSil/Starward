@@ -397,7 +397,7 @@ func _build_attitude() -> void:
 	_fa_btn.add_theme_font_size_override("font_size", 17)
 	side.add_child(_fa_btn)
 	_joystick = JoystickScript.new()
-	_joystick.radius = 100.0
+	_joystick.radius = 150.0
 	_joystick.changed.connect(func(val: Vector2) -> void:
 		if val.length() > 0.2:
 			flight.disengage_autopilot("джойстик"))
@@ -918,9 +918,12 @@ func _process(delta: float) -> void:
 	v.input_roll = _roll
 	var ship := v.is_ship()
 	if ship:
-		# Ship: stick = pitch and roll, the side buttons = yaw.
-		v.input_roll = j.x
-		v.input_yaw = _roll
+		# Ship: stick = pitch and roll (soft near the centre for fine control),
+		# the side buttons = yaw.
+		var js := Vector2(signf(j.x) * j.x * j.x, signf(j.y) * j.y * j.y)
+		v.input_pitch = -js.y
+		v.input_roll = js.x
+		v.input_yaw = _roll * 0.6
 	_ship_row.visible = ship
 	_fa_btn.visible = ship
 	_hold_btn.visible = not ship

@@ -232,8 +232,8 @@ func step(dt: float, t: float) -> void:
 # ship cancels drift, gravity and spin by itself. Without it: raw thrust,
 # Newton and gravity. Orbits keep working for everything else.
 
-const SHIP_RATE := Vector3(0.9, 0.55, 1.5)   ## rad/s at full stick: pitch, yaw, roll
-const SHIP_ANG_ACCEL := 3.0                  ## rad/s^2
+const SHIP_RATE := Vector3(0.5, 0.3, 0.8)    ## rad/s at full stick: pitch, yaw, roll
+const SHIP_ANG_ACCEL := 1.6                  ## rad/s^2
 const SHIP_RCS := 0.75                       ## thrusters vs. main engine (lift ~2 g at Earth)
 var fa := true            ## flight assist
 var ship_lift := 0.0      ## -1..1, vertical thrusters (down / up)
