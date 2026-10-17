@@ -17,6 +17,7 @@ var astro_inv: Inventory
 var ship_inv: Inventory
 var pending: Dictionary = {}   ## flight state to apply when the flight scene starts
 var playtime := 0.0
+var bases: Array = []         ## surface bases (Bases data dictionaries)
 
 
 func _ready() -> void:
@@ -49,6 +50,7 @@ func new_game(m: String, design: String) -> void:
 	Vessel.design = design
 	pending = {}
 	playtime = 0.0
+	bases = []
 	_fresh_inventories()
 	# Starting kit: a little in career, plenty in the sandbox.
 	if m == "sandbox":
@@ -84,6 +86,7 @@ func save_to(slot: String, flight: Node) -> bool:
 		"where": flight.where_text(),
 		"astro": astro_inv.to_data(),
 		"ship": ship_inv.to_data(),
+		"bases": bases,
 		"flight": flight.save_state(),
 	}
 	DirAccess.make_dir_recursive_absolute(SAVE_DIR)
@@ -146,6 +149,7 @@ func load_from(slot: String) -> bool:
 	_fresh_inventories()
 	astro_inv = Inventory.from_data(d.get("astro", {}), 12)
 	ship_inv = Inventory.from_data(d.get("ship", {}), 24)
+	bases = d.get("bases", []) as Array
 	astro_inv.changed.connect(func() -> void: inventories_changed.emit())
 	ship_inv.changed.connect(func() -> void: inventories_changed.emit())
 	pending = d.flight
