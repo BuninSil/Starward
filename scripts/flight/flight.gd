@@ -761,7 +761,7 @@ func _update_fx(delta: float) -> void:
 		var dens := b.density_at(v.altitude()) / b.sea_level_density
 		if dens > 0.05:
 			_smoke_acc += delta * clampf(dens, 0.0, 1.0) * (10.0 if low else 24.0)
-			var down := -v.up_world()
+			var down := -v.up_world() if not v.is_ship() else (v.attitude * Vector3.BACK)
 			while _smoke_acc >= 1.0:
 				_smoke_acc -= 1.0
 				var at := v.pos.add(DVec3.from_v3(down * randf_range(4.0, 9.0) + _rand_dir() * 0.8))
@@ -791,7 +791,7 @@ func _update_fx(delta: float) -> void:
 	else:
 		fx.set_ground(Vector3.ZERO, Vector3.UP, false)
 	var thr_f := v.last_thrust / maxf(v.current_thrust_max(), 1.0) if v.last_thrust > 0.0 else 0.0
-	var nozzle := rocket.global_transform * Vector3(0, -3.0, 0)
+	var nozzle := rocket.global_transform * (Vector3(0, -3.0, 0) if not v.is_ship() else Vector3(0, 1.7, 9.5))
 	# A vacuum plume is thin and faint: it barely lights the dust.
 	var pr_f := clampf(b.pressure_at(v.altitude()), 0.0, 1.0) if b.has_atmosphere() else 0.0
 	fx.set_flame(nozzle, thr_f * lerpf(lerpf(0.12, 0.4, rocket.night), 1.0, pr_f), 22.0)
@@ -1470,6 +1470,12 @@ func _start_surface_eva() -> void:
 	add_child(_ground)
 	_update_ground()
 	astronaut.global_position = side * (rocket_r + 1.5) + up * 1.0
+	if vessel.is_ship():
+		# Out of the side hatch, down onto the ground beside the ship.
+		var hw := hatch_world()
+		var out := (rocket.global_transform.basis * Vector3.LEFT).normalized()
+		astronaut.global_position = hw - up * hw.dot(up) + up * 1.0 + out * 1.2
+		side = out
 	astronaut.linear_velocity = Vector3.ZERO
 	var b := vessel.body
 	# Only Earth's air is breathable: elsewhere the suit uses oxygen.
@@ -1543,8 +1549,8 @@ func is_surface_eva() -> bool:
 
 ## Distance used for "back inside": hatch in space, rocket base on the ground.
 func entry_distance() -> float:
-	if not is_surface_eva():
-		return astronaut_hatch_distance()
+	if not is_surface_eva() or vessel.is_ship():
+		return astronaut_hatch_distance() if not vessel.is_ship() else maxf(astronaut_hatch_distance() - 1.2, 0.0)
 	var up := vessel.pos.normalized().to_v3()
 	var p: Vector3 = astronaut.global_position
 	var horiz := p - up * p.dot(up)

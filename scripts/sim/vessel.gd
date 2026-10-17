@@ -185,6 +185,9 @@ func deploy_chute() -> String:
 func step(dt: float, t: float) -> void:
 	if destroyed_flag:
 		return
+	if is_ship():
+		_step_ship(dt, t)
+		return
 	_step_attitude(dt)
 
 	var m := mass()
@@ -221,6 +224,108 @@ func step(dt: float, t: float) -> void:
 	check_soi(t + dt)
 
 
+# --- Ship (Elite Dangerous style flight) ---------------------------------------------
+# A one-hull craft that lands on its belly: local +Y = up (belly down), -Z =
+# forward, main engines push forward, thrusters (weaker) push along every
+# axis. Flight assist (fa): the throttle sets a speed along the nose relative
+# to the ground, lift / strafe inputs add vertical / sideways speed, and the
+# ship cancels drift, gravity and spin by itself. Without it: raw thrust,
+# Newton and gravity. Orbits keep working for everything else.
+
+const SHIP_RATE := Vector3(0.9, 0.55, 1.5)   ## rad/s at full stick: pitch, yaw, roll
+const SHIP_ANG_ACCEL := 3.0                  ## rad/s^2
+const SHIP_RCS := 0.75                       ## thrusters vs. main engine (lift ~2 g at Earth)
+var fa := true            ## flight assist
+var ship_lift := 0.0      ## -1..1, vertical thrusters (down / up)
+var ship_strafe := 0.0    ## -1..1, sideways thrusters (left / right)
+
+
+func is_ship() -> bool:
+	return stages.size() == 1 and stages[0].get("ship", false)
+
+
+## Forward direction of a ship (world).
+func ship_forward() -> Vector3:
+	return attitude * Vector3.FORWARD
+
+
+## Top speed the throttle maps to with flight assist, m/s (low and slow near
+## the ground, fast high up).
+func ship_max_speed() -> float:
+	var h := maxf(altitude() - body.radius * 0.0, 0.0)
+	return clampf(150.0 + h * 0.06, 150.0, 3500.0)
+
+
+func _step_ship(dt: float, t: float) -> void:
+	# Rotation: the stick commands turn rates; flight assist holds them (and
+	# stops the spin when released).
+	var want_w := attitude * Vector3(input_pitch * SHIP_RATE.x, -input_yaw * SHIP_RATE.y, -input_roll * SHIP_RATE.z)
+	var aw: Vector3
+	if fa:
+		aw = ((want_w - ang_vel) * 4.0).limit_length(SHIP_ANG_ACCEL)
+	else:
+		aw = (attitude * Vector3(input_pitch, -input_yaw, -input_roll)) * SHIP_ANG_ACCEL
+	ang_vel += aw * dt
+	if landed:
+		ang_vel = Vector3.ZERO
+	var w := ang_vel.length()
+	if w > 1e-9:
+		attitude = (Quaternion(ang_vel / w, w * dt) * attitude).normalized()
+
+	var m := mass()
+	var s := active_stage()
+	var a_main := current_thrust_max() / m if has_fuel() else 0.0
+	var a_rcs := a_main * SHIP_RCS
+	var r := pos.length()
+	var g_up := pos.mul(body.mu / (r * r * r)).to_v3()   # cancels gravity
+	var a_want: Vector3
+	if fa:
+		var fwd := ship_forward()
+		var up := attitude * Vector3.UP
+		var right := attitude * Vector3.RIGHT
+		# Vertical speed from the lift input; going down it slows near the
+		# ground (landing assist) so a held "down" sets the ship down gently.
+		var vz := ship_lift * 40.0
+		if ship_lift < 0.0:
+			vz = ship_lift * clampf(altitude_above_ground(t) * 0.25, 2.5, 40.0)
+		var v_set := fwd * throttle * ship_max_speed() + up * vz + right * ship_strafe * 30.0
+		var v_rel := surface_velocity().to_v3()
+		a_want = (v_set - v_rel) * 1.2 + g_up
+		if landed and ship_lift <= 0.0:
+			a_want = Vector3.ZERO   # on the ground only the lift thrusters take off
+	else:
+		a_want = attitude * Vector3(ship_strafe * a_rcs, ship_lift * a_rcs, -throttle * a_main)
+	# What the engines can give, axis by axis in the ship's frame.
+	var loc := attitude.inverse() * a_want
+	loc.x = clampf(loc.x, -a_rcs, a_rcs)
+	loc.y = clampf(loc.y, -a_rcs, a_rcs)
+	loc.z = clampf(loc.z, -a_main, a_rcs)
+	var a_t := attitude * loc
+	var force := a_t.length() * m
+	if force > 0.0 and not infinite_fuel:
+		var mdot := force / (current_isp(s) * SolarSystem.G0)
+		s.fuel = maxf(float(s.fuel) - mdot * dt, 0.0)
+	last_thrust = maxf(-loc.z, 0.0) * m   # main engine (flames, sound)
+
+	if landed:
+		last_accel_ng = Vector3.ZERO
+		if a_t.dot(pos.normalized().to_v3()) <= body.mu / pos.length_squared() * 1.0001:
+			_stick_to_surface(t + dt)
+			last_drag = 0.0
+			return
+		_set_landed(false)
+
+	var a_t_d := DVec3.from_v3(a_t)
+	var a0 := _accel(pos, vel, 0.0, m).add(a_t_d)
+	pos.add_scaled(vel, dt)
+	pos.add_scaled(a0, 0.5 * dt * dt)
+	var a1 := _accel(pos, vel, 0.0, m).add(a_t_d)
+	vel.add_scaled(a0.add(a1), 0.5 * dt)
+	last_accel_ng = last_accel_ng + a_t
+	_check_ground(t + dt)
+	check_soi(t + dt)
+
+
 # --- Re-entry heating -------------------------------------------------------------
 # Sutton-Graves stagnation heat flux q = k sqrt(rho / Rn) v^3 on the leading part,
 # its skin temperature from q against radiative cooling. Orbital speeds are ~1/3
@@ -248,6 +353,10 @@ func heat_fraction() -> float:
 
 
 func _step_heating(dt: float) -> void:
+	if is_ship():
+		heat_flux = 0.0
+		heat_temp = 280.0
+		return
 	var alt := altitude()
 	var rho := body.density_at(alt) if body.has_atmosphere() and alt < body.atmosphere_height else 0.0
 	var vrel := surface_velocity()
@@ -533,6 +642,8 @@ func _check_ground(t: float) -> void:
 
 ## Impact speed a stage survives, m/s.
 static func crash_tolerance(s: Dictionary) -> float:
+	if s.get("ship", false):
+		return 9.0     # landing gear with shock absorbers
 	if s.get("parachute", false):
 		return 22.0    # crew capsule: shock-absorbing seats, strong shell
 	if s.get("legs", false):
@@ -575,7 +686,7 @@ func _impact(speed: float) -> float:
 ## capsule trims base first (heat shield forward). Returns the angular
 ## acceleration toward the stable attitude plus aero damping.
 func aero_accel() -> Vector3:
-	if landed or not body.has_atmosphere() or stages.is_empty():
+	if landed or not body.has_atmosphere() or stages.is_empty() or is_ship():
 		return Vector3.ZERO
 	var rho := body.density_at(altitude())
 	if rho <= 0.0:
@@ -795,13 +906,27 @@ static func from_data(d: Dictionary, b: CelestialBody) -> Vessel:
 
 
 ## Prebuilt designs: id -> title (shown on the title screen and in the debug menu).
-const DESIGNS := {"orbit": "Ракета «Орбита»", "moon": "Лунная ракета"}
+const DESIGNS := {"orbit": "Ракета «Орбита»", "moon": "Лунная ракета", "ship": "Корабль «Стриж»"}
 ## Design used by the next flight / reset (picked on the title screen).
 static var design := "moon"
 
 
 static func make(id: String, b: CelestialBody) -> Vessel:
-	return moon_rocket(b) if id == "moon" else default_rocket(b)
+	match id:
+		"moon": return moon_rocket(b)
+		"ship": return ship(b)
+	return default_rocket(b)
+
+
+## Ship in the style of Elite Dangerous: one hull, lands on its belly, flight
+## assist, ~10 km/s of Δv, TWR ~2.7 at Earth (thrusters alone ~2).
+static func ship(b: CelestialBody) -> Vessel:
+	var v := Vessel.new()
+	v.body = b
+	v.stages = [make_stage("Корабль «Стриж»", 9000.0, 7000.0, 620_000.0, 1800.0, 2600.0, 3.0, 2.4)]
+	v.stages[0]["ship"] = true
+	v.stages[0]["legs"] = true
+	return v
 
 
 ## Index of the stage with landing legs, or -1.

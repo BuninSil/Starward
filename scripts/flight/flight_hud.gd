@@ -316,6 +316,11 @@ func _build_throttle() -> void:
 	quick.add_child(_button("Выкл", func() -> void: _throttle.set_value(0.0), 110))
 
 
+var _roll_label: Label
+var _ship_row: HBoxContainer
+var _fa_btn: Button
+
+
 func _build_attitude() -> void:
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 8)
@@ -368,10 +373,29 @@ func _build_attitude() -> void:
 	side.add_child(rolls)
 	rolls.add_child(_hold_button("◀", -1.0))
 	rolls.add_child(_hold_button("▶", 1.0))
-	var roll_l := _label(15, DIM)
-	roll_l.text = "крен"
-	roll_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	side.add_child(roll_l)
+	_roll_label = _label(15, DIM)
+	_roll_label.text = "крен"
+	_roll_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	side.add_child(_roll_label)
+	# Ship only: vertical thrusters and flight assist.
+	_ship_row = HBoxContainer.new()
+	_ship_row.add_theme_constant_override("separation", 8)
+	side.add_child(_ship_row)
+	for d in [["▲", 1.0], ["▼", -1.0]]:
+		var lb := Button.new()
+		lb.text = d[0]
+		lb.focus_mode = Control.FOCUS_NONE
+		lb.custom_minimum_size = Vector2(81, 64)
+		lb.add_theme_font_size_override("font_size", 26)
+		var dir: float = d[1]
+		lb.button_down.connect(func() -> void: flight.vessel.ship_lift = dir)
+		lb.button_up.connect(func() -> void: flight.vessel.ship_lift = 0.0)
+		_ship_row.add_child(lb)
+	_fa_btn = _button("Помощник: вкл", func() -> void:
+		flight.vessel.fa = not flight.vessel.fa
+		flight.message.emit("Помощник полёта " + ("включён" if flight.vessel.fa else "выключен — чистый Ньютон")), 170)
+	_fa_btn.add_theme_font_size_override("font_size", 17)
+	side.add_child(_fa_btn)
 	_joystick = JoystickScript.new()
 	_joystick.radius = 100.0
 	_joystick.changed.connect(func(val: Vector2) -> void:
@@ -892,9 +916,24 @@ func _process(delta: float) -> void:
 	v.input_pitch = -j.y
 	v.input_yaw = j.x
 	v.input_roll = _roll
+	var ship := v.is_ship()
+	if ship:
+		# Ship: stick = pitch and roll, the side buttons = yaw.
+		v.input_roll = j.x
+		v.input_yaw = _roll
+	_ship_row.visible = ship
+	_fa_btn.visible = ship
+	_hold_btn.visible = not ship
+	_roll_label.text = "рыскание" if ship else "крен"
+	if ship:
+		_fa_btn.text = "Помощник: %s" % ("вкл" if v.fa else "выкл")
+		_stage_btn.visible = false
+	_ap_btn.visible = not ship
 	if absf(v.throttle - _throttle.value) > 0.001:
 		_throttle.set_value_no_signal(v.throttle)
 	_throttle_label.text = "Газ %d%%" % int(round(v.throttle * 100.0))
+	if ship and v.fa:
+		_throttle_label.text = "Скорость %d / %d м/с" % [int(v.throttle * v.ship_max_speed()), int(v.ship_max_speed())]
 	var ap: Autopilot = flight.autopilot
 	_ap_label.text = "Автопилот · " + ap.status() if ap.active() else ""
 	if not ap.active() and v.chute_deployed and not v.landed and not v.destroyed_flag:

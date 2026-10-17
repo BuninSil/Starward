@@ -52,6 +52,9 @@ func build(v: Vessel) -> void:
 	_chute_collapse = 0.0
 	hatch_pivot = null
 	_engine_light = null
+	if v.is_ship():
+		_build_ship(v)
+		return
 	var y := 0.0
 	# Bottom to top.
 	for i in range(v.stages.size() - 1, -1, -1):
@@ -625,6 +628,8 @@ func hatch_is_open() -> bool:
 func hatch_local() -> Vector3:
 	if _stage_nodes.is_empty():
 		return Vector3.ZERO
+	if vessel.is_ship():
+		return Vector3(-1.75, ShipModel.GEAR_H + 0.7, -3.2)   # left side, behind the cockpit
 	var cap: Node3D = _stage_nodes[0]
 	var s: Dictionary = vessel.stages[0]
 	var d: float = s.diameter
@@ -635,6 +640,8 @@ func hatch_local() -> Vector3:
 
 ## The hatch point on the hull itself (where the tether reel sits).
 func hatch_hull_local() -> Vector3:
+	if vessel != null and vessel.is_ship():
+		return hatch_local() + Vector3(0.35, 0, 0)
 	return hatch_local() - Vector3(0, 0, 0.33)
 
 
@@ -688,6 +695,62 @@ func _build_flames() -> void:
 	_engine_light.visible = false
 
 
+## Ship (Elite style craft): its own model, flames firing backwards (+Z), a
+## box collider for the astronaut.
+func _build_ship(v: Vessel) -> void:
+	var node := Node3D.new()
+	node.name = v.stages[0].name
+	add_child(node)
+	_stage_nodes.push_front(node)
+	var ex := ShipModel.build(node)
+	MeshMerge.merge(node, null, true, true)
+	if _flame_mat == null:
+		_flame_mat = ShaderMaterial.new()
+		_flame_mat.shader = EXHAUST_SHADER
+		_flame_mat.set_shader_parameter("noise_tex", _noise_tex())
+	var cone := CylinderMesh.new()
+	cone.top_radius = 0.35
+	cone.bottom_radius = 1.0
+	cone.height = 1.0
+	cone.radial_segments = 20
+	cone.rings = 12
+	cone.cap_top = false
+	cone.cap_bottom = false
+	for e in ex:
+		# The flame code works along -Y: a pivot turns -Y to +Z (backwards).
+		var pivot := Node3D.new()
+		pivot.position = e[0]
+		pivot.rotation.x = -PI * 0.5
+		add_child(pivot)
+		var f := MeshInstance3D.new()
+		f.mesh = cone
+		f.material_override = _flame_mat
+		f.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		f.set_meta("anchor", Vector3.ZERO)
+		f.set_meta("re", float(e[1]))
+		f.visible = false
+		pivot.add_child(f)
+		_flames.append(f)
+	_engine_light = OmniLight3D.new()
+	_engine_light.light_color = Color(1.0, 0.6, 0.28)
+	_engine_light.shadow_enabled = false
+	_engine_light.position = Vector3(0, 1.6, 9.5)
+	_engine_light.omni_range = 14.0
+	_engine_light.omni_attenuation = 2.2
+	_engine_light.visible = false
+	add_child(_engine_light)
+	_build_plasma()
+	collider = AnimatableBody3D.new()
+	collider.sync_to_physics = false
+	add_child(collider)
+	var cs := CollisionShape3D.new()
+	var sh := BoxShape3D.new()
+	sh.size = Vector3(4.0, 1.8, 15.0)
+	cs.shape = sh
+	cs.position = Vector3(0, ShipModel.GEAR_H + 0.75, -0.8)
+	collider.add_child(cs)
+
+
 func _build_collider() -> void:
 	if collider:
 		collider.queue_free()
@@ -711,6 +774,8 @@ func _build_collider() -> void:
 ## a cone).
 func rope_obstacles() -> Array:
 	var out: Array = []
+	if vessel != null and vessel.is_ship():
+		return out
 	for i in mini(_stage_nodes.size(), vessel.stages.size()):
 		var s: Dictionary = vessel.stages[i]
 		var node: Node3D = _stage_nodes[i]
