@@ -189,6 +189,17 @@ static func tasks_moon_land(peri_alt := 6000.0) -> Array:
 	]
 
 
+## Precision landing from orbit on a surface point (a base's landing pad) of an
+## airless body: turn the orbit over it, deorbit so the braking ends there,
+## powered descent guided to it.
+static func tasks_land_at(lat: float, lon: float, name := "базу", peri_alt := 6000.0) -> Array:
+	return [
+		ApPlan.new("target_plane", {"lat": lat, "lon": lon, "name": name}),
+		ApPlan.new("target_deorbit", {"lat": lat, "lon": lon, "alt": peri_alt, "name": name}),
+		ApDescent.new(lat, lon, name),
+	]
+
+
 ## Liftoff from an airless body to a circular orbit (drops the descent stage).
 static func tasks_moon_ascent(alt := 20_000.0, body: CelestialBody = null, t := 0.0) -> Array:
 	var asc := ApAscent.new(alt)

@@ -1133,6 +1133,20 @@ func _update_bases(vabs: DVec3, delta: float) -> void:
 	FrameSpikes.add("базы", t0)
 
 
+## Landing pads of the bases on the current body: [{name, lat, lon}].
+func landing_pads() -> Array:
+	var out := []
+	for i in Game.bases.size():
+		var b: Dictionary = Game.bases[i]
+		if str(b.body) != vessel.body.id:
+			continue
+		for m in b.modules:
+			if m.type == "pad":
+				var ll := Bases.cell_latlon(b, int(m.x), int(m.z), vessel.body.radius)
+				out.append({"name": Bases.display_name(b, i), "lat": ll.x, "lon": ll.y})
+	return out
+
+
 ## Rebuilds a base's model after a module was added.
 func refresh_base(i: int) -> void:
 	if base_views.has(i) and is_instance_valid(base_views[i]):

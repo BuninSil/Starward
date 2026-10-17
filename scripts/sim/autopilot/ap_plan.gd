@@ -20,6 +20,8 @@ func _init(k: String, p: Dictionary) -> void:
 		"return": title = "Отлёт домой (перицентр %d км)" % int(p.alt / 1000.0)
 		"deorbit": title = "Сход с орбиты"
 		"moon_deorbit": title = "Сход с орбиты к освещённому месту"
+		"target_plane": title = "Поворот орбиты на %s" % str(p.get("name", "цель"))
+		"target_deorbit": title = "Сход с орбиты к %s" % str(p.get("name", "цели"))
 		"peri_correction": title = "Коррекция перицентра (%d км)" % int(p.alt / 1000.0)
 		"interplanetary": title = "Отлёт к планете %s" % (p.target as CelestialBody).name
 		_: title = "Расчёт манёвра"
@@ -37,6 +39,9 @@ func start(_ap: Autopilot, v: Vessel, t: float) -> void:
 	var b := v.body
 	_result = {}
 	_started_at = Time.get_ticks_msec()
+	# Braking acceleration for the landing plans: most of the engine, kept
+	# with a margin (the craft gets lighter, but the thrust also tilts up).
+	params["a_brake"] = 0.55 * v.current_thrust_max() / maxf(v.mass(), 1.0)
 	var job := func() -> void:
 		_result = _compute(r, vel, b, t)
 	_task_id = WorkerThreadPool.add_task(job, false, "autopilot plan")
@@ -155,6 +160,22 @@ func _compute(r: DVec3, vel: DVec3, b: CelestialBody, t: float) -> Dictionary:
 				return {"msg": "сначала нужна орбита вокруг %s" % b.name}
 			var dn := Planner.deorbit_sunlit(r, vel, b, t, params.alt)
 			return {"node": dn, "msg": "тормозной импульс через %s" % ApExecute._fmt(dn.t - t)}
+		"target_plane":
+			var el4 := OrbitMath.elements(r, vel, b.mu)
+			if el4.e >= 1.0:
+				return {"msg": "сначала нужна орбита вокруг %s" % b.name}
+			var pn := Planner.plane_to_target(r, vel, b, t, params.lat, params.lon)
+			if pn == null or pn.total() < 0.5:
+				return {"skip": true, "msg": "орбита и так проходит над целью"}
+			return {"node": pn, "msg": "поворот плоскости %.0f м/с" % pn.total()}
+		"target_deorbit":
+			if b.has_atmosphere():
+				return {"msg": "посадка на двигателях — только на тело без атмосферы"}
+			var el5 := OrbitMath.elements(r, vel, b.mu)
+			if el5.e >= 1.0:
+				return {"msg": "сначала нужна орбита вокруг %s" % b.name}
+			var dt5 := Planner.deorbit_to_target(r, vel, b, t, params.alt, params.lat, params.lon, params.a_brake)
+			return {"node": dt5, "msg": "тормозной импульс через %s" % ApExecute._fmt(dt5.t - t)}
 		"peri_correction":
 			var el2 := OrbitMath.elements(r, vel, b.mu)
 			if absf(el2.periapsis - b.radius - params.alt) < maxf(300.0, params.alt * 0.05):

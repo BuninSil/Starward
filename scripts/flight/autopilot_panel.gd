@@ -10,6 +10,7 @@ const TASKS := [
 	["moon", "Перелёт к Луне и выход на орбиту", "высота у Луны", "км", 10, 200, 10, 30],
 	["planet", "Перелёт к планете (выход на орбиту)", "цель", "", 0, 7, 1, 3],
 	["moon_land", "Посадка на Луну (с орбиты Луны)", "", "", 0, 0, 0, 0],
+	["base_land", "Посадка на площадку базы", "база", "", 0, 0, 1, 0],
 	["moon_up", "Взлёт с Луны на орбиту", "высота", "км", 15, 60, 5, 20],
 	["home", "Возврат на Землю и посадка", "перицентр у Земли", "км", 1, 8, 1, 3],
 	["deorbit", "Сход с орбиты и посадка", "", "", 0, 0, 0, 0],
@@ -84,7 +85,8 @@ func _ready() -> void:
 	box.add_child(_window_label)
 	visibility_changed.connect(func() -> void:
 		if visible:
-			_refresh_window())
+			_refresh_window()
+			_refresh_value("base_land"))
 	var presets := HBoxContainer.new()
 	presets.add_theme_constant_override("separation", 10)
 	box.add_child(presets)
@@ -127,6 +129,8 @@ func _step(kind: String, dir: int) -> void:
 		if t[0] == kind:
 			if kind == "planet":
 				_values[kind] = posmod(_values[kind] + dir, _planets().size())
+			elif kind == "base_land":
+				_values[kind] = posmod(_values[kind] + dir, maxi(flight.landing_pads().size(), 1))
 			else:
 				_values[kind] = clampi(_values[kind] + dir * t[6], t[4], t[5])
 	_refresh_value(kind)
@@ -167,6 +171,10 @@ func _refresh_value(kind: String) -> void:
 		return
 	if kind == "planet":
 		(_value_labels[kind] as Label).text = "→ " + _target_planet().name
+		return
+	if kind == "base_land":
+		var pads: Array = flight.landing_pads() if flight != null and flight.vessel != null else []
+		(_value_labels[kind] as Label).text = "нет площадок" if pads.is_empty() else "→ " + str(pads[_values[kind] % pads.size()].name)
 		return
 	for t in TASKS:
 		if t[0] == kind:
@@ -230,6 +238,9 @@ func _moon_home_mission() -> void:
 func _title_of(item: Array) -> String:
 	if item[0] == "planet":
 		return "Перелёт к планете " + _planets()[item[1]].name
+	if item[0] == "base_land":
+		var pads: Array = flight.landing_pads()
+		return "Посадка на площадку " + (str(pads[item[1] % pads.size()].name) if not pads.is_empty() else "базы")
 	for t in TASKS:
 		if t[0] == item[0]:
 			return t[1] + ("" if t[2] == "" else " (%d %s)" % [item[1], t[3]])
@@ -274,6 +285,16 @@ func _run(items: Array) -> void:
 				else:
 					tasks += Autopilot.tasks_planet(tgt, flight.default_orbit_altitude(tgt))
 			"moon_land": tasks += Autopilot.tasks_moon_land()
+			"base_land":
+				var pads: Array = flight.landing_pads()
+				if pads.is_empty():
+					flight.message.emit("На %s нет баз с посадочной площадкой" % flight.vessel.body.name)
+					return
+				if flight.vessel.body.has_atmosphere():
+					flight.message.emit("Точная посадка пока только на тела без атмосферы")
+					return
+				var pd: Dictionary = pads[it[1] % pads.size()]
+				tasks += Autopilot.tasks_land_at(float(pd.lat), float(pd.lon), str(pd.name))
 			"moon_up": tasks += Autopilot.tasks_moon_ascent(it[1] * 1000.0, SolarSystem.find(flight.root_body, "moon"), flight.sim_time)
 			"deorbit": tasks += Autopilot.tasks_deorbit()
 			"circ_apo": tasks += Autopilot.tasks_circularize("apo")

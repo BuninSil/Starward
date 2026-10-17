@@ -148,9 +148,26 @@ static func _deck(p: Node3D, size := 3.4) -> void:
 static func build_module(type: String, ghost := false, drills: Array = [], lamps: Array = []) -> Node3D:
 	var n := Node3D.new()
 	n.name = type
-	_deck(n)
+	if type != "pad":
+		_deck(n)
 	var y0 := 0.34
 	match type:
+		"pad":
+			# Flat landing pad ~9 m across, a little above the ground, markings
+			# and edge lights.
+			_cyl(n, 4.6, 0.5, Vector3(0, -0.12, 0), _mat(Color(0.47, 0.47, 0.46), 0.1, 0.85), 24)
+			_cyl(n, 4.62, 0.06, Vector3(0, 0.14, 0), _mat(ORANGE, 0.0, 0.6), 24)
+			_cyl(n, 4.3, 0.07, Vector3(0, 0.15, 0), _mat(Color(0.5, 0.5, 0.49), 0.1, 0.85), 24)
+			_cyl(n, 2.4, 0.08, Vector3(0, 0.16, 0), _mat(WHITE, 0.0, 0.7), 24)
+			_cyl(n, 2.1, 0.09, Vector3(0, 0.17, 0), _mat(Color(0.5, 0.5, 0.49), 0.1, 0.85), 24)
+			_box(n, Vector3(0.35, 0.1, 2.4), Vector3(-0.6, 0.18, 0), _mat(WHITE, 0.0, 0.7))
+			_box(n, Vector3(0.35, 0.1, 2.4), Vector3(0.6, 0.18, 0), _mat(WHITE, 0.0, 0.7))
+			_box(n, Vector3(1.2, 0.1, 0.35), Vector3(0, 0.18, 0), _mat(WHITE, 0.0, 0.7))
+			for k in 8:
+				var a := TAU * k / 8.0
+				var lamp := _cyl(n, 0.12, 0.14, Vector3(cos(a) * 4.45, 0.2, sin(a) * 4.45),
+					_mat(DARK, 0.0, 0.4, Color(0.3, 0.8, 1.0)), 8)
+				lamps.append(lamp)
 		"solar":
 			_cyl(n, 0.12, 1.4, Vector3(0, y0 + 0.7, 0), _mat(GREY, 0.7, 0.4), 10)
 			var panel := Node3D.new()

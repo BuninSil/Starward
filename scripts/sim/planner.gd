@@ -459,6 +459,88 @@ static func deorbit_sunlit(r: DVec3, v: DVec3, b: CelestialBody, t_now: float, t
 	return deorbit(r, v, b, t_now, target_alt, best_delay)
 
 
+## Plane change so the ground track passes over a surface point (lat/lon,
+## degrees) about `lead` seconds from now; null when it already does (within
+## ~1.5 km). The burn sits on the line where the old and the new planes cross.
+static func plane_to_target(r: DVec3, v: DVec3, b: CelestialBody, t_now: float, lat: float, lon: float) -> ManeuverNode:
+	var el := OrbitMath.elements(r, v, b.mu)
+	if el.e >= 1.0:
+		return null
+	var period := TAU * sqrt(pow(el.a, 3) / b.mu)
+	var site := b.fixed_to_inertial(CelestialBody.surface_normal(lat, lon), t_now + period * 1.5)
+	var n := r.cross(v).normalized()
+	var off := n.dot(site)
+	if absf(off) * b.radius < 1500.0:
+		return null
+	var n2 := n.sub(site.mul(off)).normalized()
+	var k := n.cross(n2).normalized()
+	# First pass through either node within the next orbit.
+	var best_dt := 60.0
+	var best := -2.0
+	for i in 360:
+		var dt := 60.0 + period * i / 360.0
+		var st := OrbitMath.propagate(r, v, b.mu, dt)
+		var c := absf((st[0] as DVec3).normalized().dot(k))
+		if c > best + 1e-9:
+			best = c
+			best_dt = dt
+		if c > 0.9995:
+			break
+	var st2 := OrbitMath.propagate(r, v, b.mu, best_dt)
+	var rk: DVec3 = st2[0]
+	var vk: DVec3 = st2[1]
+	var v_new := vk.sub(n2.mul(vk.dot(n2))).normalized().mul(vk.length())
+	var dv := v_new.sub(vk)
+	var p := vk.normalized()
+	var nn := rk.cross(vk).normalized()
+	var rr := p.cross(nn)
+	if rr.dot(rk) < 0.0:
+		rr = rr.mul(-1.0)
+	return ManeuverNode.new(t_now + best_dt, b, dv.dot(p), dv.dot(nn), dv.dot(rr))
+
+
+## Deorbit for a landing on a surface point (airless body): lowers the
+## periapsis to `target_alt` with the burn timed so the braking that starts near
+## the periapsis (`a_brake` m/s², horizontal) ends over the site.
+static func deorbit_to_target(r: DVec3, v: DVec3, b: CelestialBody, t_now: float, target_alt: float,
+		lat: float, lon: float, a_brake: float) -> ManeuverNode:
+	var el := OrbitMath.elements(r, v, b.mu)
+	var period: float = TAU * sqrt(pow(el.a, 3) / b.mu) if el.e < 1.0 else 3600.0
+	var site_f := CelestialBody.surface_normal(lat, lon)
+	var best_delay := 60.0
+	var best := INF
+	for i in 240:
+		var delay := 60.0 + period * i / 240.0
+		var node := deorbit(r, v, b, t_now, target_alt, delay)
+		var st := node.state_before(r, v, t_now)
+		var r1: DVec3 = st[0]
+		var v1 := (st[1] as DVec3).add(node.dv_world(r, v, t_now))
+		var el1 := OrbitMath.elements(r1, v1, b.mu)
+		if el1.e >= 1.0:
+			continue
+		var p1 := TAU * sqrt(pow(el1.a, 3) / b.mu)
+		var to_peri := Planner.time_to_anomaly(el1, 0.0)
+		var sp := OrbitMath.propagate(r1, v1, b.mu, to_peri)
+		var rp: DVec3 = sp[0]
+		var vp: DVec3 = sp[1]
+		# Braking from the periapsis: distance and time to stop.
+		var vh := vp.length()
+		var d := vh * vh / (2.0 * maxf(a_brake, 0.3))
+		var tb := vh / maxf(a_brake, 0.3)
+		# Where the craft stops: rotate the periapsis forward in the orbit plane.
+		var ang := d / rp.length()
+		var hn := rp.cross(vp).normalized()
+		var stop := rp.normalized().mul(cos(ang)).add(hn.cross(rp.normalized()).mul(sin(ang)))
+		var site := b.fixed_to_inertial(site_f, node.t + to_peri + tb)
+		var miss := stop.sub(site).length()
+		if miss < best:
+			best = miss
+			best_delay = delay
+		if p1 <= 0.0:
+			break
+	return deorbit(r, v, b, t_now, target_alt, best_delay)
+
+
 ## Small mid-course correction ~2 minutes from now to hit `target_alt` at `target`.
 static func plan_correction(r: DVec3, v: DVec3, b: CelestialBody, t_now: float, target: CelestialBody,
 		target_alt: float) -> ManeuverNode:

@@ -28,16 +28,18 @@ const MODULES := {
 		"desc": "лёд → топливо или кислород; 2 кВт", "use_kw": 2.0},
 	"pump": {"name": "Заправочная колонка", "cost": {"metal": 4, "parts": 2},
 		"desc": "заправляет ракету, севшую рядом (40 м)", "range": 40.0},
+	"pad": {"name": "Посадочная площадка", "cost": {"metal": 8, "parts": 2},
+		"desc": "цель для автопилота «Посадка на площадку базы»; соседние клетки свободны"},
 }
-const ORDER := ["solar", "battery", "storage", "drill", "processor", "pump"]
+const ORDER := ["solar", "battery", "storage", "drill", "processor", "pump", "pad"]
 
 const DRILL_RATE := 1.0 / 30.0    ## units per second at richness 1
 const PROC_PERIOD := 60.0         ## seconds per product
 
 
 ## A new base anchored at lat/lon (degrees) with the given grid heading.
-static func make(body_id: String, lat: float, lon: float, heading_deg: float, t: float) -> Dictionary:
-	return {"body": body_id, "lat": lat, "lon": lon, "heading": heading_deg,
+static func make(body_id: String, lat: float, lon: float, heading_deg: float, t: float, name := "") -> Dictionary:
+	return {"body": body_id, "lat": lat, "lon": lon, "heading": heading_deg, "label": name,
 		"modules": [], "store": Inventory.new(BASE_SLOTS, "Склад базы").to_data(),
 		"energy": 0.0, "t": t, "mode": "fuel", "target": "", "acc": {}, "name": ""}
 
@@ -72,6 +74,28 @@ static func occupied(base: Dictionary, gx: int, gz: int) -> bool:
 		if int(m.x) == gx and int(m.z) == gz:
 			return true
 	return false
+
+
+## Can a module of this type go to the cell? A landing pad needs its eight
+## neighbours free, and nothing goes next to a pad.
+static func blocked(base: Dictionary, type: String, gx: int, gz: int) -> bool:
+	for m in base.modules:
+		var dx := absi(int(m.x) - gx)
+		var dz := absi(int(m.z) - gz)
+		if dx == 0 and dz == 0:
+			return true
+		if (type == "pad" or m.type == "pad") and dx <= 1 and dz <= 1:
+			return true
+	return false
+
+
+static func cell_latlon(base: Dictionary, gx: int, gz: int, radius: float) -> Vector2:
+	return CelestialBody.lat_lon(cell_dir(base, gx, gz, radius))
+
+
+static func display_name(base: Dictionary, index: int) -> String:
+	var l := str(base.get("label", ""))
+	return l if l != "" else "База %d" % (index + 1)
 
 
 static func add_module(base: Dictionary, type: String, gx: int, gz: int, rot: int) -> void:
