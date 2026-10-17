@@ -152,7 +152,7 @@ func _build_right() -> void:
 	col.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	_root.add_child(col)
 	var grid := GridContainer.new()
-	grid.columns = 2
+	grid.columns = 4
 	grid.add_theme_constant_override("h_separation", 8)
 	grid.add_theme_constant_override("v_separation", 8)
 	col.add_child(grid)
@@ -254,6 +254,7 @@ func _toggle_build() -> void:
 
 func _make_build_panel() -> void:
 	_build_panel = _panel()
+	_build_panel.hide()
 	_build_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP, Control.PRESET_MODE_MINSIZE, 12)
 	_build_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	_root.add_child(_build_panel)
@@ -268,16 +269,16 @@ func _make_build_panel() -> void:
 	_build_list = VBoxContainer.new()
 	box.add_child(_build_list)
 	var grid := GridContainer.new()
-	grid.columns = 2
+	grid.columns = 4
 	grid.add_theme_constant_override("h_separation", 6)
 	grid.add_theme_constant_override("v_separation", 6)
 	_build_list.add_child(grid)
 	for type in Bases.ORDER:
 		var b := _btn("", func() -> void:
 			flight.set_build_type(type)
-			_refresh_build(), 380, false)
-		b.add_theme_font_size_override("font_size", 16)
-		b.custom_minimum_size = Vector2(380, 56)
+			_refresh_build(), 230, false)
+		b.add_theme_font_size_override("font_size", 15)
+		b.custom_minimum_size = Vector2(230, 54)
 		grid.add_child(b)
 		_build_btns[type] = b
 	var row := HBoxContainer.new()

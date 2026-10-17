@@ -35,7 +35,7 @@ func _ready() -> void:
 	var top := HBoxContainer.new()
 	box.add_child(top)
 	top.add_theme_constant_override("separation", 8)
-	for t in [["Груз", "cargo"], ["Производство", "craft"]]:
+	for t in [["Груз", "cargo"], ["Производство", "craft"], ["База", "base"]]:
 		var tb := Button.new()
 		tb.text = t[0]
 		tb.toggle_mode = true
@@ -62,6 +62,10 @@ func _ready() -> void:
 	_craft_view.add_theme_constant_override("separation", 8)
 	_craft_view.custom_minimum_size = Vector2(900, 0)
 	box.add_child(_craft_view)
+	_base_view = VBoxContainer.new()
+	_base_view.add_theme_constant_override("separation", 8)
+	_base_view.custom_minimum_size = Vector2(900, 0)
+	box.add_child(_base_view)
 	for key in ["astro", "ship"]:
 		var col := VBoxContainer.new()
 		col.add_theme_constant_override("separation", 6)
@@ -101,8 +105,13 @@ func refresh() -> void:
 		(_tabs[k] as Button).set_pressed_no_signal(k == _tab)
 	_cargo_view.visible = _tab == "cargo"
 	_craft_view.visible = _tab == "craft"
+	_base_view.visible = _tab == "base"
 	if _tab == "craft":
 		_refresh_craft()
+		return
+	if _tab == "base":
+		_refresh_base()
+		_note.text = ""
 		return
 	var invs := {"astro": Game.astro_inv, "ship": Game.ship_inv}
 	for key in invs:
@@ -158,6 +167,108 @@ func _show_tab(t: String) -> void:
 ## the suit always.
 func _sources() -> Array:
 	return [Game.ship_inv, Game.astro_inv] if _can_transfer() else [Game.astro_inv]
+
+
+var _base_view: VBoxContainer
+
+
+func _label(text: String, size := 19, color := Color(0.85, 0.9, 1.0)) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_size_override("font_size", size)
+	l.add_theme_color_override("font_color", color)
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l.custom_minimum_size = Vector2(880, 0)
+	return l
+
+
+func _choice_row(title: String, options: Array, current: String, cb: Callable) -> HBoxContainer:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	var l := Label.new()
+	l.text = title
+	l.add_theme_font_size_override("font_size", 19)
+	l.custom_minimum_size = Vector2(230, 0)
+	row.add_child(l)
+	for o in options:
+		var b := Button.new()
+		b.text = o[1]
+		b.toggle_mode = true
+		b.focus_mode = Control.FOCUS_NONE
+		b.custom_minimum_size = Vector2(170, 52)
+		b.set_pressed_no_signal(o[0] == current)
+		var val: String = o[0]
+		b.pressed.connect(func() -> void: cb.call(val))
+		row.add_child(b)
+	return row
+
+
+## Base tab: the nearest base's power, what it digs and makes, its store, and
+## refuelling the landed rocket from it.
+func _refresh_base() -> void:
+	for c in _base_view.get_children():
+		c.queue_free()
+	if flight == null:
+		return
+	var i: int = flight.nearby_base(60.0)
+	if i < 0:
+		_base_view.add_child(_label("Рядом нет базы (ближе 60 м к любому модулю). Построить — «Стройка», выйдя на поверхность."))
+		return
+	var b: Dictionary = Game.bases[i]
+	var body: CelestialBody = flight.vessel.body
+	Bases.simulate(b, body, flight.sim_time)
+	var pw := Bases.power(b, body, flight.sim_time)
+	var sun := Bases.sunlight(b, body, flight.sim_time)
+	_base_view.add_child(_label("%s · %d модулей" % [Bases.display_name(b, i), b.modules.size()], 24, Color(1, 1, 1)))
+	_base_view.add_child(_label("Энергия %.1f / %.1f кВт·ч · солнце %d%% · выработка %.1f кВт · потребление %.1f кВт" % [
+		float(b.energy), Bases.battery_kwh(b), int(sun * 100.0), float(pw.gen), float(pw.load)]))
+	if Bases.count(b, "drill") > 0:
+		var r := Resources.at(body.id, float(b.lat), float(b.lon))
+		_base_view.add_child(_choice_row("Буры копают:", [["ice", "Лёд %d%%" % int(r.ice * 100)], ["ore", "Руда %d%%" % int(r.ore * 100)],
+			["regolith", "Реголит %d%%" % int(r.regolith * 100)]], Bases.drill_target(b, body), func(v: String) -> void:
+				b.target = v
+				refresh()))
+	if Bases.count(b, "processor") > 0:
+		_base_view.add_child(_choice_row("Переработчик:", [["fuel", "Топливо"], ["oxygen", "Кислород"]], str(b.mode),
+			func(v: String) -> void:
+				b.mode = v
+				refresh()))
+	var inv := Bases.store(b)
+	var parts := PackedStringArray()
+	for id in Items.DEFS:
+		var n := inv.count(id)
+		if n > 0:
+			parts.append("%s %d" % [Items.name_of(id), n])
+	_base_view.add_child(_label("Склад %d/%d ячеек: %s" % [inv.used(), inv.size(), ", ".join(parts) if not parts.is_empty() else "пусто"]))
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	_base_view.add_child(row)
+	var to_ship: bool = flight.ship_reachable()
+	row.add_child(_row_button("Всё в корабль", to_ship and inv.used() > 0, func() -> void:
+		_take_all(b, Game.ship_inv)))
+	row.add_child(_row_button("Всё в скафандр", flight.eva_mode and inv.used() > 0, func() -> void:
+		_take_all(b, Game.astro_inv)))
+	row.add_child(_row_button("Сдать груз на склад", to_ship and Game.ship_inv.used() > 0, func() -> void:
+		var st := Bases.store(b)
+		for k in Game.ship_inv.size():
+			Game.ship_inv.move_slot_to(k, st)
+		Bases.set_store(b, st)
+		Game.inventories_changed.emit()))
+	var has_pump := Bases.count(b, "pump") > 0
+	row.add_child(_row_button("Заправиться от базы", has_pump and flight.vessel.landed, func() -> void:
+		flight.message.emit(flight.refuel_from_base(i))
+		refresh()))
+	if not has_pump:
+		_base_view.add_child(_label("Для заправки ракеты нужна заправочная колонка (ракета должна стоять в 40 м от неё).", 17, Color(0.7, 0.75, 0.85)))
+
+
+func _take_all(b: Dictionary, dest: Inventory) -> void:
+	var st := Bases.store(b)
+	for k in st.size():
+		st.move_slot_to(k, dest)
+	Bases.set_store(b, st)
+	Game.inventories_changed.emit()
+	refresh()
 
 
 func _row_button(text: String, enabled: bool, cb: Callable) -> Button:

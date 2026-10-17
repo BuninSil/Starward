@@ -1250,6 +1250,48 @@ func place_build() -> String:
 	return "Построено: %s (%s)" % [name, Bases.display_name(b, i)]
 
 
+## Index of the base with a module within `reach` metres of the player, or -1.
+func nearby_base(reach := 60.0) -> int:
+	var here := player_fixed_dir()
+	var best := -1
+	var best_d := reach
+	for i in Game.bases.size():
+		var b: Dictionary = Game.bases[i]
+		if str(b.body) != vessel.body.id:
+			continue
+		var d := Bases.distance_to(b, here, vessel.body.radius)
+		if d < best_d:
+			best_d = d
+			best = i
+	return best
+
+
+## Can the ship's hold take things from a base: aboard, or on foot near the ship.
+func ship_reachable() -> bool:
+	return not eva_mode or (astronaut != null and entry_distance() < SHIP_REACH)
+
+
+## Refuels the landed rocket from the base store through a fuelling pump within
+## its range. Returns a message.
+func refuel_from_base(i: int) -> String:
+	if i < 0 or i >= Game.bases.size():
+		return "Рядом нет базы"
+	var b: Dictionary = Game.bases[i]
+	if not vessel.landed:
+		return "Ракета должна стоять на поверхности"
+	var ship_dir := vessel.body.inertial_to_fixed(vessel.pos, sim_time).normalized()
+	if Bases.distance_to(b, ship_dir, vessel.body.radius, "pump") > float(Bases.MODULES.pump.range):
+		return "Ракета дальше %d м от заправочной колонки" % int(Bases.MODULES.pump.range)
+	Bases.simulate(b, vessel.body, sim_time)
+	var inv := Bases.store(b)
+	var kg := Crafting.refuel(vessel, [inv])
+	Bases.set_store(b, inv)
+	Game.inventories_changed.emit()
+	if kg > 0.0:
+		return "Залито %.0f кг топлива" % kg
+	return "Баки и так полны" if inv.count("fuel") > 0 else "На складе базы нет топлива"
+
+
 ## Landing pads of the bases on the current body: [{name, lat, lon}].
 func landing_pads() -> Array:
 	var out := []
