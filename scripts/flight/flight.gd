@@ -1018,6 +1018,7 @@ func _process_frame(delta: float) -> void:
 		if alt < 0.5 * vessel.body.radius:
 			hd_tiles.call("want", vessel.body, dir_n, 0)
 		hd_tiles.call("want", vessel.body, dir_n, 1)
+	_update_bases(vabs, delta)
 	var t_pl := FrameSpikes.now()
 	for b in bodies:
 		var rel := b.absolute_position(sim_time).sub(vabs)
@@ -1076,6 +1077,66 @@ func _process_frame(delta: float) -> void:
 			node_pos = body_render_pos(vessel.body) + (st[0] as DVec3).to_v3()
 		traj_view.focus = map_focus if map_mode else vessel.body
 		traj_view.update_view(_body_pos_at, sim_time, camera, vessel.up_world(), vessel.vel.to_v3(), node_pos, ship_render_pos())
+
+
+# --- Surface bases (stage 6c) -----------------------------------------------------------
+
+const BASE_VIEW_RANGE := 6000.0   ## metres: bases closer than this are drawn
+var base_views := {}              ## index in Game.bases -> BaseView
+var _base_sim_t := 0.0
+
+
+## Body-fixed unit direction of the vessel (or the astronaut on foot).
+func player_fixed_dir() -> DVec3:
+	var p := vessel.pos
+	if eva_mode and astronaut != null:
+		p = p.add(DVec3.from_v3(astronaut.global_position))
+	return vessel.body.inertial_to_fixed(p, sim_time).normalized()
+
+
+## Draws the bases near the player and keeps them simulated.
+func _update_bases(vabs: DVec3, delta: float) -> void:
+	var t0 := FrameSpikes.now()
+	_base_sim_t -= delta
+	var sim_now := _base_sim_t <= 0.0
+	if sim_now:
+		_base_sim_t = 2.0
+	var here := player_fixed_dir()
+	var seen := {}
+	for i in Game.bases.size():
+		var b: Dictionary = Game.bases[i]
+		if str(b.body) != vessel.body.id or b.modules.is_empty():
+			continue
+		if Bases.anchor_distance(b, here, vessel.body.radius) > BASE_VIEW_RANGE:
+			continue
+		seen[i] = true
+		if sim_now:
+			Bases.simulate(b, vessel.body, sim_time)
+		var bv: BaseView = base_views.get(i)
+		if bv == null or not is_instance_valid(bv):
+			bv = BaseView.new()
+			add_child(bv)
+			bv.setup(b, vessel.body)
+			base_views[i] = bv
+		var f := Bases.frame(b)
+		var bd := vessel.body
+		var h0 := bd.surface_height(f[0])
+		var anchor := bd.absolute_position(sim_time).add(bd.fixed_to_inertial((f[0] as DVec3).mul(bd.radius + h0), sim_time))
+		bv.global_transform = Transform3D(Basis(bd.fixed_to_inertial(f[1], sim_time).to_v3(),
+			bd.fixed_to_inertial(f[0], sim_time).to_v3(), bd.fixed_to_inertial(f[2], sim_time).to_v3()),
+			anchor.sub(vabs).to_v3())
+	for i in base_views.keys():
+		if not seen.has(i):
+			if is_instance_valid(base_views[i]):
+				base_views[i].queue_free()
+			base_views.erase(i)
+	FrameSpikes.add("базы", t0)
+
+
+## Rebuilds a base's model after a module was added.
+func refresh_base(i: int) -> void:
+	if base_views.has(i) and is_instance_valid(base_views[i]):
+		(base_views[i] as BaseView).rebuild()
 
 
 ## Scaled-space rule for the flight view: bodies whose surface is farther than
