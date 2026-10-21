@@ -567,6 +567,9 @@ func set_warp(i: int) -> void:
 	if eva_mode and i > 0:
 		message.emit("Во время выхода ускорение времени недоступно")
 		i = 0
+	if vessel.cruise and i > 0:
+		message.emit("В круизе ускорение времени не нужно")
+		i = 0
 	if WARPS[i] > PHYSICS_WARP_MAX and not vessel.can_rails_warp():
 		var why := "двигатель работает" if vessel.throttle > 0.0 else "в атмосфере"
 		message.emit("Ускорение > %dx недоступно: %s" % [PHYSICS_WARP_MAX, why])
@@ -1788,7 +1791,7 @@ func _body_pos_at(b: CelestialBody, t: float) -> Vector3:
 
 
 func refresh_trajectory() -> void:
-	if vessel.landed or vessel.destroyed_flag:
+	if vessel.landed or vessel.destroyed_flag or vessel.cruise:
 		trajectory = []
 	else:
 		trajectory = Trajectory.predict(vessel.pos, vessel.vel, vessel.body, sim_time)

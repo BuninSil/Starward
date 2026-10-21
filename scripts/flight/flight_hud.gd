@@ -173,6 +173,56 @@ func _button(text: String, cb: Callable, min_w := 0.0) -> Button:
 	return b
 
 
+## Status of the supercruise: speed, distance and time to the target.
+func _cruise_text(v: Vessel) -> String:
+	var t := "Круиз %s" % _fmt_speed(v.cruise_speed)
+	if v.cruise_target != null:
+		var d := float(v.cruise_info.get("target_d", INF))
+		t += " · %s %s" % [v.cruise_target.name, OrbitLine.fmt_dist(d)]
+		if v.cruise_speed < float(v.cruise_info.get("cap", 0.0)) * 0.9 * v.throttle:
+			t += " · разгон"
+		elif v.cruise_speed > 1.0 and not is_inf(d):
+			var eta := (d - Vessel.cruise_drop_alt(v.cruise_target)) / v.cruise_speed
+			if eta < 3600.0:
+				t += " · %d с" % int(maxf(eta, 0.0)) if eta < 120.0 else " · %d мин" % int(eta / 60.0)
+	return t
+
+
+static func _fmt_speed(sp: float) -> String:
+	if sp < 10_000.0:
+		return "%d м/с" % int(sp)
+	if sp < 0.05 * 299_792_458.0:
+		return "%d км/с" % int(sp / 1000.0)
+	return "%.1f c" % (sp / 299_792_458.0)
+
+
+func _toggle_cruise() -> void:
+	var v: Vessel = flight.vessel
+	if v.cruise:
+		v.cruise_stop(flight.sim_time)
+		flight.message.emit("Выход из круиза")
+		return
+	var why := v.cruise_start(flight.sim_time)
+	if why != "":
+		flight.message.emit("Круиз недоступен: " + why)
+		return
+	flight.set_warp(0)
+	flight.message.emit("Круиз: газ — скорость, у тел она падает сама")
+
+
+## Next body in the list of targets (no Sun), then "none".
+func _next_cruise_target() -> void:
+	var v: Vessel = flight.vessel
+	var list: Array = []
+	for b in v.all_bodies():
+		if b.parent != null:
+			list.append(b)
+	var i := list.find(v.cruise_target)
+	v.cruise_target = list[i + 1] if i + 1 < list.size() else null
+	if v.cruise_target == null:
+		v.cruise_aim = false
+
+
 func _label(size: int, color: Color) -> Label:
 	var l := Label.new()
 	l.add_theme_font_size_override("font_size", size)
@@ -319,6 +369,10 @@ func _build_throttle() -> void:
 var _roll_label: Label
 var _ship_row: HBoxContainer
 var _fa_btn: Button
+var _cruise_box: VBoxContainer
+var _cruise_btn: Button
+var _target_btn: Button
+var _aim_btn: Button
 
 
 func _build_attitude() -> void:
@@ -396,6 +450,27 @@ func _build_attitude() -> void:
 		flight.message.emit("Помощник полёта " + ("включён" if flight.vessel.fa else "выключен — чистый Ньютон")), 170)
 	_fa_btn.add_theme_font_size_override("font_size", 17)
 	side.add_child(_fa_btn)
+	# Ship only: supercruise, its target and auto-aim.
+	_cruise_box = VBoxContainer.new()
+	_cruise_box.add_theme_constant_override("separation", 8)
+	side.add_child(_cruise_box)
+	_target_btn = _button("Цель: нет ▶", _next_cruise_target, 170)
+	_target_btn.add_theme_font_size_override("font_size", 17)
+	_cruise_box.add_child(_target_btn)
+	var crow := HBoxContainer.new()
+	crow.add_theme_constant_override("separation", 8)
+	_cruise_box.add_child(crow)
+	_cruise_btn = _button("Круиз", _toggle_cruise, 81)
+	_cruise_btn.add_theme_font_size_override("font_size", 17)
+	crow.add_child(_cruise_btn)
+	_aim_btn = _button("Навести", func() -> void:
+		var v: Vessel = flight.vessel
+		if v.cruise_target == null:
+			flight.message.emit("Сначала выбери цель")
+			return
+		v.cruise_aim = not v.cruise_aim, 81)
+	_aim_btn.add_theme_font_size_override("font_size", 15)
+	crow.add_child(_aim_btn)
 	_joystick = JoystickScript.new()
 	_joystick.radius = 150.0
 	_joystick.changed.connect(func(val: Vector2) -> void:
@@ -924,8 +999,9 @@ func _process(delta: float) -> void:
 		v.input_pitch = -js.y
 		v.input_roll = js.x
 		v.input_yaw = _roll * 0.6
-	_ship_row.visible = ship
-	_fa_btn.visible = ship
+	_ship_row.visible = ship and not v.cruise
+	_fa_btn.visible = ship and not v.cruise
+	_cruise_box.visible = ship
 	_hold_btn.visible = not ship
 	_roll_label.text = "рыскание" if ship else "крен"
 	if ship:
@@ -937,6 +1013,14 @@ func _process(delta: float) -> void:
 	_throttle_label.text = "Газ %d%%" % int(round(v.throttle * 100.0))
 	if ship and v.fa:
 		_throttle_label.text = "Скорость %d / %d м/с" % [int(v.throttle * v.ship_max_speed()), int(v.ship_max_speed())]
+	if ship:
+		_target_btn.text = "Цель: %s ▶" % (v.cruise_target.name if v.cruise_target != null else "нет")
+		_cruise_btn.text = "Выйти" if v.cruise else "Круиз"
+		_aim_btn.text = "Навожу" if v.cruise_aim else "Навести"
+		_aim_btn.modulate = Color(1.0, 0.85, 0.4) if v.cruise_aim else Color.WHITE
+		_cruise_btn.modulate = Color(0.55, 0.85, 1.0) if v.cruise else Color.WHITE
+		if v.cruise:
+			_throttle_label.text = _cruise_text(v)
 	var ap: Autopilot = flight.autopilot
 	_ap_label.text = "Автопилот · " + ap.status() if ap.active() else ""
 	if not ap.active() and v.chute_deployed and not v.landed and not v.destroyed_flag:

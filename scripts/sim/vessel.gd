@@ -260,6 +260,13 @@ func _step_ship(dt: float, t: float) -> void:
 	# Rotation: the stick commands turn rates; flight assist holds them (and
 	# stops the spin when released).
 	var want_w := attitude * Vector3(input_pitch * SHIP_RATE.x, -input_yaw * SHIP_RATE.y, -input_roll * SHIP_RATE.z)
+	if cruise:
+		want_w *= CRUISE_TURN
+	if cruise_aim and cruise_target != null and not landed:
+		if absf(input_pitch) + absf(input_yaw) > 0.15:
+			cruise_aim = false   # the player steers: aiming off
+		else:
+			want_w = _aim_rate(_aim_dir(t)) + attitude * Vector3(0, 0, -input_roll * SHIP_RATE.z)
 	var aw: Vector3
 	if fa:
 		aw = ((want_w - ang_vel) * 4.0).limit_length(SHIP_ANG_ACCEL)
@@ -271,6 +278,10 @@ func _step_ship(dt: float, t: float) -> void:
 	var w := ang_vel.length()
 	if w > 1e-9:
 		attitude = (Quaternion(ang_vel / w, w * dt) * attitude).normalized()
+
+	if cruise:
+		_step_cruise(dt, t)
+		return
 
 	var m := mass()
 	var s := active_stage()
@@ -324,6 +335,167 @@ func _step_ship(dt: float, t: float) -> void:
 	last_accel_ng = last_accel_ng + a_t
 	_check_ground(t + dt)
 	check_soi(t + dt)
+
+
+# --- Supercruise (ship step 2) ---------------------------------------------------------
+# Fast travel inside the system, Elite style: the ship moves along its nose at
+# a speed that grows with the distance to the nearest body and drops near
+# bodies, with no gravity and a trickle of fuel. Distances stay real (/10):
+# the Moon is ~40 s away, planets a few minutes. With a target the speed
+# also drops on the way in, and the ship falls out of cruise by itself at
+# ~30% of the target's radius above it, flying on with flight assist.
+
+const CRUISE_MIN_ALT := 10_000.0   ## m above the ground to engage
+const CRUISE_MIN_SPEED := 300.0
+const CRUISE_MAX_SPEED := 2.0e9    ## ~7 c
+const CRUISE_NEAR := 0.3           ## speed cap: this × distance to the nearest surface, per second
+const CRUISE_ARRIVE := 4.5         ## seconds to the drop point at the target's speed cap
+const CRUISE_UP := 0.55            ## speed grows ×e in 1/CRUISE_UP s
+const CRUISE_DOWN := 1.5
+const CRUISE_FUEL := 0.3           ## kg/s
+const CRUISE_TURN := 0.6           ## turn rates in cruise vs. normal flight
+const CRUISE_EXIT_SPEED := 500.0
+var cruise := false
+var cruise_speed := 0.0
+var cruise_target: CelestialBody = null
+var cruise_aim := false
+var cruise_info := {}              ## last step: {near, near_d, target_d, cap}
+
+
+## Every body of the system (the Sun first), for the target list.
+func all_bodies() -> Array[CelestialBody]:
+	var root := body
+	while root.parent != null:
+		root = root.parent
+	var out: Array[CelestialBody] = []
+	var stack: Array[CelestialBody] = [root]
+	while not stack.is_empty():
+		var b: CelestialBody = stack.pop_front()
+		out.append(b)
+		stack.append_array(b.children)
+	return out
+
+
+## Altitude above a body at which the ship drops out of cruise next to it.
+static func cruise_drop_alt(b: CelestialBody) -> float:
+	return maxf(b.radius * 0.3, 30_000.0)
+
+
+## Why cruise can't start now ("" = it can).
+func cruise_block_reason(t: float) -> String:
+	if not is_ship():
+		return "только у корабля"
+	if landed:
+		return "сначала взлети"
+	if not has_fuel() and not infinite_fuel:
+		return "нет топлива"
+	if altitude_above_ground(t) < CRUISE_MIN_ALT:
+		return "поднимись выше %d км" % int(CRUISE_MIN_ALT / 1000.0)
+	return ""
+
+
+func cruise_start(t: float) -> String:
+	var why := cruise_block_reason(t)
+	if why != "":
+		return why
+	cruise = true
+	cruise_speed = maxf(vel.length(), CRUISE_MIN_SPEED)
+	ang_vel = Vector3.ZERO
+	return ""
+
+
+## Leaves cruise flying on at a sane speed along the nose; flight assist holds it.
+func cruise_stop(_t: float) -> void:
+	if not cruise:
+		return
+	cruise = false
+	var sp := minf(cruise_speed, CRUISE_EXIT_SPEED)
+	var omega := DVec3.new(0, body.angular_velocity(), 0)
+	vel = DVec3.from_v3(ship_forward() * sp).add(omega.cross(pos))
+	cruise_speed = 0.0
+	throttle = clampf(sp / ship_max_speed(), 0.0, 1.0)
+
+
+## Unit direction (world) from the ship to the target's centre.
+func _target_dir(t: float) -> Vector3:
+	var me := body.absolute_position(t).add(pos)
+	return cruise_target.absolute_position(t).sub(me).normalized().to_v3()
+
+
+## Where "aim" turns the nose: at the target, or past the edge of the body
+## we are at when it stands in the way (leaving Earth for the Moon behind it).
+func _aim_dir(t: float) -> Vector3:
+	var d := _target_dir(t)
+	if cruise_target == body or body.parent == null:
+		return d
+	var to_c := pos.mul(-1.0).to_v3()          # to the centre of the current body
+	var along := to_c.dot(d)
+	var clear := body.radius + cruise_drop_alt(body)
+	if along <= 0.0 or (to_c - d * along).length() > clear:
+		return d
+	# Aim at a point beside the body, on our side of the line.
+	var side := (d * along - to_c)
+	side = side.normalized() if side.length() > 1.0 else d.cross(Vector3.UP).normalized()
+	return (to_c + side * clear * 1.2).normalized()
+
+
+## Turn rate that brings the nose onto a direction (limited like the stick).
+func _aim_rate(dir: Vector3) -> Vector3:
+	var f := ship_forward()
+	var axis := f.cross(dir)
+	var s := axis.length()
+	var ang := atan2(s, f.dot(dir))
+	if s < 1e-6:
+		return Vector3.ZERO if ang < 1.0 else attitude * Vector3.UP * SHIP_RATE.y
+	return axis / s * minf(ang * 1.5, SHIP_RATE.x * CRUISE_TURN)
+
+
+func _step_cruise(dt: float, t: float) -> void:
+	var s := active_stage()
+	if not infinite_fuel:
+		s.fuel = maxf(float(s.fuel) - CRUISE_FUEL * dt, 0.0)
+		if float(s.fuel) <= 0.0:
+			cruise_stop(t)
+			return
+	# Nearest surface among all bodies, and the target's distance.
+	var me := body.absolute_position(t).add(pos)
+	var near_d := INF
+	var near: CelestialBody = null
+	var target_d := INF
+	for b in all_bodies():
+		var d := b.absolute_position(t).sub(me).length() - b.radius
+		if d < near_d:
+			near_d = d
+			near = b
+		if b == cruise_target:
+			target_d = d
+	var cap := clampf(near_d * CRUISE_NEAR, CRUISE_MIN_SPEED, CRUISE_MAX_SPEED)
+	var fwd := ship_forward()
+	if cruise_target != null and fwd.dot(_target_dir(t)) > 0.9:
+		cap = minf(cap, maxf((target_d - cruise_drop_alt(cruise_target)) / CRUISE_ARRIVE, CRUISE_MIN_SPEED))
+	var want := throttle * cap
+	if cruise_aim and cruise_target != null:
+		# Turning onto the course: hold back until the nose is on it.
+		want *= pow(clampf(fwd.dot(_aim_dir(t)), 0.05, 1.0), 8.0)
+	want = maxf(want, CRUISE_MIN_SPEED)
+	if want > cruise_speed:
+		cruise_speed = minf(want, cruise_speed * exp(CRUISE_UP * dt) + 30.0 * dt)
+	else:
+		cruise_speed = maxf(want, cruise_speed * exp(-CRUISE_DOWN * dt))
+	cruise_info = {"near": near, "near_d": near_d, "target_d": target_d, "cap": cap}
+	last_thrust = 0.0
+	last_accel_ng = Vector3.ZERO
+	vel = DVec3.from_v3(fwd).mul(cruise_speed)
+	pos.add_scaled(vel, dt)
+	check_soi(t + dt)
+	# Drop out next to the target, or anywhere too close to a surface.
+	if cruise_target != null and target_d < cruise_drop_alt(cruise_target) * 1.15:
+		cruise_stop(t + dt)
+		cruise_target = null
+		cruise_aim = false
+		throttle = 0.0   # arrived: flight assist brakes to a hover, the player takes over
+	elif altitude_above_ground(t + dt) < CRUISE_MIN_ALT * 0.8:
+		cruise_stop(t + dt)
 
 
 # --- Re-entry heating -------------------------------------------------------------
@@ -759,6 +931,8 @@ func _set_landed(v: bool) -> void:
 func can_rails_warp() -> bool:
 	if destroyed_flag:
 		return true
+	if cruise:
+		return false
 	if landed:
 		return throttle == 0.0
 	return throttle == 0.0 and altitude() > body.atmosphere_height
@@ -869,6 +1043,8 @@ func to_data() -> Dictionary:
 		"landed": landed, "destroyed": destroyed_flag, "height_offset": height_offset,
 		"chute": chute_deployed, "sas": sas, "hold_mode": hold_mode,
 		"heat_temp": heat_temp, "cargo_mass": cargo_mass,
+		"cruise": cruise, "cruise_speed": cruise_speed,
+		"cruise_target": cruise_target.name if cruise_target != null else "",
 		"surface_fixed": [_surface_fixed.x, _surface_fixed.y, _surface_fixed.z],
 		"surface_att": [_surface_att_fixed.x, _surface_att_fixed.y, _surface_att_fixed.z, _surface_att_fixed.w],
 		"stages": stages.duplicate(true),
@@ -891,6 +1067,13 @@ static func from_data(d: Dictionary, b: CelestialBody) -> Vessel:
 	v.hold_mode = str(d.get("hold_mode", ""))
 	v.heat_temp = float(d.get("heat_temp", 280.0))
 	v.cargo_mass = float(d.get("cargo_mass", 0.0))
+	v.cruise = bool(d.get("cruise", false))
+	v.cruise_speed = float(d.get("cruise_speed", 0.0))
+	var ct := str(d.get("cruise_target", ""))
+	if ct != "":
+		for cb in v.all_bodies():
+			if cb.name == ct:
+				v.cruise_target = cb
 	v._surface_fixed = _dv(d.get("surface_fixed", [0, 0, 0]))
 	v._surface_att_fixed = _q(d.get("surface_att", [0, 0, 0, 1]))
 	var st: Array[Dictionary] = []
