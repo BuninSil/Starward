@@ -138,20 +138,6 @@ static func build(root: Node3D) -> Array:
 		_mesh(root, glow, _mat(DARK, 0.0, 0.5, Color(1.0, 0.45, 0.15) * 0.3), Vector3(sx * 2.0, y - 0.1, 7.7),
 			Basis(Vector3.RIGHT, PI * 0.5))
 		exhausts.append([Vector3(sx * 2.0, y - 0.1, 7.85), 0.55])
-	# Landing gear: nose leg and two main legs with pads.
-	for g in [Vector3(0, 0, -5.0), Vector3(-2.4, 0, 2.6), Vector3(2.4, 0, 2.6)]:
-		var leg := CylinderMesh.new()
-		leg.top_radius = 0.13
-		leg.bottom_radius = 0.13
-		leg.height = GEAR_H + 0.4
-		leg.radial_segments = 8
-		_mesh(root, leg, grey, g + Vector3(0, (GEAR_H + 0.4) * 0.5, 0))
-		var pad := CylinderMesh.new()
-		pad.top_radius = 0.42
-		pad.bottom_radius = 0.48
-		pad.height = 0.14
-		pad.radial_segments = 12
-		_mesh(root, pad, dark, g + Vector3(0, 0.07, 0))
 	# Navigation lights on the wing tips (red left, green right) and a white tail light.
 	for l in [[Vector3(-6.25, y - 0.2, 4.0), Color(1, 0.1, 0.1)], [Vector3(6.25, y - 0.2, 4.0), Color(0.1, 1, 0.2)],
 			[Vector3(0, y + 0.9, 6.4), Color(1, 1, 1)]]:
@@ -159,4 +145,49 @@ static func build(root: Node3D) -> Array:
 		s.radius = 0.09
 		s.height = 0.18
 		_mesh(root, s, _mat(DARK, 0.0, 0.3, l[1]), l[0])
+	# Dark gear bays under the nose and the nacelles.
+	for b in [[Vector3(0, GEAR_H + 0.02, -4.3), Vector2(0.55, 1.7)], [Vector3(-2.0, GEAR_H + 0.12, 3.3), Vector2(0.6, 1.7)],
+			[Vector3(2.0, GEAR_H + 0.12, 3.3), Vector2(0.6, 1.7)]]:
+		var h: Vector2 = b[1] * 0.5
+		_mesh(root, _plate(PackedVector2Array([Vector2(-h.x, -h.y), Vector2(h.x, -h.y), Vector2(h.x, h.y), Vector2(-h.x, h.y)]), 0.04),
+			_mat(Color(0.02, 0.02, 0.022), 0.2, 0.8), b[0])
 	return exhausts
+
+
+## Landing gear (kept apart from the merged hull: it moves). A leg: pivot at
+## the bay (folds backwards about X into the hull), a fixed oleo sleeve and a
+## sliding piston with the pad (shock absorber). Returns
+## [{pivot, slide, axis, angle}] for rocket_view's gear animation.
+static func build_gear(root: Node3D) -> Array:
+	var grey := _mat(GREY, 0.6, 0.4)
+	var dark := _mat(DARK, 0.4, 0.5)
+	var steel := _mat(Color(0.75, 0.76, 0.78), 0.8, 0.25)
+	var out := []
+	for g in [Vector3(0, 0, -5.0), Vector3(-2.0, 0, 2.6), Vector3(2.0, 0, 2.6)]:
+		var top := GEAR_H + 0.35
+		var pivot := Node3D.new()
+		pivot.position = g + Vector3(0, top, 0)
+		root.add_child(pivot)
+		var sleeve := CylinderMesh.new()
+		sleeve.top_radius = 0.17
+		sleeve.bottom_radius = 0.17
+		sleeve.height = 0.6
+		sleeve.radial_segments = 10
+		_mesh(pivot, sleeve, grey, Vector3(0, -0.3, 0))
+		var slide := Node3D.new()
+		pivot.add_child(slide)
+		var rod := CylinderMesh.new()
+		rod.top_radius = 0.1
+		rod.bottom_radius = 0.1
+		rod.height = top - 0.1
+		rod.radial_segments = 8
+		_mesh(slide, rod, steel, Vector3(0, -(top - 0.1) * 0.5 - 0.1, 0))
+		var pad := CylinderMesh.new()
+		pad.top_radius = 0.36
+		pad.bottom_radius = 0.42
+		pad.height = 0.14
+		pad.radial_segments = 12
+		_mesh(slide, pad, dark, Vector3(0, -top + 0.07, 0))
+		# Folds backwards (+Z): the leg lies along the hull in its bay.
+		out.append({"pivot": pivot, "slide": slide, "axis": Vector3.RIGHT, "angle": -PI * 0.5, "base": Basis()})
+	return out

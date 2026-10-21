@@ -52,6 +52,9 @@ func build(v: Vessel) -> void:
 	_chute_collapse = 0.0
 	hatch_pivot = null
 	_engine_light = null
+	_ship_gear = []
+	_gear_snap = true
+	_land_t = 99.0
 	if v.is_ship():
 		_build_ship(v)
 		return
@@ -510,6 +513,7 @@ func _build_legs(node: Node3D, s: Dictionary, base: float) -> void:
 	var r: float = float(s.diameter) * 0.5
 	var steel := _metal(Color(0.78, 0.79, 0.8), 0.38)
 	var gold := _skin(Color(0.95, 0.72, 0.3), {"foil": 0.8, "metal": 1.0})
+	var gear := []
 	for k in 4:
 		var ang := TAU * k / 4.0 + PI / 4.0
 		var dir := Vector3(cos(ang), 0.0, sin(ang))
@@ -517,12 +521,26 @@ func _build_legs(node: Node3D, s: Dictionary, base: float) -> void:
 		var top := dir * (r * 0.95) + Vector3(0, base + float(s.length) * 0.62, 0)
 		var foot := dir * (r + 1.1) + Vector3(0, 0.12, 0)
 		var mid := top.lerp(foot, 0.55)
-		_strut(legs, top, mid, 0.1, gold)
-		_strut(legs, mid, foot, 0.06, steel)
+		# Each leg hinges at its top: folded up against the hull in flight,
+		# swung out for landing. Parts are built relative to the hinge.
+		var pivot := Node3D.new()
+		pivot.position = top
+		legs.add_child(pivot)
+		_strut(pivot, Vector3.ZERO, mid - top, 0.1, gold)
+		# Lower piston and pad slide into the upper strut (shock absorber).
+		var slide := Node3D.new()
+		pivot.add_child(slide)
+		_strut(slide, mid - top, foot - top, 0.06, steel)
 		for sg in [-1.0, 1.0]:
-			_strut(legs, dir * (r * 0.88) + side * sg * r * 0.45 + Vector3(0, base + 0.5, 0), mid, 0.035, steel)
+			_strut(pivot, dir * (r * 0.88) + side * sg * r * 0.45 + Vector3(0, base + 0.5, 0) - top, mid - top, 0.035, steel)
 		var pad := PackedVector2Array([Vector2(0.0, -0.08), Vector2(0.3, -0.06), Vector2(0.38, 0.02), Vector2(0.36, 0.05), Vector2(0.1, 0.06), Vector2(0.0, 0.06)])
-		_mesh(legs, _lathe(pad, 32), steel, foot - Vector3(0, 0.04, 0))
+		_mesh(slide, _lathe(pad, 32), steel, foot - top - Vector3(0, 0.04, 0))
+		# Folded: the leg turned up along the hull (foot just outside the skin).
+		var leg := foot - top
+		var folded := dir * 0.12 + Vector3.DOWN * leg.length()
+		var axis := leg.cross(folded).normalized()
+		gear.append({"pivot": pivot, "slide": slide, "axis": axis, "angle": leg.angle_to(folded), "base": Basis()})
+	legs.set_meta("gear", gear)
 
 
 ## Legs are deployed only on the bottom stage.
@@ -704,6 +722,7 @@ func _build_ship(v: Vessel) -> void:
 	_stage_nodes.push_front(node)
 	var ex := ShipModel.build(node)
 	MeshMerge.merge(node, null, true, true)
+	_ship_gear = ShipModel.build_gear(node)
 	if _flame_mat == null:
 		_flame_mat = ShaderMaterial.new()
 		_flame_mat.shader = EXHAUST_SHADER
@@ -1268,7 +1287,83 @@ func detach_bottom_stage() -> Node3D:
 	return node
 
 
+# --- Landing gear and touchdown -------------------------------------------------
+# Legs fold away in flight and swing out near the ground; on touchdown the
+# hull sinks into the shock absorbers and rocks back (the physics just stops
+# on the ground; this is only the look), and the last bit of tilt the
+# physics snaps away is eased out.
+
+var _ship_gear: Array = []
+var _gear_deploy := 1.0
+var _gear_snap := true
+var _was_landed := true
+var _air_att := Quaternion.IDENTITY
+var _land_q := Quaternion.IDENTITY   ## leftover tilt after touchdown (local)
+var _land_t := 99.0
+var _land_amp := 0.0
+var _squat := 0.0                    ## static sag on the absorbers, m
+const GEAR_TIME := 1.6               ## seconds to fold / unfold
+
+
+func _gear_list() -> Array:
+	if not _ship_gear.is_empty():
+		return _ship_gear
+	if _stage_nodes.is_empty():
+		return []
+	var legs := _stage_nodes[_stage_nodes.size() - 1].get_node_or_null("Legs") as Node3D
+	return legs.get_meta("gear", []) if legs != null else []
+
+
+func _update_gear(delta: float) -> void:
+	var gear := _gear_list()
+	var landed := vessel.landed
+	var want := _gear_deploy
+	if vessel.is_ship():
+		if landed or ground_agl < 60.0:
+			want = 1.0
+		elif ground_agl > 90.0 or vessel.cruise:
+			want = 0.0
+	else:
+		want = 1.0 if landed or ground_agl < 3000.0 else 0.0
+	if _gear_snap:
+		_gear_deploy = 1.0 if landed else want
+		_gear_snap = false
+		_was_landed = landed
+		_air_att = vessel.attitude
+	_gear_deploy = move_toward(_gear_deploy, want, delta / GEAR_TIME)
+	# Touchdown: remember how hard and how tilted we came in.
+	if landed and not _was_landed:
+		_land_t = 0.0
+		_land_amp = clampf(vessel.touchdown_speed * 0.035, 0.03, 0.2)
+		_land_q = (vessel.attitude.inverse() * _air_att).normalized()
+		if _land_q.get_angle() > 0.6:
+			_land_q = Quaternion.IDENTITY   # crashed over: no easing
+	_was_landed = landed
+	if not landed:
+		_air_att = vessel.attitude
+	_land_t += delta
+	_squat = move_toward(_squat, (0.06 if vessel.is_ship() else 0.04) if landed else 0.0, delta * 0.3)
+	# Dip: down into the absorbers, a small rebound, settled in ~1 s.
+	var dip := 0.0
+	if _land_t < 1.5:
+		dip = _land_amp * exp(-_land_t / 0.3) * sin(minf(_land_t * TAU * 1.25, TAU * 1.75))
+	var c := _squat + dip
+	var e := _gear_deploy * _gear_deploy * (3.0 - 2.0 * _gear_deploy)
+	for g in gear:
+		var pivot: Node3D = g.pivot
+		if not is_instance_valid(pivot):
+			continue
+		pivot.basis = Basis(g.axis, float(g.angle) * (1.0 - e)) * (g.base as Basis)
+		(g.slide as Node3D).position = pivot.basis.inverse() * Vector3(0, c * e, 0)
+	# Hull: sink by the compression, ease out the leftover tilt.
+	if landed and _land_t < 1.5:
+		var w := (1.0 + _land_t / 0.12) * exp(-_land_t / 0.12)
+		basis = basis * Basis(Quaternion.IDENTITY.slerp(_land_q, w))
+	position = basis * Vector3(0, -c, 0) if landed else Vector3.ZERO
+
+
 func update_visual(delta: float) -> void:
+	_update_gear(delta)
 	if _chute and not _stage_nodes.is_empty():
 		_chute.visible = vessel.chute_deployed
 		if vessel.chute_deployed:
