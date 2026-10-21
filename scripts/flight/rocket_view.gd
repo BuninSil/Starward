@@ -1285,8 +1285,10 @@ func update_visual(delta: float) -> void:
 		hatch_pivot.basis = _hatch_basis * Basis(Vector3.UP, -e * deg_to_rad(110.0))
 		if _capsule_mat:
 			_capsule_mat.set_shader_parameter("hatch_open", clampf(_hatch_open * 4.0, 0.0, 1.0))
-	var on := vessel.last_thrust > 0.0
-	var thr := vessel.last_thrust / maxf(vessel.current_thrust_max(), 1.0) if on else 0.0
+	var on := vessel.last_thrust > 0.0 or vessel.cruise
+	var thr := vessel.last_thrust / maxf(vessel.current_thrust_max(), 1.0) if vessel.last_thrust > 0.0 else 0.0
+	if vessel.cruise:
+		thr = lerpf(0.35, 0.9, vessel.throttle)   # cruise drive: a steady blue-hot plume
 	for m in _bell_mats:
 		if is_instance_valid(m):
 			m.set_shader_parameter("heat", thr * 0.6)
@@ -1301,6 +1303,8 @@ func update_visual(delta: float) -> void:
 		var pr := clampf(vessel.body.pressure_at(vessel.altitude()), 0.0, 1.0)
 		_engine_light.light_energy = lerpf(0.45, 1.0, thr) * lerpf(0.9, 3.2, pr) * randf_range(0.85, 1.15)
 	var p := clampf(vessel.body.pressure_at(vessel.altitude()), 0.0, 1.0)
+	if vessel.cruise:
+		p = 0.8   # cruise drive: a tight, long jet, not the vacuum bloom
 	_flame_mat.set_shader_parameter("throttle", lerpf(0.4, 1.0, thr))
 	_flame_mat.set_shader_parameter("pressure", p)
 	for f in _flames:

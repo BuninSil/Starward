@@ -653,6 +653,8 @@ var _fx_acc := 0.0
 var _trail_acc := 0.0
 var _smoke_acc := 0.0
 var _flame_light: OmniLight3D
+const CruiseFx := preload("res://scripts/flight/cruise_fx.gd")
+var _cruise_fx: MultiMeshInstance3D
 var _last_ground_event := -100000
 var _engine_recent := 99.0  ## seconds since the engine last ran (for scorch marks)
 
@@ -1031,6 +1033,10 @@ func _process_frame(delta: float) -> void:
 	rocket.basis = Basis(vessel.attitude)
 	var t_r := FrameSpikes.now()
 	rocket.update_visual(delta)
+	if _cruise_fx == null:
+		_cruise_fx = CruiseFx.new()
+		add_child(_cruise_fx)
+	_cruise_fx.update_fx(delta, vessel.ship_forward(), vessel.cruise_speed if vessel.cruise and not map_mode else 0.0, camera)
 	FrameSpikes.add("ракета", t_r)
 	var t_snd := FrameSpikes.now()
 	_update_sound(delta)
@@ -1891,6 +1897,8 @@ func _update_sky() -> void:
 func _update_sound(delta: float) -> void:
 	var alt := vessel.altitude()
 	var thr := vessel.last_thrust / maxf(vessel.current_thrust_max(), 1.0) if vessel.last_thrust > 0.0 else 0.0
+	if vessel.cruise:
+		thr = lerpf(0.25, 0.55, vessel.throttle)   # the drive hums in cruise
 	var pressure := clampf(vessel.body.pressure_at(alt), 0.0, 1.0) if vessel.body.has_atmosphere() else 0.0
 	var sv := vessel.surface_velocity().length()
 	var q := 0.5 * vessel.body.density_at(alt) * sv * sv if vessel.body.has_atmosphere() else 0.0
