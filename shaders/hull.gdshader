@@ -105,7 +105,10 @@ void fragment() {
 		float inside = rrect(p, 0.3);
 		float ring = rrect(p * 0.97, 0.3) - rrect(p * 1.06, 0.3);
 		col *= 1.0 - 0.5 * clamp(ring, 0.0, 1.0);
-		col = mix(col, vec3(0.008), inside * hatch_open);
+		// Open door: a real hole (the cabin and the wall edges are geometry).
+		if (hatch_open > 0.01 && rrect(p, 0.06) > 0.5) {
+			discard;
+		}
 	}
 	float st = soot * exp(-v / 1.4);
 	col = mix(col, vec3(0.03, 0.028, 0.026), clamp(st, 0.0, 0.85));

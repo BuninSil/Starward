@@ -1448,7 +1448,7 @@ func start_eva() -> void:
 		_start_surface_eva()
 		return
 	var hatch: Vector3 = hatch_world()
-	var out: Vector3 = (hatch - rocket.global_transform * (rocket.hatch_local() - Vector3(0, 0, 0.35))).normalized()
+	var out: Vector3 = (rocket.global_transform.basis * rocket.hatch_out()).normalized()
 	astronaut.global_transform = Transform3D(Basis.looking_at(-out, rocket.global_transform.basis.y), hatch + out * 0.3)
 	astronaut.linear_velocity = out * 0.15
 	tether = TetherScript.new()

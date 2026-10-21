@@ -11,6 +11,9 @@ const DARK := Color(0.1, 0.1, 0.11)
 const ORANGE := Color(0.95, 0.48, 0.1)
 const GLASS := Color(0.05, 0.08, 0.12)
 const GEAR_H := 1.1     ## belly height above the ground
+const AXIS_Y := GEAR_H + 0.75   ## fuselage axis height
+const COCKPIT_HOLE := [2, 4, 7] ## fuselage quads cut away under the canopy (z -5.5..-2, 60°..120°)
+const CANOPY_HINGE := Vector3(0, AXIS_Y + 0.62, -2.2)
 
 
 static func _mat(c: Color, metal := 0.1, rough := 0.45, emit := Color.BLACK) -> StandardMaterial3D:
@@ -68,13 +71,16 @@ static func _plate(poly: PackedVector2Array, t: float) -> ArrayMesh:
 
 
 ## A body of revolution along Z from a profile [(z, r), ...] (front to back).
-static func _lathe_z(profile: Array, segs := 20, squash := 1.0) -> ArrayMesh:
+## hole = [profile index, first k, last k]: quads left out (the cockpit opening).
+static func _lathe_z(profile: Array, segs := 20, squash := 1.0, hole := [-1, 0, 0]) -> ArrayMesh:
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	for i in profile.size() - 1:
 		var p0: Vector2 = profile[i]
 		var p1: Vector2 = profile[i + 1]
 		for k in segs:
+			if i == hole[0] and k >= hole[1] and k <= hole[2]:
+				continue
 			var a0 := TAU * k / segs
 			var a1 := TAU * (k + 1) / segs
 			var v := [
@@ -96,18 +102,15 @@ static func build(root: Node3D) -> Array:
 	var grey := _mat(GREY, 0.6, 0.4)
 	var dark := _mat(DARK, 0.4, 0.5)
 	var orange := _mat(ORANGE, 0.0, 0.5)
-	var y := GEAR_H + 0.75   # fuselage axis height
+	var y := AXIS_Y
 	# Fuselage: pointed nose to a wide, slightly flattened body.
 	var body := _lathe_z([Vector2(-8.5, 0.0), Vector2(-7.6, 0.45), Vector2(-5.5, 1.05), Vector2(-2.0, 1.35),
-		Vector2(3.5, 1.35), Vector2(6.0, 1.15), Vector2(6.6, 0.9)], 24, 0.62)
+		Vector2(3.5, 1.35), Vector2(6.0, 1.15), Vector2(6.6, 0.9)], 24, 0.62, COCKPIT_HOLE)
 	_mesh(root, body, hull, Vector3(0, y, 0))
 	# Orange stripe band and dark belly panel.
-	_mesh(root, _lathe_z([Vector2(-4.2, 1.27), Vector2(-3.6, 1.32)], 24, 0.63), orange, Vector3(0, y, 0))
+	_mesh(root, _lathe_z([Vector2(-4.2, 1.27), Vector2(-3.6, 1.32)], 24, 0.63, [0, 4, 7]), orange, Vector3(0, y, 0))
 	_mesh(root, _plate(PackedVector2Array([Vector2(-0.9, -5.5), Vector2(0.9, -5.5), Vector2(1.1, 5.8), Vector2(-1.1, 5.8)]), 0.08), dark,
 		Vector3(0, y - 0.82, 0))
-	# Cockpit canopy: dark glass bubble on the nose.
-	var canopy := _lathe_z([Vector2(-6.3, 0.0), Vector2(-5.6, 0.45), Vector2(-4.2, 0.62), Vector2(-2.8, 0.5), Vector2(-2.2, 0.0)], 16, 0.7)
-	_mesh(root, canopy, _mat(GLASS, 0.6, 0.08), Vector3(0, y + 0.62, 0))
 	# Swept wings with orange tips.
 	var wing := PackedVector2Array([Vector2(1.2, -1.5), Vector2(6.0, 3.0), Vector2(6.2, 4.6), Vector2(1.2, 4.2)])
 	for sx in [-1.0, 1.0]:
@@ -152,6 +155,91 @@ static func build(root: Node3D) -> Array:
 		_mesh(root, _plate(PackedVector2Array([Vector2(-h.x, -h.y), Vector2(h.x, -h.y), Vector2(h.x, h.y), Vector2(-h.x, h.y)]), 0.04),
 			_mat(Color(0.02, 0.02, 0.022), 0.2, 0.8), b[0])
 	return exhausts
+
+
+## Cockpit canopy on a hinge at its back edge (opens front up, like a
+## fighter's). Returns the pivot.
+static func build_canopy(root: Node3D) -> Node3D:
+	var pivot := Node3D.new()
+	pivot.name = "Canopy"
+	pivot.position = CANOPY_HINGE
+	root.add_child(pivot)
+	var canopy := _lathe_z([Vector2(-6.3, 0.0), Vector2(-5.6, 0.45), Vector2(-4.2, 0.62), Vector2(-2.8, 0.5), Vector2(-2.2, 0.0)], 16, 0.7)
+	var glass := _mat(GLASS, 0.6, 0.08)
+	glass.cull_mode = BaseMaterial3D.CULL_DISABLED   # seen from below when open
+	_mesh(pivot, canopy, glass, Vector3(0, 0, -CANOPY_HINGE.z))
+	var rim := _lathe_z([Vector2(-6.25, 0.08), Vector2(-5.6, 0.5), Vector2(-4.2, 0.67), Vector2(-2.8, 0.55), Vector2(-2.25, 0.08)], 16, 0.12)
+	_mesh(pivot, rim, _mat(GREY, 0.6, 0.4), Vector3(0, -0.02, -CANOPY_HINGE.z))
+	return pivot
+
+
+## Cockpit tub under the canopy (seen only with it open): walls, floor, seat,
+## console with lit screens, stick, a lamp.
+static func build_cockpit(root: Node3D) -> Node3D:
+	var cab := Node3D.new()
+	cab.name = "Cockpit"
+	root.add_child(cab)
+	var wall := _mat(Color(0.5, 0.52, 0.55), 0.1, 0.8)
+	wall.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var y0 := AXIS_Y - 0.25
+	var y1 := AXIS_Y + 0.72
+	var z0 := -5.5
+	var z1 := -2.0
+	var w := 0.56
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var quads := [
+		[Vector3(-w, y0, z0), Vector3(w, y0, z0), Vector3(w, y0, z1), Vector3(-w, y0, z1)],   # floor
+		[Vector3(-w, y0, z0), Vector3(-w, y1, z0), Vector3(-w, y1, z1), Vector3(-w, y0, z1)],  # left
+		[Vector3(w, y0, z0), Vector3(w, y1, z0), Vector3(w, y1, z1), Vector3(w, y0, z1)],      # right
+		[Vector3(-w, y0, z0), Vector3(-w, y1 - 0.15, z0), Vector3(w, y1 - 0.15, z0), Vector3(w, y0, z0)],  # front
+		[Vector3(-w, y0, z1), Vector3(-w, y1, z1), Vector3(w, y1, z1), Vector3(w, y0, z1)],    # back
+	]
+	for q in quads:
+		var n: Vector3 = (q[1] - q[0]).cross(q[3] - q[0]).normalized()
+		st.set_normal(n)
+		for i in [0, 1, 2, 0, 2, 3]:
+			st.add_vertex(q[i])
+	_mesh(cab, st.commit(), wall)
+	var fabric := _mat(Color(0.2, 0.24, 0.32), 0.0, 0.9)
+	var seat_back := BoxMesh.new()
+	seat_back.size = Vector3(0.62, 0.95, 0.14)
+	_mesh(cab, seat_back, fabric, Vector3(0, y0 + 0.62, -2.55), Basis(Vector3.RIGHT, deg_to_rad(-15.0)))
+	var seat_pan := BoxMesh.new()
+	seat_pan.size = Vector3(0.62, 0.14, 0.6)
+	_mesh(cab, seat_pan, fabric, Vector3(0, y0 + 0.28, -2.9))
+	var head := BoxMesh.new()
+	head.size = Vector3(0.36, 0.26, 0.12)
+	_mesh(cab, head, _mat(ORANGE, 0.0, 0.6), Vector3(0, y0 + 1.15, -2.45), Basis(Vector3.RIGHT, deg_to_rad(-15.0)))
+	var stick := CylinderMesh.new()
+	stick.top_radius = 0.025
+	stick.bottom_radius = 0.035
+	stick.height = 0.4
+	_mesh(cab, stick, _mat(DARK, 0.3, 0.5), Vector3(0, y0 + 0.3, -3.45))
+	# Console under the front of the canopy, facing the seat.
+	var console := Node3D.new()
+	console.position = Vector3(0, y0 + 0.55, -4.25)
+	console.rotation.x = deg_to_rad(-40.0)
+	cab.add_child(console)
+	var board := BoxMesh.new()
+	board.size = Vector3(1.0, 0.5, 0.08)
+	_mesh(console, board, _mat(Color(0.08, 0.08, 0.09), 0.2, 0.6))
+	for sc in [[-0.3, Color(0.25, 0.75, 1.0)], [0.0, Color(1.0, 0.55, 0.15)], [0.3, Color(0.25, 0.75, 1.0)]]:
+		var q := BoxMesh.new()
+		q.size = Vector3(0.26, 0.2, 0.01)
+		_mesh(console, q, _mat(Color(0.02, 0.02, 0.03), 0.0, 0.3, sc[1] * 0.5), Vector3(float(sc[0]), 0.06, 0.045))
+	for k in 7:
+		var b := BoxMesh.new()
+		b.size = Vector3(0.05, 0.03, 0.02)
+		_mesh(console, b, _mat(DARK, 0.0, 0.4, (ORANGE if k % 2 == 0 else Color(0.8, 0.9, 1.0)) * 0.3), Vector3(-0.36 + k * 0.12, -0.17, 0.045))
+	var lamp := OmniLight3D.new()
+	lamp.light_color = Color(0.75, 0.85, 1.0)
+	lamp.light_energy = 1.4
+	lamp.omni_range = 3.0
+	lamp.position = Vector3(0, y0 + 0.9, -3.8)
+	cab.add_child(lamp)
+	cab.visible = false
+	return cab
 
 
 ## Landing gear (kept apart from the merged hull: it moves). A leg: pivot at

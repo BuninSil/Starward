@@ -25,6 +25,9 @@ var _bell_mats: Array[ShaderMaterial] = []
 var _capsule_mat: ShaderMaterial
 ## Hinged hatch (rotates about its local Y axis = the hinge line).
 var hatch_pivot: Node3D
+var _hatch_axis := Vector3.UP
+var _hatch_angle := 0.0
+var _cabin: Node3D
 var _hatch_basis := Basis()
 var _hatch_open := 0.0
 var _hatch_target := 0.0
@@ -51,6 +54,7 @@ func build(v: Vessel) -> void:
 	_fill = null
 	_chute_collapse = 0.0
 	hatch_pivot = null
+	_cabin = null
 	_engine_light = null
 	_ship_gear = []
 	_gear_snap = true
@@ -597,6 +601,9 @@ func _build_capsule(node: Node3D, s: Dictionary) -> void:
 	door_mat.set_shader_parameter("win_v", hy + 0.15)
 	door_mat.set_shader_parameter("win_size", Vector2(HATCH_DU * 0.3, 0.2))
 	var door_mesh := _lathe(door_prof, 6, false, false, false, u0, u1, 0.015)
+	var y0 := hy - HATCH_DV * 0.5
+	var y1 := hy + HATCH_DV * 0.5
+	var rad := func(y: float) -> float: return _capsule_radius(r, top_r, L, y_sh, y)
 	var a_h := u0 * TAU
 	var p_lo := Vector3(cos(a_h) * door_prof[0].x, door_prof[0].y, sin(a_h) * door_prof[0].x)
 	var p_hi := Vector3(cos(a_h) * door_prof[5].x, door_prof[5].y, sin(a_h) * door_prof[5].x)
@@ -608,12 +615,142 @@ func _build_capsule(node: Node3D, s: Dictionary) -> void:
 	node.add_child(hatch_pivot)
 	var door := _mesh(hatch_pivot, door_mesh, door_mat)
 	door.transform = hinge.affine_inverse()
-	# Inner face of the door (seen when it is swung open).
-	var door_in := _mesh(hatch_pivot, door_mesh, _dark_inside())
+	# The door is a 6.5 cm thick slab: inner skin and edges.
+	var door_in := _mesh(hatch_pivot, _lathe(door_prof, 6, false, false, false, u0, u1, -0.05), _dark_inside())
 	door_in.transform = door.transform
 	(door_in.material_override as StandardMaterial3D).albedo_color = Color(0.55, 0.56, 0.58)
+	var edge_mat := _cabin_mat(Color(0.5, 0.51, 0.53), 0.5, true)
+	var door_edge := _mesh(hatch_pivot, _rim_strips(rad, u0, u1, y0, y1, 0.015, -0.05), edge_mat)
+	door_edge.transform = door.transform
+	# The opening in the hull: the hull shader cuts it out while the door is
+	# away, the wall thickness frames it, the cabin is behind it.
+	var sill := _mesh(node, _rim_strips(rad, u0, u1, y0, y1, 0.0, -0.08), edge_mat)
+	sill.name = "HatchSill"
+	_cabin = _build_cabin(node, r, top_r, L, y_sh, y0)
+	_hatch_axis = Vector3.UP
+	_hatch_angle = deg_to_rad(110.0)
 	_hatch_open = 0.0
 	_hatch_target = 0.0
+
+
+func _cabin_mat(c: Color, rough := 0.85, both := false, emit := Color.BLACK) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = c
+	m.roughness = rough
+	if both:
+		m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	if emit != Color.BLACK:
+		m.emission_enabled = true
+		m.emission = emit
+		m.emission_energy_multiplier = 1.6
+	return m
+
+
+## Side walls of a cut in a revolved shell: the edges of the patch
+## u0..u1 (fractions of a turn) × y0..y1 between radius r(y)+g_out and r(y)+g_in.
+static func _rim_strips(rad: Callable, u0: float, u1: float, y0: float, y1: float, g_out: float, g_in: float) -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var pt := func(u: float, y: float, g: float) -> Vector3:
+		var rr: float = rad.call(y) + g
+		return Vector3(cos(u * TAU) * rr, y, sin(u * TAU) * rr)
+	var n := 8
+	var edges := []
+	for k in n:   # bottom and top edges
+		var ua := lerpf(u0, u1, float(k) / n)
+		var ub := lerpf(u0, u1, float(k + 1) / n)
+		edges.append([ua, y0, ub, y0])
+		edges.append([ua, y1, ub, y1])
+	for k in n:   # side edges
+		var ya := lerpf(y0, y1, float(k) / n)
+		var yb := lerpf(y0, y1, float(k + 1) / n)
+		edges.append([u0, ya, u0, yb])
+		edges.append([u1, ya, u1, yb])
+	for e in edges:
+		var a: Vector3 = pt.call(e[0], e[1], g_out)
+		var b: Vector3 = pt.call(e[2], e[3], g_out)
+		var c: Vector3 = pt.call(e[2], e[3], g_in)
+		var d: Vector3 = pt.call(e[0], e[1], g_in)
+		var nrm := (b - a).cross(d - a).normalized()
+		st.set_normal(nrm)
+		for v in [a, b, c, a, c, d]:
+			st.add_vertex(v)
+	return st.commit()
+
+
+## Crew cabin behind the hatch (shown only while it is open): padded inner
+## wall, floor, three couches, the instrument panel with lit screens, a lamp.
+func _build_cabin(node: Node3D, r: float, top_r: float, L: float, y_sh: float, floor_y: float) -> Node3D:
+	var cab := Node3D.new()
+	cab.name = "Cabin"
+	node.add_child(cab)
+	var prof := PackedVector2Array()
+	for q in _capsule_profile(r, top_r, L, y_sh):
+		prof.append(Vector2(maxf(q.x - 0.08, 0.05), q.y))
+	var wall := _cabin_mat(Color(0.72, 0.7, 0.64))
+	wall.cull_mode = BaseMaterial3D.CULL_FRONT   # the inner side of the shell
+	_mesh(cab, _lathe(prof, 32, false, true), wall)
+	var fy := floor_y - 0.12
+	var fr := _capsule_radius(r, top_r, L, y_sh, fy) - 0.08
+	var flo := CylinderMesh.new()
+	flo.top_radius = fr
+	flo.bottom_radius = fr
+	flo.height = 0.04
+	flo.radial_segments = 24
+	_mesh(cab, flo, _cabin_mat(Color(0.32, 0.33, 0.34)), Vector3(0, fy, 0))
+	# Pilot's couch, lying back facing the panel (sized to the cabin).
+	var fabric := _cabin_mat(Color(0.22, 0.27, 0.36))
+	var frame := _cabin_mat(Color(0.55, 0.56, 0.58), 0.4)
+	var rc := _capsule_radius(r, top_r, L, y_sh, fy + 0.4) - 0.08
+	var seat := Node3D.new()
+	seat.position = Vector3(0, fy + 0.3, rc * 0.1)
+	seat.rotation.x = deg_to_rad(-35.0)
+	cab.add_child(seat)
+	var sl := rc * 1.1
+	var back := BoxMesh.new()
+	back.size = Vector3(rc * 0.6, 0.07, sl)
+	_mesh(seat, back, fabric)
+	var head := BoxMesh.new()
+	head.size = Vector3(rc * 0.32, 0.1, sl * 0.2)
+	_mesh(seat, head, fabric, Vector3(0, 0.07, -sl * 0.42))
+	for sx in [-1.0, 1.0]:
+		var arm := BoxMesh.new()
+		arm.size = Vector3(0.04, 0.12, sl * 0.5)
+		_mesh(seat, arm, frame, Vector3(sx * rc * 0.31, 0.06, sl * 0.1))
+	var strut := BoxMesh.new()
+	strut.size = Vector3(0.06, 0.3, 0.06)
+	_mesh(cab, strut, frame, Vector3(0, fy + 0.15, rc * 0.1))
+	# Instrument panel on the far wall, tilted to face the couch.
+	var panel := Node3D.new()
+	var py := floor_y + HATCH_DV * 0.7
+	var pr := _capsule_radius(r, top_r, L, y_sh, py) - 0.08
+	var pz := pr * 0.55
+	var pw := 2.0 * sqrt(maxf(pr * pr - pz * pz, 0.01)) * 0.85
+	panel.position = Vector3(0, py, -pz)
+	panel.rotation.x = deg_to_rad(-30.0)
+	cab.add_child(panel)
+	var board := BoxMesh.new()
+	board.size = Vector3(pw, 0.36, 0.06)
+	_mesh(panel, board, _cabin_mat(Color(0.12, 0.12, 0.13), 0.6))
+	var screens := [[-0.3, Color(0.2, 0.9, 0.5)], [0.0, Color(0.3, 0.6, 1.0)], [0.3, Color(0.2, 0.9, 0.5)]]
+	for sc in screens:
+		var q := BoxMesh.new()
+		q.size = Vector3(pw * 0.24, 0.16, 0.01)
+		_mesh(panel, q, _cabin_mat(Color(0.02, 0.03, 0.03), 0.3, false, sc[1]), Vector3(float(sc[0]) * pw, 0.04, 0.035))
+	for k in 8:
+		var bt := BoxMesh.new()
+		bt.size = Vector3(0.035, 0.025, 0.02)
+		var c := Color(1.0, 0.6, 0.1) if k % 3 == 0 else Color(0.9, 0.9, 0.9)
+		_mesh(panel, bt, _cabin_mat(Color(0.05, 0.05, 0.05), 0.4, false, c * 0.6), Vector3((-0.42 + k * 0.12) * pw, -0.13, 0.035))
+	var lamp := OmniLight3D.new()
+	lamp.light_color = Color(1.0, 0.86, 0.7)
+	lamp.light_energy = 0.9
+	lamp.omni_range = r * 1.6
+	lamp.position = Vector3(0, floor_y + HATCH_DV, 0)
+	cab.add_child(lamp)
+	MeshMerge.merge(cab, null, true, true)
+	cab.visible = false
+	return cab
 
 
 static func _capsule_profile(r: float, top_r: float, L: float, y_sh: float) -> PackedVector2Array:
@@ -647,7 +784,7 @@ func hatch_local() -> Vector3:
 	if _stage_nodes.is_empty():
 		return Vector3.ZERO
 	if vessel.is_ship():
-		return Vector3(-1.75, ShipModel.GEAR_H + 0.7, -3.2)   # left side, behind the cockpit
+		return Vector3(0, ShipModel.AXIS_Y + 1.35, -3.6)   # up out of the open cockpit
 	var cap: Node3D = _stage_nodes[0]
 	var s: Dictionary = vessel.stages[0]
 	var d: float = s.diameter
@@ -659,8 +796,13 @@ func hatch_local() -> Vector3:
 ## The hatch point on the hull itself (where the tether reel sits).
 func hatch_hull_local() -> Vector3:
 	if vessel != null and vessel.is_ship():
-		return hatch_local() + Vector3(0.35, 0, 0)
+		return Vector3(0, ShipModel.AXIS_Y + 0.7, -3.0)   # cockpit rim
 	return hatch_local() - Vector3(0, 0, 0.33)
+
+
+## Direction (rocket frame) the crew climbs out to.
+func hatch_out() -> Vector3:
+	return Vector3.UP if vessel != null and vessel.is_ship() else Vector3.BACK
 
 
 # --- Exhaust, chute, collider ---------------------------------------------------
@@ -723,6 +865,14 @@ func _build_ship(v: Vessel) -> void:
 	var ex := ShipModel.build(node)
 	MeshMerge.merge(node, null, true, true)
 	_ship_gear = ShipModel.build_gear(node)
+	hatch_pivot = ShipModel.build_canopy(node)
+	_hatch_basis = Basis()
+	_hatch_axis = Vector3.RIGHT
+	_hatch_angle = deg_to_rad(55.0)
+	_hatch_open = 0.0
+	_hatch_target = 0.0
+	_cabin = ShipModel.build_cockpit(node)
+	MeshMerge.merge(_cabin, null, true, true)
 	if _flame_mat == null:
 		_flame_mat = ShaderMaterial.new()
 		_flame_mat.shader = EXHAUST_SHADER
@@ -1377,9 +1527,11 @@ func update_visual(delta: float) -> void:
 	if hatch_pivot and not is_equal_approx(_hatch_open, _hatch_target):
 		_hatch_open = move_toward(_hatch_open, _hatch_target, delta / 1.6)
 		var e := _hatch_open * _hatch_open * (3.0 - 2.0 * _hatch_open)
-		hatch_pivot.basis = _hatch_basis * Basis(Vector3.UP, -e * deg_to_rad(110.0))
+		hatch_pivot.basis = _hatch_basis * Basis(_hatch_axis, e * _hatch_angle)
 		if _capsule_mat:
 			_capsule_mat.set_shader_parameter("hatch_open", clampf(_hatch_open * 4.0, 0.0, 1.0))
+		if _cabin:
+			_cabin.visible = _hatch_open > 0.0   # no overdraw while shut
 	var on := vessel.last_thrust > 0.0 or vessel.cruise
 	var thr := vessel.last_thrust / maxf(vessel.current_thrust_max(), 1.0) if vessel.last_thrust > 0.0 else 0.0
 	if vessel.cruise:
